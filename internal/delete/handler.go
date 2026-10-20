@@ -75,7 +75,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc(prefix+"/delete", h.handleDelete)
 	mux.HandleFunc(prefix+"/estimate", h.handleEstimate)
 	mux.HandleFunc(prefix+"/tombstones", h.handleListTombstones)
-	mux.HandleFunc(prefix+"/leftovers", h.handleLeftovers)
 	mux.HandleFunc(prefix+"/tombstone/", h.handleTombstoneByID)
 	mux.HandleFunc(prefix+"/verify", h.handleVerify)
 }
@@ -127,23 +126,19 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The delete is the caller's: scoped to its tenant, over its objects.
-	files := h.tenantFiles(caller.tenant, startNs, endNs)
-	affectedKeys := make([]string, 0, len(files))
-	for _, f := range files {
-		affectedKeys = append(affectedKeys, f.Key)
-	}
+	// The delete is the caller's: scoped to its tenant, over its objects. The
+	// count is informational; the tombstone does not record which objects exist.
+	affectedFiles := len(h.tenantFiles(caller.tenant, startNs, endNs))
 
 	now := time.Now()
 	ts := Tombstone{
-		ID:           uuid.New().String(),
-		Query:        query,
-		StartNs:      startNs,
-		EndNs:        endNs,
-		AffectedKeys: affectedKeys,
-		CreatedAt:    now,
-		Mode:         mode,
-		Tenants:      []TenantRef{caller.tenant},
+		ID:        uuid.New().String(),
+		Query:     query,
+		StartNs:   startNs,
+		EndNs:     endNs,
+		CreatedBy: caller.tenant.String(),
+		Mode:      mode,
+		Tenants:   []TenantRef{caller.tenant},
 		// Relative time filters are evaluated when the delete is issued.
 		FilterAt: now.UnixNano(),
 	}
@@ -155,16 +150,22 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.store.Add(ts)
-	metrics.DeleteTombstonesTotal.Inc()
-	h.store.updateActiveGauges()
+	// The definition key is written once, at this pod's time; the answer
+	// is sent only after it is durable. A failed write is an error to the caller:
+	// nothing is queued and nothing is owed.
+	ts, err = h.store.Create(r.Context(), ts)
+	if err != nil {
+		logger.Errorf("tombstone create failed; tenant=%s, query=%s: %s", caller.tenant, query, err)
+		http.Error(w, "could not store the delete: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 
-	logger.Infof("tombstone created; id=%s, tenant=%s, query=%s, mode=%s, affected_files=%d", ts.ID, caller.tenant, query, mode, len(affectedKeys))
+	logger.Infof("tombstone created; id=%s, tenant=%s, query=%s, mode=%s, affected_files=%d", ts.ID, caller.tenant, query, mode, affectedFiles)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tombstone_id":   ts.ID,
 		"tenant":         caller.tenant.String(),
-		"affected_files": len(affectedKeys),
+		"affected_files": affectedFiles,
 		"mode":           mode,
 		"message":        "tombstone created successfully",
 	})
@@ -212,24 +213,12 @@ func (h *Handler) handleEstimate(w http.ResponseWriter, r *http.Request) {
 		classMap[string(class)]++
 	}
 
-	// Determine recommended mode based on storage classes.
+	// Every mode hides the rows today, and only hide can be undone: that is the
+	// mode to recommend until physical removal exists.
 	recommended := "hide"
-	allRewritable := true
-	for className := range classMap {
-		sc := StorageClass(className)
-		if !sc.CanRewrite() {
-			allRewritable = false
-			break
-		}
-	}
-	if allRewritable && len(files) > 0 {
-		recommended = "permanent"
-	}
 
-	autoBehavior := "hide data at query time"
-	if allRewritable {
-		autoBehavior = "rewrite files to permanently remove data"
-	}
+	// Physical removal is not enabled: every mode hides the rows at query time.
+	autoBehavior := "hide data at query time (physical removal is not enabled)"
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tenant":           caller.tenant.String(),
@@ -258,13 +247,6 @@ func (h *Handler) handleListTombstones(w http.ResponseWriter, r *http.Request) {
 		"scope":      caller.scopeName(),
 		"tombstones": tombstones,
 		"count":      len(tombstones),
-		// Whether what is listed would survive a pod loss: write-through
-		// persistence armed, and how many records are still owed to S3
-		// (only the local disk copy holds those).
-		"persistence": map[string]any{
-			"enabled":           h.store.PersistenceEnabled(),
-			"pending_s3_writes": h.store.PendingS3Writes(),
-		},
 	})
 }
 
@@ -298,17 +280,22 @@ func (h *Handler) handleTombstoneByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, ts)
 
 	case http.MethodDelete:
-		switch err := h.store.TryRemove(id); {
+		// The caller's check is repeated inside the store: this pod may not know
+		// the id yet and learns it by syncing there.
+		switch err := h.store.UndeleteIf(r.Context(), id, caller.sees); {
+		case err == nil:
 		case errors.Is(err, ErrTombstoneNotFound):
 			http.Error(w, "tombstone not found", http.StatusNotFound)
 			return
-		case errors.Is(err, ErrRewriteInProgress):
-			// The rewrite's record lives on this tombstone until its objects
-			// are settled; the un-delete is refused rather than lose it.
+		case errors.Is(err, ErrNotReversible):
+			// Only a hide-mode delete can be undone; permanent and auto (the
+			// default of run_task) are irreversible, like upstream's.
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
+		default:
+			http.Error(w, "could not undo the delete: "+err.Error(), http.StatusBadGateway)
+			return
 		}
-		h.store.updateActiveGauges()
 
 		logger.Infof("tombstone removed; id=%s", id)
 		writeJSON(w, http.StatusOK, map[string]any{

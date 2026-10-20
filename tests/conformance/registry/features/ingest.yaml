@@ -47,7 +47,6 @@
     - internal/vlstorage/insert_adapter_test.go
     - internal/manifest/segments_test.go
     - internal/compaction/scheduler_segments_test.go
-    - internal/delete/scheduler_test.go#TestSchedulerRunOnce_WaitsForTheBufferSegmentOfAnObject
     - internal/config/config_test.go#TestLoad_RemovedInsertKeysAreRefused
     - tests/e2e/chaos_durability_test.go#TestChaos_RestartRestoresTheBuffer
     - tests/e2e/chaos_durability_test.go#TestChaos_Kill9LosesNothingBeyondTheUpstreamWindow

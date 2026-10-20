@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	lhdelete "github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -468,43 +467,36 @@ func TestOrphanSweep_TierB_KeepsUnrecordedObjects(t *testing.T) {
 }
 
 // TestOrphanSweep_TierB_RetiredRecordGates: each condition on the record keeps
-// the object: a retirement younger than OrphanTTL, a landed delete, a key an
-// unfinished rewrite still names, and a pending upload.
+// the object: a retirement younger than OrphanTTL and a landed delete.
 func TestOrphanSweep_TierB_RetiredRecordGates(t *testing.T) {
 	ctx := context.Background()
 	const partition = "dt=2026-01-01/hour=00"
 	cases := []struct {
 		name   string
 		ttl    time.Duration
-		setup  func(m *manifest.Manifest, ts *lhdelete.TombstoneStore, key string)
+		setup  func(m *manifest.Manifest, key string)
 		reason string
 	}{
-		{"retired too recently", time.Hour, func(m *manifest.Manifest, _ *lhdelete.TombstoneStore, key string) {
+		{"retired too recently", time.Hour, func(m *manifest.Manifest, key string) {
 			m.RemoveFile(partition, key)
 		}, "retired_too_recently"},
-		{"delete landed", time.Nanosecond, func(m *manifest.Manifest, _ *lhdelete.TombstoneStore, key string) {
+		{"delete landed", time.Nanosecond, func(m *manifest.Manifest, key string) {
 			m.Retire(key, "", true)
 			m.ConfirmDeleted(key)
 		}, "delete_landed"},
-		{"named by an unfinished rewrite", time.Nanosecond, func(m *manifest.Manifest, ts *lhdelete.TombstoneStore, key string) {
-			m.Retire(key, "rewrite:x", true)
-			ts.Add(lhdelete.Tombstone{ID: "t1", Query: "*", Mode: "rewrite", EndNs: 1 << 62, CreatedAt: time.Now(),
-				Superseded: map[string]lhdelete.Supersession{key: {NewKey: "logs/" + partition + "/new.parquet", State: lhdelete.SupersessionPrepared, At: time.Now()}}})
-		}, "rewrite_unfinished"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := newListingPool()
 			m := manifest.New("bkt", "logs/")
-			store := lhdelete.NewTombstoneStore()
 			key := "logs/" + partition + "/k.parquet"
 			_ = pool.UploadWithMtime(ctx, key, []byte("x"), time.Now().Add(-10*time.Hour))
-			tc.setup(m, store, key)
+			tc.setup(m, key)
 			time.Sleep(time.Millisecond)
 			sweep := NewOrphanSweep(OrphanSweepConfig{
 				Manifest: m, Pool: pool, Ownership: NewOwnershipResolver("self", staticPeers("self")),
 				Policy: NewLevelPolicy(10, 20, 0), Lister: pool, Prefix: "logs/", Mode: config.ModeLogs,
-				Interval: time.Minute, OrphanTTL: tc.ttl, Tombstones: store,
+				Interval: time.Minute, OrphanTTL: tc.ttl,
 			})
 			before := metrics.CompactionOrphansSkipped.Get(tc.reason)
 			deleted, err := sweep.RunTierB(ctx)

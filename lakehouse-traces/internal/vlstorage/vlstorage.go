@@ -193,16 +193,16 @@ func taskMode() string {
 // DeleteRunTask registers the task as a tombstone scoped to exactly the task's
 // tenant_ids (see delete.RunTask). Upstream's /delete/run_task passes the
 // request's tenant; the cluster protocol passes the list the frontend sent.
-func (a *adapter) DeleteRunTask(_ context.Context, taskID string, timestamp int64, tenantIDs []logstorage.TenantID, f *logstorage.Filter) error {
+func (a *adapter) DeleteRunTask(ctx context.Context, taskID string, timestamp int64, tenantIDs []logstorage.TenantID, f *logstorage.Filter) error {
 	if f == nil {
 		return errors.New("missing filter")
 	}
-	return delete.RunTask(a.tombstones, delete.TaskFilesOf(a.store), delete.AccountOnlyKeys(a.store), taskID, timestamp, delete.TenantRefsOf(tenantIDs), f.String(), taskMode())
+	return delete.RunTask(ctx, a.tombstones, delete.AccountOnlyKeys(a.store), taskID, timestamp, delete.TenantRefsOf(tenantIDs), f.String(), taskMode())
 }
 
-// DeleteStopTask removes the task's tombstone by id (an un-delete; refused while
-// a rewrite of its files is unfinished). Stopping an unknown task is a no-op; so
-// is stopping another tenant's task from the public API (delete.StopTask).
+// DeleteStopTask answers ok and changes nothing: a registered task is finished,
+// as an upstream task that has completed (delete.StopTask), whatever the id and
+// the caller.
 func (a *adapter) DeleteStopTask(ctx context.Context, taskID string) error {
 	return delete.StopTask(ctx, a.tombstones, taskID)
 }

@@ -1112,33 +1112,32 @@ func (c *CompactionConfig) RowGroupSizeForOutput(outputLevel int) int {
 	return c.RowGroupSizeByOutputLevel[outputLevel]
 }
 
-// DeleteConfig controls the delete API, tombstones and file rewrites.
+// DeleteConfig controls the delete API and the tombstones.
 type DeleteConfig struct {
-	// Enabled serves the delete API.
+	// Enabled serves the delete API and creates tombstones, and turns the read
+	// gate on: while it is true a pod that cannot refresh its list of deletes
+	// answers reads with 503, and a select pod is ready only after its first read
+	// of it. With false the tombstones already in the bucket are still enforced
+	// and no read is refused.
 	Enabled bool `yaml:"enabled"`
-	// DefaultMode is the delete mode of a request that names none: hide,
-	// permanent or auto.
+	// DefaultMode is the delete mode of a request that names none (and of an
+	// upstream run_task): hide, permanent or auto. The default is hide, the only
+	// mode that can be undone: until physical removal exists (#627) permanent and
+	// auto hide the rows exactly like hide and cannot be undone.
 	DefaultMode string `yaml:"default_mode"`
-	// AutoRewriteClasses are the S3 storage classes whose files auto mode
-	// rewrites.
-	AutoRewriteClasses []string `yaml:"auto_rewrite_classes"`
-	// RewriteDelay is the wait after a tombstone before files are rewritten,
-	// so tombstones batch.
-	RewriteDelay time.Duration `yaml:"rewrite_delay"`
 	// RewriteBatchSize is the number of files per rewrite batch.
 	RewriteBatchSize int `yaml:"rewrite_batch_size"`
-	// RewriteMaxConcurrent is the number of concurrent rewrite workers.
-	RewriteMaxConcurrent int `yaml:"rewrite_max_concurrent"`
-	// PersistPath is the directory tombstones persist to.
-	PersistPath string `yaml:"persist_path"`
+	// CacheDir is the directory holding a local copy of the tombstone objects
+	// this pod has read. Optional: the objects never change, so the copy only
+	// saves reading them again after a restart (it is never written back to the
+	// bucket). Empty disables it.
+	CacheDir string `yaml:"cache_dir"`
 	// CostWarningThreshold is the estimated rewrite cost, in dollars, above
 	// which a delete warns.
 	CostWarningThreshold float64 `yaml:"cost_warning_threshold"`
 	// ForceGlacierHeader is the header that forces rewriting files in Glacier
 	// storage classes.
 	ForceGlacierHeader string `yaml:"force_glacier_header"`
-	// VerifyInterval is how often completed deletes are verified again.
-	VerifyInterval time.Duration `yaml:"verify_interval"`
 	// LifecycleRules are the bucket lifecycle rules used to predict storage
 	// classes for delete cost estimates.
 	LifecycleRules []LifecycleRuleConfig `yaml:"lifecycle_rules"`
@@ -1416,15 +1415,11 @@ func Default() *Config {
 
 		Delete: DeleteConfig{
 			Enabled:              true,
-			DefaultMode:          "auto",
-			AutoRewriteClasses:   []string{"STANDARD"},
-			RewriteDelay:         time.Hour,
+			DefaultMode:          "hide",
 			RewriteBatchSize:     50,
-			RewriteMaxConcurrent: 2,
-			PersistPath:          "/data/lakehouse/tombstones",
+			CacheDir:             "/data/lakehouse/tombstones",
 			CostWarningThreshold: 10.0,
 			ForceGlacierHeader:   "X-Force-Glacier-Delete",
-			VerifyInterval:       6 * time.Hour,
 		},
 
 		GC: GCConfig{
@@ -2620,29 +2615,17 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Delete.DefaultMode != "" {
 		base.Delete.DefaultMode = overlay.Delete.DefaultMode
 	}
-	if len(overlay.Delete.AutoRewriteClasses) > 0 {
-		base.Delete.AutoRewriteClasses = overlay.Delete.AutoRewriteClasses
-	}
-	if overlay.Delete.RewriteDelay > 0 {
-		base.Delete.RewriteDelay = overlay.Delete.RewriteDelay
-	}
 	if overlay.Delete.RewriteBatchSize > 0 {
 		base.Delete.RewriteBatchSize = overlay.Delete.RewriteBatchSize
 	}
-	if overlay.Delete.RewriteMaxConcurrent > 0 {
-		base.Delete.RewriteMaxConcurrent = overlay.Delete.RewriteMaxConcurrent
-	}
-	if overlay.Delete.PersistPath != "" {
-		base.Delete.PersistPath = overlay.Delete.PersistPath
+	if overlay.Delete.CacheDir != "" {
+		base.Delete.CacheDir = overlay.Delete.CacheDir
 	}
 	if overlay.Delete.CostWarningThreshold > 0 {
 		base.Delete.CostWarningThreshold = overlay.Delete.CostWarningThreshold
 	}
 	if overlay.Delete.ForceGlacierHeader != "" {
 		base.Delete.ForceGlacierHeader = overlay.Delete.ForceGlacierHeader
-	}
-	if overlay.Delete.VerifyInterval > 0 {
-		base.Delete.VerifyInterval = overlay.Delete.VerifyInterval
 	}
 	if len(overlay.Delete.LifecycleRules) > 0 {
 		base.Delete.LifecycleRules = overlay.Delete.LifecycleRules

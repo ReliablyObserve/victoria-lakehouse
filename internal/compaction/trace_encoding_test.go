@@ -74,26 +74,46 @@ func TestCompactor_MergedTracesKeepStartTimeDelta(t *testing.T) {
 	}
 }
 
-// The delete rewriter wired with the compactor's writers (production) keeps the
-// encoding too.
-func TestDeleteRewrite_ProductionWritersKeepStartTimeDelta(t *testing.T) {
+// Spans a tombstone hides are still merged forward, and the merged object keeps
+// the encoding: compaction wired with the production writers delta-encodes
+// start_time_unix_nano and drops no row.
+func TestCompaction_HiddenSpansKeepStartTimeDelta(t *testing.T) {
 	pool := newMockPool()
-	key := "traces/dt=2026-07-01/hour=03/src.parquet"
-	rows := encodingSpans(200)
-	for i := range rows {
-		if i%2 == 0 {
-			rows[i].ServiceName = "drop"
+	m := manifest.New("test-bucket", "traces/")
+	const partition = "dt=2026-07-01/hour=03"
+	var infos []manifest.FileInfo
+	for i := 0; i < 2; i++ {
+		rows := encodingSpans(200)
+		for j := range rows {
+			rows[j].TimestampUnixNano += int64(i) * 1_000_000
+			rows[j].StartTimeUnixNano = schema.Int64Ptr(rows[j].TimestampUnixNano)
+			rows[j].SpanID = fmt.Sprintf("%d-%d", i, j)
+			if j%2 == 0 {
+				rows[j].ServiceName = "drop"
+			}
 		}
+		data := makeTestTraceParquet(t, rows)
+		key := fmt.Sprintf("traces/%s/src-%d.parquet", partition, i)
+		pool.put(key, data)
+		fi := manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: 200, MinTimeNs: rows[0].TimestampUnixNano, MaxTimeNs: rows[199].TimestampUnixNano, SchemaFingerprint: "fp"}
+		m.AddFile(partition, fi)
+		infos = append(infos, fi)
 	}
-	pool.put(key, makeTestTraceParquet(t, rows))
-	rw := delete.NewRewriter(pool, "traces/", 100, "traces", delete.WithParquetWriters(delete.ParquetWriters{Logs: WriteLogs, Traces: WriteTraces, CompressionLevel: 1}))
-	res, err := rw.RewriteFile(context.Background(), key, []delete.Tombstone{
-		{Tenants: []delete.TenantRef{{}}, ID: "t", Query: `service.name:="drop"`, StartNs: 0, EndNs: 1 << 62},
-	})
+	store := delete.NewTombstoneStore()
+	store.Add(delete.Tombstone{ID: "t", Query: `service.name:="drop"`, StartNs: 0, EndNs: 1 << 62, Mode: "permanent", Tenants: []delete.TenantRef{{}}})
+	c := NewCompactor(CompactorConfig{Pool: pool, Manifest: m, Prefix: "traces/", Mode: config.ModeTraces, RowGroupSize: 100, CompressionLevel: 1})
+	res, err := c.Compact(context.Background(), partition, infos, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !testutil.HasEncoding(testutil.ColumnEncodings(t, pool.get(res.NewKey)), "start_time_unix_nano", "DELTA_BINARY_PACKED") {
-		t.Fatalf("replacement start_time_unix_nano encodings: %v", testutil.ColumnEncodings(t, pool.get(res.NewKey))["start_time_unix_nano"])
+	out := pool.get(res.OutputFile)
+	if !testutil.HasEncoding(testutil.ColumnEncodings(t, out), "start_time_unix_nano", "DELTA_BINARY_PACKED") {
+		t.Fatalf("compacted start_time_unix_nano encodings: %v", testutil.ColumnEncodings(t, out)["start_time_unix_nano"])
+	}
+	if res.RowsMerged != 400 {
+		t.Fatalf("the merged object holds %d rows, want all 400 (hidden rows are copied forward)", res.RowsMerged)
+	}
+	if _, ok := store.Get("t"); !ok {
+		t.Fatal("compaction retired the tombstone")
 	}
 }

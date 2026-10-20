@@ -144,7 +144,6 @@ func maxPerformanceConfig() *Config {
 	cfg.Startup.WarmupWindow = 72 * time.Hour
 	cfg.Startup.MaxWarmupTime = 10 * time.Minute
 
-	cfg.Delete.RewriteDelay = 30 * time.Minute
 	cfg.Delete.RewriteBatchSize = 100
 
 	cfg.Stats.PushInterval = 15 * time.Second
@@ -173,7 +172,6 @@ func maxDurabilityConfig() *Config {
 	cfg.S3.RetryBaseDelay = 500 * time.Millisecond
 
 	cfg.Delete.DefaultMode = "permanent"
-	cfg.Delete.VerifyInterval = 1 * time.Hour
 
 	cfg.Manifest.PersistInterval = 1 * time.Minute
 	cfg.SmartCache.SnapshotInterval = 30 * time.Second
@@ -237,8 +235,6 @@ func maxCostSavingsConfig() *Config {
 	cfg.Startup.MaxWarmupTime = 2 * time.Minute
 
 	cfg.Delete.DefaultMode = "hide"
-	cfg.Delete.VerifyInterval = 24 * time.Hour
-	cfg.Delete.RewriteDelay = 6 * time.Hour
 	cfg.Delete.RewriteBatchSize = 25
 
 	cfg.Stats.Enabled = false
@@ -304,7 +300,6 @@ func devConfig() *Config {
 	cfg.Startup.WarmupWindow = 1 * time.Hour
 	cfg.Startup.MaxWarmupTime = 10 * time.Second
 
-	cfg.Delete.RewriteDelay = 10 * time.Second
 	cfg.Delete.RewriteBatchSize = 5
 
 	cfg.Peer.AZAware = false

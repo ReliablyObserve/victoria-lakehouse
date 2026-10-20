@@ -11,6 +11,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest/memstore"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
@@ -373,7 +374,7 @@ func TestKeyTenantParser_NilManifestUsesDefaultLayout(t *testing.T) {
 // under -race this also covers the per-query sink cache the file workers share.
 func TestTombstoneScope_ConcurrentDeletesNeverTouchOtherTenants(t *testing.T) {
 	f := newTenantScopeFixture(t)
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	f.s.SetTombstoneStore(store)
 
 	stop := make(chan struct{})
@@ -387,8 +388,16 @@ func TestTombstoneScope_ConcurrentDeletesNeverTouchOtherTenants(t *testing.T) {
 				return
 			default:
 			}
-			store.Add(scopedTombstone(f, "del-"+strconv.Itoa(i%4), delete.TenantRef{AccountID: 1001}))
-			store.Remove("del-" + strconv.Itoa((i+2)%4))
+			if _, err := store.Create(context.Background(), scopedTombstone(f, "del-"+strconv.Itoa(i), delete.TenantRef{AccountID: 1001})); err != nil {
+				t.Errorf("create: %v", err)
+				return
+			}
+			if i >= 2 {
+				if err := store.Undelete(context.Background(), "del-"+strconv.Itoa(i-2)); err != nil {
+					t.Errorf("undelete: %v", err)
+					return
+				}
+			}
 		}
 	}()
 
@@ -415,15 +424,18 @@ func TestTombstoneScope_ConcurrentDeletesNeverTouchOtherTenants(t *testing.T) {
 	writers.Wait()
 }
 
-// A delete task records exactly its tenants' objects — the listing the read
-// path serves those tenants from, the legacy object included for 0:0.
-func TestTenantFileKeys_ListsOnlyTheNamedTenants(t *testing.T) {
+// A delete task end to end on the storage: registered for tenant 2002:7, it hides that tenant's matching rows and
+// nothing else, and stopping it brings them back.
+// The listing the read path serves a set of tenants from: exactly their objects,
+// the legacy untenanted object included for 0:0. A tombstone acts on these and
+// on nothing else.
+func TestFilesForScope_ListsOnlyTheNamedTenants(t *testing.T) {
 	f := newTenantScopeFixture(t)
 	f.addLegacyObject()
 	keys := func(ids []logstorage.TenantID) map[string]bool {
 		out := map[string]bool{}
-		for _, k := range f.s.TenantFileKeys(ids, math.MinInt64, f.endNs) {
-			out[k] = true
+		for _, fi := range f.s.filesForScope("query", math.MinInt64, f.endNs, resolveTenantScope(ids)) {
+			out[fi.Key] = true
 		}
 		return out
 	}
@@ -436,25 +448,16 @@ func TestTenantFileKeys_ListsOnlyTheNamedTenants(t *testing.T) {
 	if got := keys([]logstorage.TenantID{{AccountID: 1001}, {AccountID: 2002, ProjectID: 7}}); len(got) != 2 {
 		t.Errorf("1001:0+2002:7 keys = %v, want both tenants' objects", got)
 	}
-	if got := f.s.TenantFileKeys(nil, math.MinInt64, f.endNs); got != nil {
-		t.Errorf("no tenants must list nothing, got %v", got)
-	}
 }
 
-// A delete task end to end on the storage: registered for tenant 2002:7 with
-// this storage's object listing, it hides that tenant's matching rows and
-// nothing else, and stopping it brings them back.
 func TestDeleteTask_HidesOnlyTheTaskTenant(t *testing.T) {
 	f := newTenantScopeFixture(t)
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	f.s.SetTombstoneStore(store)
-	err := delete.RunTask(store, delete.TaskFilesOf(f.s), false, "task-7", f.endNs,
+	err := delete.RunTask(context.Background(), store, false, "task-7", f.endNs,
 		delete.TenantRefsOf(tenant2002), strconv.Quote(f.svcCol)+`:="svc-tenant-2002-7"`, "hide")
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
-	}
-	if ts, _ := store.Get("task-7"); len(ts.AffectedKeys) != 1 || ts.AffectedKeys[0] != f.tenants[2].key {
-		t.Fatalf("task affected keys = %v, want only tenant 2002:7's object", ts.AffectedKeys)
 	}
 	if rows, _ := f.runQuery(context.Background(), tenant2002, "*"); rows != 0 {
 		t.Errorf("tenant 2002:7 still sees %d rows after its delete task", rows)
@@ -466,8 +469,9 @@ func TestDeleteTask_HidesOnlyTheTaskTenant(t *testing.T) {
 	if err := delete.StopTask(context.Background(), store, "task-7"); err != nil {
 		t.Fatalf("StopTask: %v", err)
 	}
-	if rows, _ := f.runQuery(context.Background(), tenant2002, "*"); rows != tsRowsT2002 {
-		t.Errorf("after stop_task tenant 2002:7 sees %d rows, want %d back", rows, tsRowsT2002)
+	// A registered task is finished: stop_task is a no-op and the rows stay hidden.
+	if rows, _ := f.runQuery(context.Background(), tenant2002, "*"); rows != 0 {
+		t.Errorf("after stop_task tenant 2002:7 sees %d rows, want 0: stop_task never brings rows back", rows)
 	}
 }
 

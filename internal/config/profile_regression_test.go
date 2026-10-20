@@ -200,28 +200,20 @@ func TestProfileRegression_Compaction(t *testing.T) {
 }
 
 func TestProfileRegression_Delete(t *testing.T) {
-	type deleteExpect struct {
-		defaultMode    string
-		verifyInterval time.Duration
+	tests := map[Profile]string{
+		ProfileBalanced:       "hide",
+		ProfileMaxPerformance: "hide",
+		ProfileMaxDurability:  "permanent",
+		ProfileMaxCostSavings: "hide",
+		ProfileDev:            "hide",
 	}
 
-	tests := map[Profile]deleteExpect{
-		ProfileBalanced:       {"auto", 6 * time.Hour},
-		ProfileMaxPerformance: {"auto", 6 * time.Hour},
-		ProfileMaxDurability:  {"permanent", 1 * time.Hour},
-		ProfileMaxCostSavings: {"hide", 24 * time.Hour},
-		ProfileDev:            {"auto", 6 * time.Hour},
-	}
-
-	for profile, expect := range tests {
+	for profile, defaultMode := range tests {
 		t.Run(string(profile), func(t *testing.T) {
 			cfg := ProfileConfig(profile)
 
-			if cfg.Delete.DefaultMode != expect.defaultMode {
-				t.Errorf("default_mode = %q, want %q", cfg.Delete.DefaultMode, expect.defaultMode)
-			}
-			if cfg.Delete.VerifyInterval != expect.verifyInterval {
-				t.Errorf("verify_interval = %v, want %v", cfg.Delete.VerifyInterval, expect.verifyInterval)
+			if cfg.Delete.DefaultMode != defaultMode {
+				t.Errorf("default_mode = %q, want %q", cfg.Delete.DefaultMode, defaultMode)
 			}
 		})
 	}

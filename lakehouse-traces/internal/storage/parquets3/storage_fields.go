@@ -141,6 +141,9 @@ func (s *Storage) fetchFooterTail(ctx context.Context, fi manifest.FileInfo, dl 
 // upstream's have). The Parquet footers cannot answer this: they know the
 // columns of a file, not the fields of its spans.
 func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return nil, err
+	}
 	return storage.FieldNamesViaQuery(ctx, tenantIDs, q, s.RunQuery)
 }
 
@@ -301,6 +304,9 @@ func (s *Storage) scanProjectedFieldValues(
 // without the field counts under the empty value (stream_field_values is a
 // different question, see GetStreamFieldValues).
 func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return nil, err
+	}
 	filter := parseFilterFromQuery(q)
 	scope := scopeFor(ctx, tenantIDs)
 	startNs, endNs := q.GetFilterTimeRange()
@@ -374,6 +380,9 @@ func (s *Storage) GetFieldValues(ctx context.Context, tenantIDs []logstorage.Ten
 // with the rows of every matching stream that carries it. The walk is the one
 // GetStreamFieldValues does over the same streams.
 func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query) ([]logstorage.ValueWithHits, error) {
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return nil, err
+	}
 	streams, err := s.streamsWithHits(ctx, tenantIDs, q, "stream_field_names")
 	if err != nil {
 		return nil, err
@@ -409,6 +418,9 @@ func (s *Storage) GetStreamFieldNames(ctx context.Context, tenantIDs []logstorag
 // limit; the answer is sorted by hits then value, and past the limit the first values
 // are kept with zeroed hits.
 func (s *Storage) GetStreamFieldValues(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, fieldName string, limit uint64) ([]logstorage.ValueWithHits, error) {
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return nil, err
+	}
 	streams, err := s.streamsWithHits(ctx, tenantIDs, q, "stream_field_values")
 	if err != nil {
 		return nil, err
@@ -454,6 +466,9 @@ func streamTagValuesWithHits(values map[string]uint64, limit uint64) []logstorag
 }
 
 func (s *Storage) GetStreams(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return nil, err
+	}
 	seen, err := s.streamsWithHits(ctx, tenantIDs, q, "streams")
 	if err != nil {
 		return nil, err
@@ -512,6 +527,9 @@ func (s *Storage) streamsWithHits(ctx context.Context, tenantIDs []logstorage.Te
 }
 
 func (s *Storage) GetStreamIDs(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, limit uint64) ([]logstorage.ValueWithHits, error) {
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return nil, err
+	}
 	filter := parseFilterFromQuery(q)
 
 	startNs, endNs := q.GetFilterTimeRange()

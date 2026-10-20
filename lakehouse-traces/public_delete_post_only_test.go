@@ -17,6 +17,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest/memstore"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
@@ -50,7 +51,7 @@ func queryRequest(mux http.Handler, method, path string, form url.Values, header
 
 func postOnlyServer(t *testing.T, deleteEnabled bool) (*delete.TombstoneStore, http.Handler) {
 	t.Helper()
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	internalvlstorage.SetStorage(nopStorage{}, store)
 	mux := http.NewServeMux()
 	mountPublicDelete(mux, deleteEnabled, testGlobalRead)
@@ -112,12 +113,12 @@ func TestMountPublicDelete_RunTaskGETKeepsDisabledAnswers(t *testing.T) {
 func TestMountPublicDelete_OtherEndpointsStillAcceptGET(t *testing.T) {
 	enablePublicDelete(t)
 	store, srv := postOnlyServer(t, true)
-	store.Add(delete.Tombstone{ID: "t1", Query: "*", EndNs: 1, FilterAt: 1, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 7}}})
+	memstore.Create(t, store, delete.Tombstone{ID: "t1", Query: "*", EndNs: 1, FilterAt: 1, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 7}}})
 	h := map[string]string{"AccountID": "7"}
-	if rec := queryRequest(srv, http.MethodGet, "/delete/active_tasks", nil, h); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "t1") {
+	if rec := queryRequest(srv, http.MethodGet, "/delete/active_tasks", nil, h); rec.Code != http.StatusOK || rec.Body.String() != "[]" {
 		t.Errorf("GET active_tasks: %d %q", rec.Code, rec.Body.String())
 	}
-	if rec := queryRequest(srv, http.MethodGet, "/delete/stop_task", url.Values{"task_id": {"t1"}}, h); rec.Code != http.StatusOK || store.Count() != 0 {
+	if rec := queryRequest(srv, http.MethodGet, "/delete/stop_task", url.Values{"task_id": {"t1"}}, h); rec.Code != http.StatusOK || store.Count() != 1 {
 		t.Errorf("GET stop_task: %d %q, %d tombstones", rec.Code, rec.Body.String(), store.Count())
 	}
 }
@@ -132,7 +133,7 @@ func enableInternalDelete(t *testing.T) {
 
 func internalServer(t *testing.T, deleteEnabled bool) (*delete.TombstoneStore, http.Handler) {
 	t.Helper()
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	internalvlstorage.SetStorage(nopStorage{}, store)
 	internalselect.Init()
 	t.Cleanup(internalselect.Stop)
@@ -238,7 +239,7 @@ func TestMountInternalProtocol_GatesAnswerBeforeMethodCheck(t *testing.T) {
 // refuses the GET itself, so the duplicate gets dropped.
 func TestUpstreamInternalProtocolStillAcceptsGET(t *testing.T) {
 	enableInternalDelete(t)
-	internalvlstorage.SetStorage(nopStorage{}, delete.NewTombstoneStore())
+	internalvlstorage.SetStorage(nopStorage{}, memstore.New(t))
 	internalselect.Init()
 	t.Cleanup(internalselect.Stop)
 	const msg = "the embedded VictoriaLogs %s now answers 405 to a GET itself: drop internaldelete.POSTOnly " +

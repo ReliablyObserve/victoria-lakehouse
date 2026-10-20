@@ -22,7 +22,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selfaddr"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
@@ -51,7 +50,11 @@ func queryKeys(t *testing.T, store *parquets3.Storage, field string) []string {
 			return
 		}
 		mu.Lock()
-		keys = append(keys, c.Values...)
+		// The block's strings may point into memory the engine reuses once this
+		// callback returns: keep copies.
+		for _, v := range c.Values {
+			keys = append(keys, strings.Clone(v))
+		}
 		mu.Unlock()
 	}); err != nil {
 		t.Fatalf("query: %v", err)
@@ -147,7 +150,7 @@ func TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneW
 	for _, p := range pods {
 		var holder *tenant.PolicyRegistry
 		// Every pod listens on ":10428", as the chart's pods do.
-		_, sweep, stop := setupCompaction(p.cfg, p.store, nil, ":10428", &holder, delete.NewTombstoneStore(), newStorageClassDetector(p.cfg), p.env)
+		_, sweep, stop := setupCompaction(p.cfg, p.store, nil, ":10428", &holder, newStorageClassDetector(p.cfg), p.env)
 		// This test is about the scheduler's ownership. The orphan sweep's Tier A
 		// lets the secondary owner take a partition whose primary it has no
 		// attempt time for (attempt times are per pod), so with a healthy ring it

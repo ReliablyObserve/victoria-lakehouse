@@ -109,9 +109,6 @@ func TestProfileConfig_MaxDurabilitySettings(t *testing.T) {
 	if cfg.Delete.DefaultMode != "permanent" {
 		t.Errorf("max-durability delete mode = %q, want permanent", cfg.Delete.DefaultMode)
 	}
-	if cfg.Delete.VerifyInterval != 1*time.Hour {
-		t.Errorf("max-durability verify_interval = %v, want 1h", cfg.Delete.VerifyInterval)
-	}
 	if cfg.S3.RetryMax != 5 {
 		t.Errorf("max-durability retry_max = %d, want 5", cfg.S3.RetryMax)
 	}

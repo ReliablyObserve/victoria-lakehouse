@@ -5,12 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"sync"
-	"time"
-
-	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
-
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // TenantRef names one tenant a tombstone acts on, in the numeric form VL and VT
@@ -189,71 +183,4 @@ func CheckTenantsForKeyLayout(tenants []TenantRef, accountOnlyKeys bool) error {
 		}
 	}
 	return nil
-}
-
-// rejectUnscopedLocked reports whether a restored record names no tenant, and
-// so is not a tombstone; such a record is rejected (rejectLocked). Nothing
-// creates one; it can only come from a hand-written or corrupted object.
-// Caller holds s.mu.
-func (s *TombstoneStore) rejectUnscopedLocked(ts Tombstone, source string) bool {
-	if len(ts.Tenants) > 0 {
-		return false
-	}
-	s.rejectLocked(ts.ID, source+" record names no tenant", source == "s3")
-	return true
-}
-
-// rejectedUnscoped remembers the ids already reported, so a record rejected
-// again (a restore retry, or another store in the same process) is counted and
-// logged once per process.
-var rejectedUnscoped sync.Map
-
-// rejectLocked refuses a restored record that is not a tombstone: it is not
-// applied (any copy of it already in the store is dropped too — a copy can
-// only narrow a scope, and an unscoped copy leaves nothing), it is counted
-// (lakehouse_delete_startup_inconsistencies_total{kind="unscoped_tombstone"},
-// once per process) and logged, and it gets a removal marker. The marker is
-// persisted with the disk copy, so the rejection survives a restart that loads
-// only one copy.
-//
-// The record's S3 object is owed a delete through the path any removed
-// tombstone's is (removed_tombstone_still_in_s3) only where one is known to
-// exist: seenInS3 (the rejected copy came from S3), or a copy already in the
-// store (loaded from S3, or written through to it). A disk-only rejection
-// owes nothing; if the S3 copy exists, the S3 pass finds it superseded by the
-// marker and owes it then — once. Caller holds s.mu.
-func (s *TombstoneStore) rejectLocked(id, why string, seenInS3 bool) {
-	if cur, ok := s.tombstones[id]; ok {
-		delete(s.tombstones, id)
-		s.forgetFilterLocked(cur)
-		seenInS3 = true
-	}
-	s.markRemovedLocked(id, time.Now())
-	if seenInS3 {
-		s.owePendingS3DeletesLocked([]string{id})
-	}
-	if _, seen := rejectedUnscoped.LoadOrStore(id, true); seen {
-		return
-	}
-	metrics.DeleteStartupInconsistencies.Inc("unscoped_tombstone")
-	logger.Errorf("tombstone restore: %s (id %q); rejected, not applied, and its S3 copy deleted", why, id)
-}
-
-// mergeTenants combines two copies' tenant scopes for the same tombstone id,
-// failing closed: the result is the intersection, so a copy can only narrow a
-// scope, never widen it. A scope is fixed when the delete is issued, so honest
-// copies agree; an empty intersection means the copies contradict each other
-// and the record names no tenant any copy agrees on — the caller rejects it.
-func mergeTenants(a, b []TenantRef) []TenantRef {
-	in := make(map[TenantRef]bool, len(a))
-	for _, t := range a {
-		in[t] = true
-	}
-	var out []TenantRef
-	for _, t := range b {
-		if in[t] {
-			out = append(out, t)
-		}
-	}
-	return NormalizeTenants(out)
 }

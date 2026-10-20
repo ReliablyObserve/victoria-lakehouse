@@ -152,14 +152,10 @@ func TestMergeConfig_DeleteFields(t *testing.T) {
 	overlay := &Config{}
 	overlay.Delete.Enabled = true
 	overlay.Delete.DefaultMode = "rewrite"
-	overlay.Delete.AutoRewriteClasses = []string{"STANDARD", "GLACIER"}
-	overlay.Delete.RewriteDelay = 2 * time.Hour
 	overlay.Delete.RewriteBatchSize = 100
-	overlay.Delete.RewriteMaxConcurrent = 4
-	overlay.Delete.PersistPath = "/data/tombstones"
+	overlay.Delete.CacheDir = "/data/tombstones"
 	overlay.Delete.CostWarningThreshold = 20.0
 	overlay.Delete.ForceGlacierHeader = "X-Custom-Header"
-	overlay.Delete.VerifyInterval = 12 * time.Hour
 	overlay.Delete.LifecycleRules = []LifecycleRuleConfig{
 		{TransitionDays: 30, StorageClass: "GLACIER"},
 	}
@@ -172,29 +168,17 @@ func TestMergeConfig_DeleteFields(t *testing.T) {
 	if result.Delete.DefaultMode != "rewrite" {
 		t.Errorf("Delete.DefaultMode = %q, want rewrite", result.Delete.DefaultMode)
 	}
-	if len(result.Delete.AutoRewriteClasses) != 2 {
-		t.Errorf("Delete.AutoRewriteClasses len = %d, want 2", len(result.Delete.AutoRewriteClasses))
-	}
-	if result.Delete.RewriteDelay != 2*time.Hour {
-		t.Errorf("Delete.RewriteDelay = %v, want 2h", result.Delete.RewriteDelay)
-	}
 	if result.Delete.RewriteBatchSize != 100 {
 		t.Errorf("Delete.RewriteBatchSize = %d, want 100", result.Delete.RewriteBatchSize)
 	}
-	if result.Delete.RewriteMaxConcurrent != 4 {
-		t.Errorf("Delete.RewriteMaxConcurrent = %d, want 4", result.Delete.RewriteMaxConcurrent)
-	}
-	if result.Delete.PersistPath != "/data/tombstones" {
-		t.Errorf("Delete.PersistPath = %q", result.Delete.PersistPath)
+	if result.Delete.CacheDir != "/data/tombstones" {
+		t.Errorf("Delete.CacheDir = %q", result.Delete.CacheDir)
 	}
 	if result.Delete.CostWarningThreshold != 20.0 {
 		t.Errorf("Delete.CostWarningThreshold = %f, want 20.0", result.Delete.CostWarningThreshold)
 	}
 	if result.Delete.ForceGlacierHeader != "X-Custom-Header" {
 		t.Errorf("Delete.ForceGlacierHeader = %q", result.Delete.ForceGlacierHeader)
-	}
-	if result.Delete.VerifyInterval != 12*time.Hour {
-		t.Errorf("Delete.VerifyInterval = %v, want 12h", result.Delete.VerifyInterval)
 	}
 	if len(result.Delete.LifecycleRules) != 1 {
 		t.Fatalf("Delete.LifecycleRules len = %d, want 1", len(result.Delete.LifecycleRules))

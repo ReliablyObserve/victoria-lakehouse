@@ -41,6 +41,7 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 )
 
@@ -1061,4 +1062,103 @@ func TestExtra_DotSegmentKeys(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ------------------------------------------------- TOMBSTONE PROTOCOL ----
+
+// TestProd_TombstoneProtocol exercises what the write-once tombstone protocol
+// (internal/delete) relies on, through the production backend: conditional
+// create with exactly one winner and ListObjectsV2 StartAfter combined with
+// continuation tokens over more than one page.
+func TestProd_TombstoneProtocol(t *testing.T) {
+	setup(t)
+	ctx := ctxT(t)
+	b := delete.NewS3Backend(pool)
+	base := pfx(t) + "_tombstones/"
+
+	t.Run("create-once", func(t *testing.T) {
+		k := base + "t0000000000000001-once.json"
+		created, err := b.PutIfAbsent(ctx, k, []byte("one"))
+		if err != nil || !created {
+			t.Fatalf("first create = %v, %v", created, err)
+		}
+		created, err = b.PutIfAbsent(ctx, k, []byte("two"))
+		if err != nil || created {
+			t.Fatalf("second create = %v, %v; want not created and no error", created, err)
+		}
+		if got, found, _ := b.Get(ctx, k); !found || string(got) != "one" {
+			t.Fatalf("object = %q, found %v; want it unchanged", got, found)
+		}
+	})
+
+	t.Run("create-race-one-winner", func(t *testing.T) {
+		k := base + "t0000000000000002-race.json"
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		wins := 0
+		for i := 0; i < 24; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				ok, err := b.PutIfAbsent(ctx, k, []byte(fmt.Sprintf("w%d", i)))
+				if err != nil {
+					t.Errorf("create: %v", err)
+					return
+				}
+				if ok {
+					mu.Lock()
+					wins++
+					mu.Unlock()
+				}
+			}(i)
+		}
+		wg.Wait()
+		if wins != 1 {
+			t.Fatalf("%d creates of one key won, want 1", wins)
+		}
+	})
+
+	t.Run("list-after-paginates", func(t *testing.T) {
+		const n = 1250 // more than one 1000-key page
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, 32)
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(i int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				k := fmt.Sprintf("%slist/t%016x-id.json", base, i+1)
+				if _, err := b.PutIfAbsent(ctx, k, []byte("x")); err != nil {
+					t.Errorf("seed %d: %v", i, err)
+				}
+			}(i)
+		}
+		wg.Wait()
+		var got []string
+		resume := fmt.Sprintf("%slist/t%016x", base, 101) // keys with time >= 101
+		if err := b.ListAfter(ctx, base+"list/", resume, func(k string) error { got = append(got, k); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != n-100 {
+			t.Fatalf("StartAfter listed %d keys, want %d (every key from time 101 on, across pages)", len(got), n-100)
+		}
+		if !sort.StringsAreSorted(got) || got[0] != fmt.Sprintf("%slist/t%016x-id.json", base, 101) {
+			t.Fatalf("keys not in order from the resume point; first %q", got[0])
+		}
+		seen := map[string]bool{}
+		for _, k := range got {
+			if seen[k] {
+				t.Fatalf("key %s listed twice", k)
+			}
+			seen[k] = true
+		}
+		var all []string
+		if err := b.ListAfter(ctx, base+"list/", "", func(k string) error { all = append(all, k); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		if len(all) != n {
+			t.Fatalf("full listing = %d keys, want %d", len(all), n)
+		}
+	})
 }

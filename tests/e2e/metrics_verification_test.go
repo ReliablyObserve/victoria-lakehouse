@@ -749,14 +749,8 @@ func TestMetrics_Delete_AllExist(t *testing.T) {
 	for _, name := range []string{
 		"lakehouse_delete_tombstones_active",
 		"lakehouse_delete_tombstones_total",
-		"lakehouse_delete_rewrite_total",
-		"lakehouse_delete_rewrite_errors_total",
-		"lakehouse_delete_rewrite_bytes_saved_total",
-		"lakehouse_delete_rewrite_skipped_glacier_total",
 		"lakehouse_delete_rows_suppressed_total",
-		"lakehouse_delete_compaction_rows_removed_total",
 		"lakehouse_delete_verify_total",
-		"lakehouse_delete_verify_leak_detected_total",
 	} {
 		assertMetricExists(t, metrics, name)
 	}
@@ -955,14 +949,8 @@ func TestMetrics_Completeness_AllDeclaredMetricsExist(t *testing.T) {
 		// Delete
 		"lakehouse_delete_tombstones_active",
 		"lakehouse_delete_tombstones_total",
-		"lakehouse_delete_rewrite_total",
-		"lakehouse_delete_rewrite_errors_total",
-		"lakehouse_delete_rewrite_bytes_saved_total",
-		"lakehouse_delete_rewrite_skipped_glacier_total",
 		"lakehouse_delete_rows_suppressed_total",
-		"lakehouse_delete_compaction_rows_removed_total",
 		"lakehouse_delete_verify_total",
-		"lakehouse_delete_verify_leak_detected_total",
 	}
 
 	metrics := scrapeMetrics(t, logsBaseURL)

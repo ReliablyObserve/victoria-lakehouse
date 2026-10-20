@@ -33,7 +33,7 @@ start_lh() {
   cat >"$work/config.yaml" <<YAML
 lakehouse:
   cache: {disk_path: $work/cache}
-  delete: {persist_path: $work/lh/tombstones}
+  delete: {cache_dir: $work/lh/tombstones}
   insert: {buffer_dir: $work/lh/buffer, buffer_flush_interval: 5s}
   manifest: {persist_path: $work/lh}
 YAML

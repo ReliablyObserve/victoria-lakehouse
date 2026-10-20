@@ -95,6 +95,14 @@ func (s *Storage) preFilterFieldNames(ctx context.Context, db *logstorage.DataBl
 }
 
 func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+	// Fail closed while the view of the deletes is stale (see tombstoneGate).
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return err
+	}
+	return s.runQuery(ctx, tenantIDs, q, writeBlock)
+}
+
+func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
 	queryStart := time.Now()
 	metrics.ConcurrentSelects.Inc()
 	defer func() {
@@ -3202,6 +3210,9 @@ func (s *Storage) updateColumnStats(fileKey string, f *parquet.File) {
 // delete (tombstone): the caller owns both, and no production code calls it
 // today. Do not use it to answer a query without adding them.
 func (s *Storage) QuerySpecificFiles(ctx context.Context, fileKeys []string, startNs, endNs int64, queryStr string, pipeFields []string, writeBlock logstorage.WriteDataBlockFunc) error {
+	if err := s.tombstoneGate(ctx, nil); err != nil {
+		return err
+	}
 	if len(fileKeys) == 0 {
 		return nil
 	}

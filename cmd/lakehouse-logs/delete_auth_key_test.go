@@ -16,6 +16,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest/memstore"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
@@ -42,7 +43,7 @@ func setFlag(t *testing.T, name, value string) {
 // one and the lakehouse's own /delete/logsql/*, behind DeleteAuth.
 func deleteAPIs(t *testing.T) (*delete.TombstoneStore, http.Handler) {
 	t.Helper()
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	internalvlstorage.SetStorage(nopStorage{}, store)
 	mux := http.NewServeMux()
 	mountPublicDelete(mux, true, testGlobalRead)

@@ -1,0 +1,363 @@
+# Tombstones: the deletes every pod reads from the bucket (write-once keys, a polling
+# view, a stale-view gate). Semantics: docs/deletion-strategy.md. Physical removal is
+# not enabled: every delete mode hides the rows at query time.
+#
+# Deviations from upstream VictoriaLogs/VictoriaTraces delete behaviour (the `differ`
+# rows below) are listed in docs/parity-and-gaps.md and in docs/deletion-strategy.md.
+
+- id: lh.delete.tombstone_write_once
+  title: "Tombstones — the only keys under {prefix}_tombstones/ are the definition and, for a hide delete, the undo; both are created with If-None-Match and never overwritten, so two pods creating the same task leave one object, a failed create leaves nothing owed, a pod's disk is a cache that is never written back, and the only DELETE is the retention GC of a tombstone whose data is past retention"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api, chaos]
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/multiinstance_test.go#TestMI_NoKeyIsEverOverwritten
+      - internal/delete/multiinstance_test.go#TestMI_ConcurrentCreateOfOneTask_ExactlyOneObject
+      - internal/delete/protocol_test.go#TestCreate_FailureOwesNothing
+      - internal/delete/protocol_test.go#TestRestart_FromStaleCache_DoesNotResurrectAnUndeletedTombstone
+      - internal/delete/protocol_test.go#TestForeignKeysAreIgnoredAndCounted
+      - internal/delete/gc_test.go#TestGC_SteadyState
+      - internal/delete/s3backend_test.go#TestS3Backend_ConditionalCreate
+      - internal/delete/handler_scope_test.go#TestDeleteAPI_LeftoversRouteIsGone
+      - internal/delete/column_fence_test.go#TestTombstones_NeverWriteOutsideTheTombstonePrefix
+      - tests/s3compat/s3compat_test.go#TestProd_TombstoneProtocol
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+
+- id: lh.delete.tombstone_visible_all_pods_bound
+  title: "A delete taken on any pod hides its rows on every pod, writer or reader, within one poll interval (the pod that took it at once), for buffer, cold and compacted data in both signals; a short or failed listing delays learning a new delete and never makes a pod forget one"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: POST, path: /delete/logsql/delete, params: { query: "service.name:checkout", start: "{{seed.start}}", end: "{{seed.cold_end}}", mode: "hide" } }
+  compare: { type: count }
+  layers: [api, chaos]
+  pending: true
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/multiinstance_test.go#TestMI_Delete_VisibleEverywhereWithinOnePoll
+      - internal/delete/protocol_test.go#TestShortListing_NeverDropsOrDeletes
+      - internal/delete/protocol_test.go#TestPoll_LearnsADeleteTakenElsewhere
+      - internal/delete/listing_property_test.go#TestProperty_TombstoneSync_NeverForgetsOverShortListings
+      - internal/delete/delete_fuzz_test.go#FuzzTombstoneSync
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_ShortListingNeverDropsOrDeletes
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_ShortListingNeverDropsOrDeletes
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+  notes: "Two writers and two selects over one bucket: a delete created through one select pod's API is enforced on the other select pod and on both writers after one poll interval (measured about 0.4 s with a 1 s interval), and an un-delete of a hide delete the same. Compaction copies the rows forward unchanged and they stay hidden. This row is the end-to-end expectation the runner will execute; the unit and multi-instance tests are the executed lock."
+
+- id: lh.delete.pod_clocks_only
+  title: "Key times are pod clocks only (no store clock): a definition key takes the upstream task id's nanosecond timestamp when the id is one, so a duplicate id lands on the same key, and the creating pod's clock otherwise; a key older than the poll window is learned at the full listing and counted (learned late, skew gauge, alert), never before it"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/keys_test.go#TestIDTime
+      - internal/delete/multiinstance_test.go#TestMI_KeyTimeIsThePodsClockOrTheTaskID
+      - internal/delete/tombstone_sync_test.go#TestTombstoneSync_KeyOutsidePollWindow_LearnedAtFullListingOnly
+      - internal/delete/tombstone_sync_test.go#TestTombstoneSync_OnTimeKeyIsNotLate
+      - internal/delete/tombstone_sync_test.go#TestTombstoneSync_FailedFirstListing_SweepsAndCollectsNothing
+  notes: "A creator whose clock is more than the ten-minute poll window behind a polling pod publishes a key that pod's polls skip; the hourly full listing finds it (at most 60 polls late). lakehouse_delete_tombstones_learned_late_total, lakehouse_delete_tombstone_key_skew_seconds and the LakehouseTombstoneClockSkew alert make the delay visible."
+
+- id: lh.delete.undelete_hide_only
+  title: "Un-delete of a hide delete writes a write-once .undo key (If-None-Match); the rows are visible again on every pod within one poll interval and repeating it is safe; a permanent or auto delete (the run_task default) cannot be undone and answers 409 with nothing written"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: DELETE, path: "/delete/logsql/tombstone/{{tombstone_id}}" }
+  compare: { type: status }
+  layers: [api, chaos]
+  pending: true
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/protocol_test.go#TestUndelete_PropagatesWithinOnePoll
+      - internal/delete/protocol_test.go#TestUndelete_PermanentAndAutoAreIrreversible
+      - cmd/lakehouse-logs/public_delete_mount_test.go#TestDefaultConfig_RunTaskIsReversible
+      - lakehouse-traces/public_delete_test.go#TestDefaultConfig_RunTaskIsReversible
+      - internal/delete/protocol_test.go#TestUndo_NamesOnlyItsOwnDefinition
+      - internal/delete/protocol_test.go#TestUndo_BindsToItsDefinitionKeyNotTheID
+      - internal/delete/handler_scope_test.go#TestDeleteAPI_UndeleteOfAnUnpolledIDIsTenantScoped
+      - internal/delete/handler_scope_test.go#TestDeleteAPI_UndeleteOfAnUnpolledIrreversibleIDDoesNotLeakItsExistence
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_UndeleteByAnotherTenantThroughAnUnpolledPodIsRefused
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_UndeleteByAnotherTenantThroughAnUnpolledPodIsRefused
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+  notes: "Depends on a prior delete step in the same run: {{tombstone_id}} is the id that step's response returned. Reversibility follows the mode: only hide is undoable, because permanent and auto are meant to remove the rows physically (D1b)."
+
+- id: lh.delete.task_finished_once_registered
+  title: "An upstream delete task is finished once it is registered: active_tasks answers [] and stop_task answers ok and changes nothing, for every caller, so a task's existence leaks nowhere and a delete is never brought back by stop_task"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /delete/active_tasks }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/protocol_test.go#TestStopTask_IsANoOp_RowsStayHidden
+      - internal/delete/tasks_test.go#TestPublicTasks_AnswerTheSameToEveryCaller
+      - internal/delete/tasks_test.go#TestActiveTasksAndStopTask
+      - cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_TasksAnswerTheSameToEveryCaller
+      - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_TasksAnswerTheSameToEveryCaller
+
+- id: lh.delete.view_staleness_gate
+  title: "A pod whose view of the deletes has not completed a sync for three minutes (a failing or timing-out LIST closes the gate for every tenant) answers cold-tier and buffer-bridge reads, field and stream enumerations and trace-by-ID lookups with a 503 instead of showing rows that may be deleted, waits for its first sync before its first read, and never delays ingest, the durable buffer or flush; a select pod is not ready until its first sync"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api, chaos]
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/protocol_test.go#TestGate_FailsClosedWhenTheViewIsStale
+      - internal/delete/protocol_test.go#TestGate_ListFailure_ClosesAllTenants
+      - internal/delete/protocol_test.go#TestGate_WaitingReadsAreReleasedByTheFirstSync
+      - internal/delete/multiinstance_test.go#TestMI_SlowReaderFailsClosedThenCatchesUp
+      - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_StaleViewFailsEverySurfaceClosed
+      - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_StaleViewFailsEverySurfaceClosed
+      - cmd/lakehouse-logs/tombstones_test.go#TestTombstonesReady_OnlyASelectPodWithDeletesOnWaits
+      - lakehouse-traces/tombstones_test.go#TestTombstonesReady_OnlyASelectPodWithDeletesOnWaits
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StaleViewFailsReadsClosedAndSparesIngest
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StaleViewFailsReadsClosedAndSparesIngest
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StaleViewFailsTraceByIDClosed
+
+- id: lh.delete.view_gate_scopes
+  title: "The staleness gate is active only when delete.enabled is true (with false the tombstones already in the bucket are still enforced and nothing is refused), and an undecodable definition closes the gate only for the tenants its body names, for every tenant only when it names none, never for other tenants"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/protocol_test.go#TestGate_DeleteDisabled_EnforcesButNeverRefuses
+      - internal/delete/protocol_test.go#TestGate_UndecodableDefinition_ClosesOnlyItsTenants
+      - internal/delete/protocol_test.go#TestGate_UndecodableDefinitionNamingNoTenant_ClosesEveryTenant
+      - internal/delete/protocol_test.go#TestGate_UndecodableDefinition_ProjectZeroIsTheWholeAccount
+      - internal/delete/delete_fuzz_test.go#FuzzNamedTenants
+      - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_DeleteDisabledNeverRefuses
+      - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_UndecodableDefinitionClosesOnlyItsTenants
+      - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_DeleteDisabledNeverRefuses
+      - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_UndecodableDefinitionClosesOnlyItsTenants
+      - cmd/lakehouse-logs/tombstones_test.go#TestAttachTombstones_GateFollowsDeleteEnabled
+      - lakehouse-traces/tombstones_test.go#TestAttachTombstones_GateFollowsDeleteEnabled
+
+- id: lh.delete.gc_every_maintenance_pod
+  title: "Every pod that runs maintenance (roles all and insert) removes the keys of expired tombstones after a successful full listing, the undo first and the definition last, with no hash placement; select pods never delete, and neither sweep nor GC runs before a successful listing"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/gc_test.go#TestExpiryAt
+      - internal/delete/gc_test.go#TestGC_SteadyState
+      - internal/delete/gc_test.go#TestGC_CrashLeavesTheDefinitionAndARestartFinishes
+      - internal/delete/gc_test.go#TestGC_ShortListingNeverDeletesLiveKeys
+      - internal/delete/gc_test.go#TestGC_RunsOnFullListingsAndCollectsAnOldUndoKey
+      - internal/delete/tombstone_sync_test.go#TestTombstoneSync_FailedFirstListing_SweepsAndCollectsNothing
+
+- id: lh.flag.delete_cache_dir
+  title: "Config — delete.cache_dir (replaces delete.persist_path) is an optional local copy of the tombstone objects a pod has read; the objects never change, nothing in it is ever written back to the bucket and an entry the bucket no longer lists is HEAD-checked before it is forgotten; the poll interval is a constant one minute (no knob)"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/configuration.md
+    tests:
+      - cmd/lakehouse-logs/config_surface_test.go#TestConfigSurfaceGolden
+      - lakehouse-traces/config_surface_test.go#TestConfigSurfaceGolden
+      - internal/delete/protocol_test.go#TestCache_SavesTheReadsOfTheFirstListing
+      - internal/delete/protocol_test.go#TestRestart_FromStaleCache_DoesNotResurrectAnUndeletedTombstone
+      - internal/delete/scale_test.go#TestScale_PollRequestsAreFlatInTheNumberOfTombstones
+
+- id: lh.flag.delete_tombstone_metrics_alerts
+  title: "Metrics and alerts — lakehouse_delete_tombstone_view_age_seconds, lakehouse_delete_tombstone_sync_total and _sync_errors_total, lakehouse_delete_tombstone_unreadable, lakehouse_delete_tombstones_learned_late_total, lakehouse_delete_tombstone_key_skew_seconds, lakehouse_delete_reads_refused_total and lakehouse_delete_conditional_writes; LakehouseTombstoneViewStale fires when a view is older than three minutes, LakehouseTombstoneUnreadable when a tombstone object cannot be read and LakehouseTombstoneClockSkew when keys arrive older than the poll window"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/observability.md
+    tests:
+      - internal/metrics/assets_test.go
+
+- id: lh.delete.range_semantics_late_rows
+  title: "A delete hides the rows ingested AFTER it whose _time is inside its range, for as long as the tombstone lives (until the data is past retention); upstream deletes only the rows present when the task is processed"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: differ
+  differ_note: "Approved difference. Upstream VictoriaLogs/VictoriaTraces processes a delete task once, in the partitions that exist then, and rows that arrive later with a _time in the range are kept. Lakehouse evaluates a tombstone as a property of the data (tenants x _time range x filter), never of an object's age, because a per-row ingest time would be a Lakehouse-only field in the rows, which VictoriaLogs and VictoriaTraces do not write; so a writer that flushes rows hours late cannot bring deleted data back. Visible only for late-arriving rows."
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/parity-and-gaps.md
+    tests:
+      - internal/delete/multiinstance_test.go#TestMI_TombstoneOutlivesALateFlush
+
+- id: lh.delete.undeleted_id_not_reusable
+  title: "An id whose delete was un-deleted cannot be registered again until its keys expire with the data's retention; upstream has no un-delete and so no such rule"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: differ
+  differ_note: "Approved difference, a consequence of the write-once keys. The un-delete of a hide delete is an .undo key next to the definition; both are kept until the data is past retention (the record of a delete outlives its effect), so a late fan-out run_task with the same id meets the existing definition instead of silently re-hiding rows. Upstream deletes physically and keeps no registry of finished tasks, so a task id can be reused there."
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/parity-and-gaps.md
+    tests:
+      - internal/delete/protocol_test.go#TestUndelete_AnUndoneIdIsNotReusable
+      - internal/delete/protocol_test.go#TestUndo_NamesOnlyItsOwnDefinition
+
+- id: lh.delete.permanent_undelete_refused
+  title: "Un-deleting a permanent or auto delete (a mode only taken when asked for: delete.default_mode defaults to hide) answers 409 and writes nothing; upstream has no un-delete at all (its delete is physical and final)"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: DELETE, path: "/delete/logsql/tombstone/{{tombstone_id}}" }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/delete/protocol_test.go#TestUndelete_PermanentAndAutoAreIrreversible
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+  notes: "Lakehouse extension on its own tombstone API: reversibility follows the mode. Hide is undoable; permanent and auto are meant to remove the rows physically, so they are not."
+
+- id: lh.delete.no_empty_row_residue
+  title: "A delete never leaves a row that holds only its _time and _stream fields; upstream can (VictoriaLogs lib/logstorage rows.go, issue #825) because it removes fields in place"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: differ
+  differ_note: "Approved improvement over upstream. A Lakehouse tombstone hides a matching row as a whole at query time, so a hidden row is never returned, with or without its fields; there is no partially deleted row to return. Where upstream's delete leaves an empty residue row, a Lakehouse query returns nothing. No parity test issues deletes against hot VL/VT, so the harness needs no rule for that residue; if one is ever added it must not count the residue as a Lakehouse miss."
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/parity-and-gaps.md
+    tests:
+      - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneHidesWholeRows_NoEmptyResidue
+      - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneHidesWholeRows_NoEmptyResidue
+
+- id: lh.delete.run_task_repeat_idempotent
+  title: "The same delete task delivered twice with identical content (the vlselect fan-out to several nodes, or a retry) is a success; upstream refuses a repeated task id; a repeated id with different content is refused with upstream's message"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: differ
+  differ_note: "Consequence of sharing one tombstone prefix between pods (a third difference). Upstream's registry is node-local, so a repeated task_id is an error there. Every Lakehouse node of one deployment reads the same bucket, so the fan-out of one task to N nodes writes the same key with the same bytes; the first create wins and the others find it. Identical bytes are an idempotent success, different content under one id is upstream's 'already registered' error."
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/parity-and-gaps.md
+    tests:
+      - internal/delete/tasks_test.go#TestRunTask_IdenticalTaskIsIdempotent
+      - internal/delete/tasks_test.go#TestRunTask_EdgeCases
+      - internal/delete/tombstone_sync_test.go#TestRunTask_SameIDDifferentContent_SecondIsAlreadyRegistered
+      - internal/delete/multiinstance_test.go#TestMI_ConcurrentCreateOfOneTask_ExactlyOneObject
+
+- id: lh.delete.traces_by_id_deleted_404
+  title: "Jaeger trace-by-ID of a trace whose spans a delete hid answers 404 on every pod (VT's own no-spans answer), a trace the delete did not touch still answers 200, and the un-delete brings the trace back"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeletedTraceByIDAnswers404
+  notes: "Traces only. The logs binary has no trace-by-ID surface; its own cell is the row-count assertions of the multi-instance suite. Only half of the owner's condition (trace by-ID 404 on Lakehouse AND hot VT) is proven by this row: it is a pending Lakehouse unit-level cell, and no parity harness issues deletes against hot VT, so there is no differential cell. Sourced evidence for the other half: the stack-level proof of #624 (main vs PR vs hot VT) showed Jaeger answering 404 identically on hot, base and PR for a deleted trace. Accepted by the owner as half-proven; the parity cell against hot VT is tracked in #635."
+
+- id: lh.delete.compaction_has_no_tombstone_view
+  title: "Compaction carries every row forward unchanged and has no view of the tombstones (structural: the compactor configuration holds no tombstone field), so a compacted file keeps the pruning structures of a flushed one and the hiding is applied on read"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - internal/compaction/no_tombstone_view_test.go#TestCompactorConfig_HasNoTombstoneView
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+
+- id: lh.delete.physical_removal_not_enabled
+  title: "Delete modes permanent and auto hide the rows at query time like hide; the stored objects are not rewritten and compaction copies the rows forward (hidden by the tombstone) until physical removal ships (D1b, issue 627)"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: differ
+  differ_note: "Interim gap of this release (issue https://github.com/ReliablyObserve/victoria-lakehouse/issues/627). Upstream deletes the matching rows from its parts. Lakehouse hides them at query time on every pod, for as long as the tombstone lives (until the data is past retention); the bytes stay in the bucket, a permanent or auto delete cannot be undone (409), and the metadata-only fast paths (count, field and hits answered from the manifest) are off for the files a tombstone can match (since #624) while it lives. Physical removal (rewrites, the applied set in the footer) is the next change."
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/deletion-strategy.md
+    tests:
+      - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+      - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden

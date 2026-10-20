@@ -1,10 +1,15 @@
 package delete
 
 import (
-	"encoding/json"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest"
 )
 
 // FuzzTombstoneMatchesRow drives the tombstone predicate with arbitrary LogsQL
@@ -63,146 +68,263 @@ func FuzzTombstoneMatchesRow(f *testing.F) {
 	})
 }
 
-// FuzzRewritePartitionFromKey drives the key → partition derivation, and the
-// key a rewrite writes its replacement under, with arbitrary keys. A wrong
-// partition files a replacement where no query looks — the object exists, is
-// manifested, and is invisible; a replacement outside its source's directory
-// leaves the owning tenant's key space and is served to another tenant.
-func FuzzRewritePartitionFromKey(f *testing.F) {
-	f.Add("logs/dt=2026-01-01/hour=10/a.parquet")
-	f.Add("1002/0/logs/dt=2026-01-01/hour=10/a.parquet")
-	f.Add("1002/0/traces/dt=2026-01-01/hour=10/compacted-L2-0123abcd.parquet")
-	f.Add("acme/logs/dt=2026-01-01/hour=10/a.parquet")
-	f.Add("0/0/logs//dt=2026-01-01/hour=10/a.parquet")
-	f.Add("a.parquet")
-	f.Add("")
-	f.Add("/")
-	f.Add("=")
-	f.Add("////")
-	f.Add(strings.Repeat("dt=x/", 500))
+// FuzzTombstoneKeyCodec drives the key codec with arbitrary ids and times. A key
+// is how a pod finds a tombstone, so the codec must round-trip every id upstream
+// accepts, produce one spelling per (kind, time, id), and keep the lexical order
+// of keys equal to their time order (the poll lists "keys after T").
+func FuzzTombstoneKeyCodec(f *testing.F) {
+	f.Add("task-1", int64(1), int64(2), 0)
+	f.Add("a.json", int64(1<<62), int64(1<<62+1), 1)
+	f.Add("with/slash and space", int64(5), int64(4), 2)
+	f.Add("%41", int64(1), int64(1<<63-1), 3)
+	f.Add("\xff\xfe", int64(9), int64(10), 0)
+	f.Add("-", int64(0x1000000000000000), int64(0x0fffffffffffffff), 1)
 
+	prefix := TombstonePrefix("logs/")
+	kinds := []string{kindDefinition, kindUndo}
+	f.Fuzz(func(t *testing.T, id string, t1, t2 int64, kindIdx int) {
+		if id == "" || t1 <= 0 || t2 <= 0 || kindIdx < 0 {
+			return
+		}
+		k := tombKey{kind: kinds[kindIdx%len(kinds)], timeNs: t1, id: id}
+		if k.kind == kindUndo {
+			k.defNs = t2 // an undo names the definition key it undoes
+		}
+		key := formatKey(prefix, k)
+		if len(escapeID(id)) > maxEscapedIDLen {
+			return
+		}
+		back, ok := parseKey(prefix, key)
+		if !ok {
+			// Only an id that is not valid UTF-8 is refused by the parser.
+			if strings.ToValidUTF8(id, "") == id {
+				t.Fatalf("parseKey refused its own key %q (id %q)", key, id)
+			}
+			return
+		}
+		if back != k {
+			t.Fatalf("round trip changed the key: %+v -> %q -> %+v", k, key, back)
+		}
+		if formatKey(prefix, back) != key {
+			t.Fatalf("a key has two spellings: %q and %q", key, formatKey(prefix, back))
+		}
+		// Time order is key order for the same id and kind.
+		other := formatKey(prefix, tombKey{kind: k.kind, timeNs: t2, id: id, defNs: k.defNs})
+		if (t1 < t2) != (key < other) && t1 != t2 {
+			t.Fatalf("key order disagrees with time order: %d vs %d -> %q vs %q", t1, t2, key, other)
+		}
+		// The listing resume point precedes every key at or after its time.
+		if sa := startAfterKey(prefix, t1); sa >= key {
+			t.Fatalf("startAfter %q is not before key %q", sa, key)
+		}
+	})
+}
+
+// FuzzParseKey drives the parser with arbitrary strings: it never panics, and a
+// key it accepts is exactly the key formatKey would write.
+func FuzzParseKey(f *testing.F) {
+	prefix := TombstonePrefix("logs/")
+	f.Add(prefix + "t0000000000000001-x.json")
+	f.Add(prefix + "t0000000000000001-x.fate") // a key of an earlier design: rejected
+	f.Add(prefix + "T0000000000000001-x.json")
+	f.Add(prefix + "t0000000000000001-%2f.undo")
+	f.Add(prefix + "t0000000000000001-%2F.done") // likewise
+	f.Add(prefix + "t0000000000000000-x.json")
+	f.Add(prefix + "tFFFFFFFFFFFFFFFF-x.json")
+	f.Add(prefix + "_snap/abc.json")
+	f.Add("garbage")
 	f.Fuzz(func(t *testing.T, key string) {
-		// The replacement shares the source's directory byte for byte (tenant
-		// prefix and partition included), is a distinct .parquet object, and so
-		// derives the same partition.
-		const id = "0123abcd"
-		repl := replacementKey(key, id)
-		dir := key[:strings.LastIndex(key, "/")+1]
-		if !strings.HasPrefix(repl, dir) || strings.Contains(repl[len(dir):], "/") {
-			t.Fatalf("replacementKey(%q) = %q is not in the source directory %q", key, repl, dir)
+		k, ok := parseKey(prefix, key)
+		if !ok {
+			return
 		}
-		if repl == key || !strings.HasSuffix(repl, ".parquet") {
-			t.Fatalf("replacementKey(%q) = %q must be a distinct .parquet key", key, repl)
+		if formatKey(prefix, k) != key {
+			t.Fatalf("parseKey accepted %q but formatKey writes %q", key, formatKey(prefix, k))
 		}
-		if extractPartition(repl) != extractPartition(dir+"x.parquet") {
-			t.Fatalf("replacementKey(%q) = %q moved partitions: %q vs %q", key, repl, extractPartition(repl), extractPartition(dir+"x.parquet"))
+		if k.timeNs <= 0 || k.id == "" {
+			t.Fatalf("parseKey accepted %q with time %d id %q", key, k.timeNs, k.id)
 		}
+	})
+}
 
-		got := extractPartition(key)
+// FuzzDefinitionRoundTrip drives the definition encoding. Every pod reads the
+// definition another pod wrote, so a definition that does not survive the round
+// trip is a delete that silently stops being enforced, or two pods that disagree
+// on its bytes.
+func FuzzDefinitionRoundTrip(f *testing.F) {
+	f.Add("id-1", `severity_text:="error"`, int64(0), int64(100), "permanent", "tenant", int64(7))
+	f.Add("", "", int64(0), int64(0), "", "", int64(0))
+	f.Add("id-2", "*", int64(-1), int64(1<<62), "hide", "", int64(1<<40))
 
-		if got == "" {
-			t.Fatalf("extractPartition(%q) returned an empty partition; an entry filed under it is unreachable", key)
+	f.Fuzz(func(t *testing.T, id, query string, startNs, endNs int64, mode, by string, filterAt int64) {
+		original := Tombstone{
+			Tenants:   []TenantRef{{AccountID: 7, ProjectID: 3}, {AccountID: 1}},
+			ID:        id,
+			Query:     query,
+			StartNs:   startNs,
+			EndNs:     endNs,
+			Mode:      mode,
+			CreatedBy: by,
+			FilterAt:  filterAt,
 		}
-		// Every segment of the result must have come from the key, and must be
-		// a partition-shaped segment.
-		if got != "unknown" {
-			for _, seg := range strings.Split(got, "/") {
-				if !strings.Contains(seg, "=") {
-					t.Fatalf("extractPartition(%q) = %q contains a non-partition segment %q", key, got, seg)
+		// A record the API would refuse cannot be expected to round-trip: it is
+		// refused precisely because the encoding cannot carry it faithfully.
+		if err := original.Validate(); err != nil {
+			return
+		}
+		data, err := encodeDefinition(original)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		back, err := decodeDefinition(data)
+		if err != nil {
+			t.Fatalf("decode %s: %v", data, err)
+		}
+		again, err := encodeDefinition(back)
+		if err != nil {
+			t.Fatalf("encode again: %v", err)
+		}
+		if !bytes.Equal(data, again) {
+			t.Fatalf("the encoding is not canonical:\n%s\n%s", data, again)
+		}
+		if back.ID != original.ID || back.Query != original.Query ||
+			back.StartNs != original.StartNs || back.EndNs != original.EndNs ||
+			back.Mode != original.Mode || back.CreatedBy != original.CreatedBy ||
+			back.FilterAt != original.FilterAt || len(back.Tenants) != 2 {
+			t.Fatalf("round trip changed the record:\n got %+v\nwant %+v", back, original)
+		}
+	})
+}
+
+// FuzzNamedTenants drives the lenient parse that scopes an unreadable
+// definition's gate closure: it never panics, what it returns is normalised and
+// non-empty, and for a body that decodes it names exactly the definition's
+// tenants (a readable delete and its lenient parse never disagree).
+func FuzzNamedTenants(f *testing.F) {
+	f.Add([]byte(`{"v":1,"id":"a","tenants":[{"a":1,"p":0}],"filter":"*","filter_at":0,"start_ns":0,"end_ns":5,"mode":"hide"}`))
+	f.Add([]byte(`{"v":99,"tenants":[{"a":7,"p":1},{"a":3,"p":0}]}`))
+	f.Add([]byte(`{"tenants":[{"a":-1}]}`))
+	f.Add([]byte(`null`))
+	f.Add([]byte(``))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		got, ok := namedTenants(data)
+		if ok && len(got) == 0 {
+			t.Fatal("namedTenants reported success with no tenant")
+		}
+		if again := NormalizeTenants(got); len(again) != len(got) {
+			t.Fatalf("namedTenants returned a list that is not normalised: %v", got)
+		}
+		ts, err := decodeDefinition(data)
+		if err != nil {
+			return
+		}
+		if !ok || len(got) != len(ts.Tenants) {
+			t.Fatalf("a readable definition names %v but namedTenants says %v (ok=%v)", ts.Tenants, got, ok)
+		}
+		for i := range got {
+			if got[i] != ts.Tenants[i] {
+				t.Fatalf("tenant %d differs: %v vs %v", i, got[i], ts.Tenants[i])
+			}
+		}
+	})
+}
+
+// FuzzTombstoneSync drives the view's state machine with a random sequence of
+// creates, un-deletes, polls, full listings, short and failing listings and clock
+// moves over two pods and one bucket. Whatever the order:
+//
+//   - no pod ever issues a DELETE (only the retention GC may, and it is off);
+//   - a pod's view never holds a tombstone nobody created;
+//   - once a healthy full listing has run, the view is exactly the model: the
+//     created tombstones minus the hide-mode ones that were undone (a permanent
+//     or auto delete is never undone).
+func FuzzTombstoneSync(f *testing.F) {
+	f.Add([]byte{0, 3, 1, 3, 4, 3, 6, 2})
+	f.Add([]byte{0x10, 0x11, 0x01, 5, 3, 7, 2, 3})
+	f.Add([]byte{0, 0x20, 0x21, 0x22, 4, 2, 5, 3, 1, 3})
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, ops []byte) {
+		if len(ops) > 64 {
+			ops = ops[:64]
+		}
+		b := deletetest.NewBucket()
+		writer, _ := newSyncedPod(t, b, "writer")
+		reader, rpod := newSyncedPod(t, b, "reader")
+		created := map[string]string{} // id -> mode
+		undone := map[string]bool{}
+		var ids []string
+		modes := []string{"hide", "permanent", "auto"}
+		for _, op := range ops {
+			switch op & 7 {
+			case 0: // create; the mode and the id come from the high bits
+				id := fmt.Sprintf("d%d", len(ids))
+				mode := modes[int(op>>3)%len(modes)]
+				ts := hideTombstone(id)
+				ts.Mode = mode
+				if _, err := writer.Create(context.Background(), ts); err != nil {
+					t.Fatalf("create %s: %v", id, err)
 				}
-				if !strings.Contains(key, seg) {
-					t.Fatalf("extractPartition(%q) = %q invented the segment %q", key, got, seg)
+				created[id] = mode
+				ids = append(ids, id)
+			case 1: // undelete one of the created
+				if len(ids) == 0 {
+					continue
+				}
+				id := ids[int(op>>3)%len(ids)]
+				err := writer.Undelete(context.Background(), id)
+				switch {
+				case created[id] == "hide" && err != nil:
+					t.Fatalf("undo of a hide delete %s: %v", id, err)
+				case created[id] != "hide" && !errors.Is(err, ErrNotReversible):
+					t.Fatalf("undo of a %s delete %s = %v, want ErrNotReversible", created[id], id, err)
+				case created[id] == "hide":
+					undone[id] = true
+				}
+			case 2:
+				_ = reader.SyncNow(context.Background(), false)
+			case 3:
+				_ = reader.SyncNow(context.Background(), true)
+			case 4:
+				rpod.ShortListOnce(1 + int(op>>3)%3)
+			case 5:
+				rpod.FailNext("list", 1)
+			case 6:
+				b.Advance(time.Minute)
+			case 7:
+				b.Advance(20 * time.Minute)
+			}
+			for _, e := range reader.Active() {
+				if _, ok := created[e.ID]; !ok {
+					t.Fatalf("the view holds %s, which nobody created", e.ID)
 				}
 			}
 		}
-		// Deterministic: the rewriter and the orphan sweep must derive the same
-		// partition from the same key.
-		if again := extractPartition(key); again != got {
-			t.Fatalf("extractPartition(%q) is not deterministic: %q then %q", key, got, again)
+		// A healthy full listing settles the view.
+		rpod.ShortListOnce(0)
+		rpod.FailNext("list", 0)
+		if err := reader.SyncNow(context.Background(), true); err != nil {
+			t.Fatalf("final sync: %v", err)
+		}
+		for _, id := range ids {
+			want := !undone[id]
+			if got := has(reader, id); got != want {
+				t.Fatalf("after a full listing %s in force = %v, want %v (mode %s)", id, got, want, created[id])
+			}
+		}
+		for _, op := range b.Log() {
+			if op.Kind == "DELETE" {
+				t.Fatalf("%s deleted %s", op.Pod, op.Key)
+			}
 		}
 	})
 }
 
-// FuzzTombstoneRoundTrip drives the durable encoding. Tombstones are restored
-// from JSON written by another process (or another node), so a record that does
-// not survive the round trip is a delete that silently stops being enforced.
-func FuzzTombstoneRoundTrip(f *testing.F) {
-	f.Add("id-1", `severity_text:="error"`, int64(0), int64(100), "permanent", "k1", true)
-	f.Add("", "", int64(0), int64(0), "", "", false)
-	f.Add("id-2", "*", int64(-1), int64(1<<62), "hide", "logs/dt=2026-01-01/hour=00/a.parquet", true)
-
-	f.Fuzz(func(t *testing.T, id, query string, startNs, endNs int64, mode, key string, reaped bool) {
-		// The rewrite record and the clean marks ride the same encoding; derive
-		// them from the inputs so the corpus format stays unchanged.
-		states := []string{SupersessionPrepared, SupersessionPublished, SupersessionDiscarded}
-		replacement := key + ".replacement"
-		original := Tombstone{
-			Tenants:      []TenantRef{{}},
-			ID:           id,
-			Query:        query,
-			StartNs:      startNs,
-			EndNs:        endNs,
-			AffectedKeys: []string{key},
-			CreatedAt:    time.Unix(0, 0).UTC(),
-			Mode:         mode,
-			Reaped:       map[string]bool{key: reaped},
-			Clean:        map[string]bool{replacement: !reaped},
-			Superseded: map[string]Supersession{
-				key: {NewKey: replacement, State: states[len(key)%len(states)], At: time.Unix(0, startNs).UTC()},
-			},
-		}
-
-		// A record the API would refuse cannot be expected to round-trip: it is
-		// refused precisely because the durable encoding cannot carry it
-		// faithfully (invalid UTF-8) or because it can never match a row.
-		candidate := original
-		if err := candidate.Validate(); err != nil {
-			return
-		}
-
-		data, err := json.Marshal(original)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		var back Tombstone
-		if err := json.Unmarshal(data, &back); err != nil {
-			t.Fatalf("unmarshal %s: %v", data, err)
-		}
-
-		if back.ID != original.ID || back.Query != original.Query ||
-			back.StartNs != original.StartNs || back.EndNs != original.EndNs ||
-			back.Mode != original.Mode {
-			t.Fatalf("round trip changed the record:\n got %+v\nwant %+v", back, original)
-		}
-		if len(back.AffectedKeys) != 1 || back.AffectedKeys[0] != key {
-			t.Fatalf("round trip lost the affected keys: %v", back.AffectedKeys)
-		}
-		// Rewrite progress is the field that must never be walked back: losing
-		// a reaped mark makes the scheduler retry a key whose object is gone.
-		if back.Reaped[key] != reaped {
-			t.Fatalf("round trip changed the reaped mark for %q: %v -> %v", key, reaped, back.Reaped[key])
-		}
-		if back.FullyReaped() != original.FullyReaped() {
-			t.Fatalf("round trip changed FullyReaped: %v -> %v", original.FullyReaped(), back.FullyReaped())
-		}
-		// The rewrite record is what a restart resolves an interrupted rewrite
-		// from; a record that does not survive the encoding un-does a finished
-		// rewrite or orphans a replacement.
-		if got, want := back.Superseded[key], original.Superseded[key]; got.NewKey != want.NewKey || got.State != want.State || !got.At.Equal(want.At) {
-			t.Fatalf("round trip changed the rewrite record: %+v -> %+v", want, got)
-		}
-		if back.Clean[replacement] != original.Clean[replacement] {
-			t.Fatalf("round trip changed the clean mark for %q", replacement)
-		}
-	})
-}
-
-// FuzzNormalizeTombstonePrefix drives the S3 key prefix construction. The key
-// layout is part of the durable contract — the writer, the startup restore, the
-// orphan sweep's protected-substring match and anyone reading the documented
-// "{prefix}_tombstones/" layout must all derive the same string — so every
-// caller spelling (with or without trailing slashes) has to normalise to it.
-func FuzzNormalizeTombstonePrefix(f *testing.F) {
+// FuzzTombstonePrefix drives the S3 key prefix construction. The key layout is
+// part of the durable contract — every pod, the orphan sweep's protected-substring
+// match and anyone reading the documented "{prefix}_tombstones/" layout must
+// derive the same string — so every caller spelling (with or without trailing
+// slashes) has to normalise to it.
+func FuzzTombstonePrefix(f *testing.F) {
 	f.Add("")
 	f.Add("/")
 	f.Add("logs/")
@@ -212,24 +334,16 @@ func FuzzNormalizeTombstonePrefix(f *testing.F) {
 	f.Add(strings.Repeat("/", 100))
 
 	f.Fuzz(func(t *testing.T, prefix string) {
-		got := normalizeTombstonePrefix(prefix)
-
+		got := TombstonePrefix(prefix)
 		if !strings.HasSuffix(got, tombstonePrefixSegment) {
-			t.Fatalf("normalizeTombstonePrefix(%q) = %q does not end in %q; the orphan sweep's protected-substring check would miss it",
+			t.Fatalf("TombstonePrefix(%q) = %q does not end in %q; the orphan sweep's protected-substring check would miss it",
 				prefix, got, tombstonePrefixSegment)
 		}
-		// The segment must appear exactly once, and never doubled up against a
-		// stray slash.
 		if strings.Contains(got, "//") && !strings.Contains(strings.TrimSuffix(prefix, "/"), "//") {
-			t.Fatalf("normalizeTombstonePrefix(%q) = %q introduced a doubled slash", prefix, got)
+			t.Fatalf("TombstonePrefix(%q) = %q introduced a doubled slash", prefix, got)
 		}
-		// Idempotent under the trailing-slash variants a caller might pass.
-		if withSlash := normalizeTombstonePrefix(strings.TrimSuffix(prefix, "/") + "/"); withSlash != got {
-			t.Fatalf("normalizeTombstonePrefix disagrees on the trailing slash: %q vs %q", got, withSlash)
-		}
-		// The exported spelling the docs and the sweep use must match.
-		if TombstonePrefix(prefix) != got {
-			t.Fatalf("TombstonePrefix(%q) = %q but normalizeTombstonePrefix = %q", prefix, TombstonePrefix(prefix), got)
+		if withSlash := TombstonePrefix(strings.TrimSuffix(prefix, "/") + "/"); withSlash != got {
+			t.Fatalf("TombstonePrefix disagrees on the trailing slash: %q vs %q", got, withSlash)
 		}
 	})
 }

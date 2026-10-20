@@ -5,12 +5,10 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -156,92 +154,6 @@ func TestCompaction_TraceIDHexIsANDOfInputs(t *testing.T) {
 				}
 				if fi.TraceIDHex != tc.want {
 					t.Errorf("manifest TraceIDHex=%v, want %v", fi.TraceIDHex, tc.want)
-				}
-			})
-		}
-	}
-}
-
-// TestCompaction_TraceIDHexWithTombstones: compaction that drops tombstoned
-// rows still ANDs the inputs. Dropping the only non-hex row of an unattested
-// input does not make the output attested: that input never attested.
-func TestCompaction_TraceIDHexWithTombstones(t *testing.T) {
-	pool := newMockPool()
-	m := manifest.New("test-bucket", "")
-	partition := "dt=2026-07-01/hour=03"
-	a := []schema.LogRow{{TimestampUnixNano: 1000, Body: "keep", ServiceName: "web", TraceID: hexA}}
-	b := []schema.LogRow{
-		{TimestampUnixNano: 2000, Body: "keep", ServiceName: "web", TraceID: hexB},
-		{TimestampUnixNano: 2100, Body: "drop", ServiceName: "gone", TraceID: "abc-def-ghi"},
-	}
-	var files []manifest.FileInfo
-	var keys []string
-	for i, rows := range [][]schema.LogRow{a, b} {
-		key := fmt.Sprintf("%s/src-%d.parquet", partition, i)
-		att := attestNo // what the flush writer records for these rows
-		if schema.LogRowsTraceIDHex(rows) {
-			att = attestYes
-		}
-		data := writeAttestedLogs(t, rows, att)
-		pool.put(key, data)
-		fi := manifest.FileInfo{Key: key, Size: int64(len(data)), RowCount: int64(len(rows)), MinTimeNs: rows[0].TimestampUnixNano, MaxTimeNs: rows[len(rows)-1].TimestampUnixNano}
-		m.AddFile(partition, fi)
-		files = append(files, fi)
-		keys = append(keys, key)
-	}
-	markListed(t, m, keys)
-	store := delete.NewTombstoneStore()
-	store.Add(delete.Tombstone{
-		Tenants: []delete.TenantRef{{}}, ID: "ts", Query: `service.name:="gone"`, StartNs: 0, EndNs: 1 << 40,
-		AffectedKeys: keys, CreatedAt: time.Now().Add(-time.Hour), Mode: "permanent", Reaped: map[string]bool{},
-	})
-	c := NewCompactor(CompactorConfig{Pool: pool, Manifest: m, Mode: config.ModeLogs, RowGroupSize: 100, Tombstones: store})
-	res, err := c.Compact(context.Background(), partition, files, 0)
-	if err != nil {
-		t.Fatalf("Compact: %v", err)
-	}
-	if res.RowsMerged != 2 {
-		t.Fatalf("merged %d rows, want 2", res.RowsMerged)
-	}
-	if kv := outputKV(t, pool.get(res.OutputFile)); kv != "0" {
-		t.Errorf("output attests %q although one input never attested", kv)
-	}
-}
-
-// TestDeleteRewrite_ProductionWritersAttestKeptRows: the delete rewriter wired
-// with the compactor's writers (production) records lh.trace_id_hex for the
-// kept rows, both signals.
-func TestDeleteRewrite_ProductionWritersAttestKeptRows(t *testing.T) {
-	for _, mode := range []string{"logs", "traces"} {
-		for _, tc := range []struct {
-			drop string
-			want bool
-		}{{"nonhex", true}, {"hex", false}} {
-			t.Run(mode+"/drop_"+tc.drop, func(t *testing.T) {
-				pool := newMockPool()
-				key := mode + "/dt=2026-07-01/hour=03/src.parquet"
-				var data []byte
-				if mode == "logs" {
-					data = writeAttestedLogs(t, []schema.LogRow{
-						{TimestampUnixNano: 1000, Body: "a", ServiceName: "hex", TraceID: hexA},
-						{TimestampUnixNano: 2000, Body: "b", ServiceName: "nonhex", TraceID: "abc-def-ghi"},
-					}, attestNo)
-				} else {
-					data = writeAttestedTraces(t, []schema.TraceRow{
-						{TimestampUnixNano: 1000, SpanID: "1", ServiceName: "hex", TraceID: hexA},
-						{TimestampUnixNano: 2000, SpanID: "2", ServiceName: "nonhex", TraceID: "abc-def-ghi"},
-					}, attestNo)
-				}
-				pool.put(key, data)
-				rw := delete.NewRewriter(pool, mode+"/", 100, mode, delete.WithParquetWriters(delete.ParquetWriters{Logs: WriteLogs, Traces: WriteTraces, CompressionLevel: 1}))
-				res, err := rw.RewriteFile(context.Background(), key, []delete.Tombstone{
-					{Tenants: []delete.TenantRef{{}}, ID: "t", Query: `service.name:="` + tc.drop + `"`, StartNs: 0, EndNs: 10000},
-				})
-				if err != nil {
-					t.Fatalf("RewriteFile: %v", err)
-				}
-				if kv := outputKV(t, pool.get(res.NewKey)); (kv == "1") != tc.want || res.TraceIDHex != tc.want {
-					t.Errorf("replacement footer=%q result=%v, want attested=%v", kv, res.TraceIDHex, tc.want)
 				}
 			})
 		}

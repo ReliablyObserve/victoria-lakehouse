@@ -130,15 +130,13 @@ func writerFuncs(t *testing.T, dir, base string, recursive bool) (map[string][]s
 // notGated lists the functions of the main package that hold a maintenance call
 // without a role check, with the reason.
 var notGated = map[string]string{
-	"Upload":       "adapter method (s3PoolAdapter.Upload): called by the tombstone persistence on a delete request, and by the gated jobs",
-	"Delete":       "adapter method (s3PoolAdapter.Delete): called by the tombstone persistence on a delete request, and by the gated jobs",
 	"DeleteObject": "adapter method (poolDeleter.DeleteObject): handed to the retention manager, which startRetention gates",
 }
 
 func TestMaintenanceInventory_EveryS3WriterIsGated(t *testing.T) {
 	funcs, bodies := writerFuncs(t, ".", ".", false)
 	if len(funcs) < 6 {
-		t.Fatalf("the inventory found %d functions with maintenance calls, want at least 6 (setupCompaction, startDeleteRewrite, runShutdown, startStatsLoops, saveStatsAggregate, cleanupLegacyPmeta): the scan is broken", len(funcs))
+		t.Fatalf("the inventory found %d functions with maintenance calls, want at least 6 (setupCompaction, startRetention, runShutdown, startStatsLoops, saveStatsAggregate, cleanupLegacyPmeta): the scan is broken", len(funcs))
 	}
 	for key, hits := range funcs {
 		fn := key[strings.Index(key, ":")+1:]

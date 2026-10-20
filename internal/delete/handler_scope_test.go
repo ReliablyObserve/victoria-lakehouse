@@ -1,6 +1,8 @@
 package delete
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest"
 	lhmanifest "github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 )
@@ -25,20 +28,18 @@ const (
 	globalHeader   = "X-Lakehouse-Global-Read"
 )
 
-// scopedManifest is the manifest as the binaries hand it to the handler:
-// ranges, leftovers, and the manifest's own key → tenant parser.
-type scopedManifest struct{ leftoverManifest }
-
-func (s *scopedManifest) TenantKeyParser() func(string) (string, string, bool) {
-	return s.m.TenantKeyParser()
-}
-
 func newScopeHandler(t *testing.T) (*Handler, *lhmanifest.Manifest, *TombstoneStore, http.Handler) {
 	t.Helper()
+	return newScopeHandlerOn(t, deletetest.NewBucket(), "pod")
+}
+
+// newScopeHandlerOn is newScopeHandler for one pod of a shared bucket.
+func newScopeHandlerOn(t *testing.T, b *deletetest.Bucket, pod string) (*Handler, *lhmanifest.Manifest, *TombstoneStore, http.Handler) {
+	t.Helper()
 	m := newTestManifest(t, map[string]int64{scopeKey1001: 10, scopeKey2002: 10, scopeKeyLegacy: 10})
-	store := NewTombstoneStore()
+	store, _ := newSyncedPod(t, b, pod)
 	auth := tenant.NewGlobalReadAuth(globalHeader, "letmein", "")
-	h := NewHandler(store, &scopedManifest{leftoverManifest{m: m}}, NewStorageClassDetector(nil), defaultCfg(), "logs",
+	h := NewHandler(store, &scopedManifest{m: m}, NewStorageClassDetector(nil), defaultCfg(), "logs",
 		WithGlobalReadAuthorizer(func(r *http.Request) bool { return auth.Enabled() && auth.Authorize(r) }))
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -97,8 +98,8 @@ func TestDeleteAPI_CreateIsScopedToTheCallersTenant(t *testing.T) {
 		t.Fatalf("create response = %v, want tenant 1001:0 over its 1 object", body)
 	}
 	ts, ok := store.Get(body["tombstone_id"].(string))
-	if !ok || !ts.ScopedExactlyTo(1001, 0) || len(ts.AffectedKeys) != 1 || ts.AffectedKeys[0] != scopeKey1001 {
-		t.Fatalf("tombstone = %+v, want scoped to 1001:0 over %s only", ts, scopeKey1001)
+	if !ok || !ts.ScopedExactlyTo(1001, 0) {
+		t.Fatalf("tombstone = %+v, want scoped to 1001:0", ts)
 	}
 
 	// X-Scope-OrgID resolves through the alias, exactly as for a select.
@@ -110,8 +111,8 @@ func TestDeleteAPI_CreateIsScopedToTheCallersTenant(t *testing.T) {
 	// No headers: the default tenant, whose objects include the legacy ones.
 	rec = scopeReq{method: http.MethodPost, path: "/delete/logsql/delete", form: deleteForm("*")}.do(srv)
 	body = decodeJSON(t, rec.Body)
-	if ts, _ := store.Get(body["tombstone_id"].(string)); !ts.ScopedExactlyTo(0, 0) || len(ts.AffectedKeys) != 1 || ts.AffectedKeys[0] != scopeKeyLegacy {
-		t.Fatalf("default-tenant tombstone = %+v, want 0:0 over the legacy object", ts)
+	if ts, _ := store.Get(body["tombstone_id"].(string)); !ts.ScopedExactlyTo(0, 0) || body["affected_files"] != float64(1) {
+		t.Fatalf("default-tenant tombstone = %+v (%v), want 0:0 over the legacy object", ts, body)
 	}
 	// The operator's delete is still scoped: to the tenant in its headers.
 	h := map[string]string{globalHeader: "letmein", "AccountID": "2002"}
@@ -127,10 +128,10 @@ func TestDeleteAPI_CreateIsScopedToTheCallersTenant(t *testing.T) {
 
 func TestDeleteAPI_ListGetUndeleteVerifyAreTenantScoped(t *testing.T) {
 	_, _, store, srv := newScopeHandler(t)
-	store.Add(Tombstone{ID: "own-1001", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
-	store.Add(Tombstone{ID: "own-2002", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 2002}}})
-	store.Add(Tombstone{ID: "two-tenants", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}, {AccountID: 2002}}})
-	store.Add(Tombstone{ID: "other-3003", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 3003}}})
+	mustCreate(t, store, Tombstone{ID: "own-1001", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
+	mustCreate(t, store, Tombstone{ID: "own-2002", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 2002}}})
+	mustCreate(t, store, Tombstone{ID: "two-tenants", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}, {AccountID: 2002}}})
+	mustCreate(t, store, Tombstone{ID: "other-3003", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 3003}}})
 
 	list := func(headers map[string]string) map[string]any {
 		t.Helper()
@@ -212,40 +213,15 @@ func TestDeleteAPI_EstimateCoversOnlyTheCallersObjects(t *testing.T) {
 	}
 }
 
-func TestDeleteAPI_LeftoversTenantView(t *testing.T) {
-	_, m, store, srv := newScopeHandler(t)
-	m.Retire(scopeKey1001, "", false)
-	m.Retire(scopeKey2002, "", false)
-	claimed := "2002/0/logs/dt=2026-03-01/hour=07/claimed.parquet"
-	if !m.ClaimPending(claimed) {
-		t.Fatal("fixture: claim rejected")
-	}
-	store.Add(Tombstone{ID: "own-1001", Query: "*", EndNs: 10, Mode: "permanent", Tenants: []TenantRef{{AccountID: 1001}},
-		Superseded: map[string]Supersession{scopeKey1001: {State: SupersessionPublished, At: time.Now()}}})
-	store.Add(Tombstone{ID: "own-2002", Query: "*", EndNs: 10, Mode: "permanent", Tenants: []TenantRef{{AccountID: 2002}},
-		Superseded: map[string]Supersession{scopeKey2002: {State: SupersessionPublished, At: time.Now()}}})
-
-	get := func(headers map[string]string) map[string]any {
-		rec := scopeReq{method: http.MethodGet, path: "/delete/logsql/leftovers", headers: headers}.do(srv)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("leftovers: %d %s", rec.Code, rec.Body.String())
+// The leftovers API (retired and pending keys, unfinished rewrites) is gone with
+// the rewrite it reported on: nothing is owed any more, so for a tenant and for
+// the operator the route answers like any unknown route.
+func TestDeleteAPI_LeftoversRouteIsGone(t *testing.T) {
+	_, _, _, srv := newScopeHandler(t)
+	for _, headers := range []map[string]string{as1001, asGlobal} {
+		if rec := (scopeReq{method: http.MethodGet, path: "/delete/logsql/leftovers", headers: headers}).do(srv); rec.Code != http.StatusNotFound {
+			t.Errorf("the leftovers route answers %d for %v, want 404 (it is gone)", rec.Code, headers)
 		}
-		return decodeJSON(t, rec.Body)
-	}
-	b := get(as1001)
-	counts := b["counts"].(map[string]any)
-	if b["scope"] != "tenant" || counts["retired"] != float64(1) || counts["pending"] != float64(0) || counts["unfinished_rewrites"] != float64(1) {
-		t.Errorf("1001:0 leftovers = scope %v counts %v, want its own retired key and rewrite only", b["scope"], counts)
-	}
-	for _, rk := range b["retired_keys"].([]any) {
-		if k := rk.(map[string]any)["key"]; k != scopeKey1001 {
-			t.Errorf("1001:0 sees another tenant's retired key %v", k)
-		}
-	}
-	b = get(asGlobal)
-	counts = b["counts"].(map[string]any)
-	if b["scope"] != "instance" || counts["retired"] != float64(2) || counts["pending"] != float64(1) || counts["unfinished_rewrites"] != float64(2) {
-		t.Errorf("operator leftovers = scope %v counts %v, want the whole instance", b["scope"], counts)
 	}
 }
 
@@ -257,7 +233,7 @@ func TestDeleteAPI_UnparseableTenantIsRefused(t *testing.T) {
 			t.Errorf("%s with a bad AccountID = %d %q, want 400", path, rec.Code, rec.Body.String())
 		}
 	}
-	for _, path := range []string{"/delete/logsql/tombstones", "/delete/logsql/leftovers", "/delete/logsql/tombstone/x"} {
+	for _, path := range []string{"/delete/logsql/tombstones", "/delete/logsql/tombstone/x"} {
 		rec := scopeReq{method: http.MethodGet, path: path, headers: map[string]string{"ProjectID": "-1"}}.do(srv)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("GET %s with a bad ProjectID = %d, want 400", path, rec.Code)
@@ -270,8 +246,8 @@ func TestDeleteAPI_UnparseableTenantIsRefused(t *testing.T) {
 
 // Without a configured global-read credential no request is the operator.
 func TestDeleteAPI_NoCredentialConfiguredMeansNoOperator(t *testing.T) {
-	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "other-3003", Query: "*", EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 3003}}})
+	store := newTestStore(t)
+	mustCreate(t, store, Tombstone{ID: "other-3003", Query: "*", EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 3003}}})
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "logs")
 	rec := scopeReq{method: http.MethodGet, path: "/delete/logsql/tombstones", headers: asGlobal}.do(http.HandlerFunc(h.handleListTombstones))
 	if body := decodeJSON(t, rec.Body); body["count"] != float64(0) || body["scope"] != "tenant" {
@@ -280,3 +256,92 @@ func TestDeleteAPI_NoCredentialConfiguredMeansNoOperator(t *testing.T) {
 }
 
 func (s *scopedManifest) AccountOnlyTenantKeys() bool { return s.m.AccountOnlyTenantKeys() }
+
+// A pod that has not polled yet does not know a tombstone another pod created.
+// The un-delete of an id the pod does not know syncs first and then applies the
+// same tenant check as for a known id: another tenant gets 404 and nothing is
+// written, so the delete stays in force everywhere; the owner and the operator
+// can still undo it.
+func TestDeleteAPI_UndeleteOfAnUnpolledIDIsTenantScoped(t *testing.T) {
+	b := deletetest.NewBucket()
+	_, _, storeA, _ := newScopeHandlerOn(t, b, "a")
+	// Pods that synced before the delete exists.
+	_, _, storeB, srvB := newScopeHandlerOn(t, b, "b")
+	_, _, _, srvOwner := newScopeHandlerOn(t, b, "owner")
+	_, _, _, srvOperator := newScopeHandlerOn(t, b, "operator")
+	mustCreate(t, storeA, Tombstone{ID: "own-1001", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
+	if _, ok := storeB.Get("own-1001"); ok {
+		t.Fatal("fixture: pod b already knows the tombstone")
+	}
+	before := len(b.Keys(tombPrefix()))
+
+	rec := scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/own-1001", headers: as2002}.do(srvB)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("tenant 2002 un-deleting tenant 1001's tombstone through a pod that has not polled it: %d %s, want 404", rec.Code, rec.Body.String())
+	}
+	if n := len(b.Keys(tombPrefix())); n != before {
+		t.Fatalf("%d keys after the refused un-delete, want %d: no undo key may be written", n, before)
+	}
+	mustSync(t, storeA, false)
+	if _, ok := storeA.Get("own-1001"); !ok {
+		t.Fatal("tenant 1001's delete is no longer in force on pod a")
+	}
+
+	if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/own-1001", headers: as1001}).do(srvOwner); rec.Code != http.StatusOK {
+		t.Fatalf("the owner's un-delete through an unpolled pod: %d %s", rec.Code, rec.Body.String())
+	}
+	mustCreate(t, storeA, Tombstone{ID: "own-1001-b", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
+	if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/own-1001-b", headers: asGlobal}).do(srvOperator); rec.Code != http.StatusOK {
+		t.Fatalf("the operator's un-delete through an unpolled pod: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// The same through an unpolled pod for a permanent or auto delete: another tenant
+// still gets 404, not the 409 that would tell it the id exists; the owner gets 409.
+func TestDeleteAPI_UndeleteOfAnUnpolledIrreversibleIDDoesNotLeakItsExistence(t *testing.T) {
+	for _, mode := range []string{"auto", "permanent"} {
+		b := deletetest.NewBucket()
+		_, _, storeA, _ := newScopeHandlerOn(t, b, "a")
+		_, _, _, srvB := newScopeHandlerOn(t, b, "b")
+		mustCreate(t, storeA, Tombstone{ID: "irreversible", Query: "level:error", StartNs: 0, EndNs: 10, Mode: mode, Tenants: []TenantRef{{AccountID: 1001}}})
+		if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/irreversible", headers: as2002}).do(srvB); rec.Code != http.StatusNotFound {
+			t.Errorf("mode %s: another tenant's un-delete through an unpolled pod = %d %s, want 404 (a 409 would reveal the id)", mode, rec.Code, rec.Body.String())
+		}
+		if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/irreversible", headers: as1001}).do(srvB); rec.Code != http.StatusConflict {
+			t.Errorf("mode %s: the owner's un-delete = %d %s, want 409", mode, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// An id the pod does not know and cannot look up (its poll fails) is a gateway
+// error, not "not found": the delete may well exist.
+func TestDeleteAPI_UndeleteWhenTheLookupFailsIs502(t *testing.T) {
+	b := deletetest.NewBucket()
+	_, _, _, srv := newScopeHandlerOn(t, b, "b")
+	// A pod whose listings fail.
+	pod := b.Pod("failing")
+	store := NewTombstoneStore()
+	if err := store.Attach(Options{Backend: pod, Prefix: testPrefix, Interval: time.Minute, Now: pod.Now}); err != nil {
+		t.Fatal(err)
+	}
+	mustSync(t, store, true)
+	pod.FailNext("list", 1)
+	err := store.Undelete(context.Background(), "unknown")
+	if err == nil || errors.Is(err, ErrTombstoneNotFound) {
+		t.Fatalf("Undelete of an unknown id whose lookup failed = %v, want the lookup error", err)
+	}
+	_ = srv
+	// And through the API: 502.
+	m := newTestManifest(t, map[string]int64{scopeKey1001: 10})
+	h := NewHandler(store, &scopedManifest{m: m}, NewStorageClassDetector(nil), defaultCfg(), "logs")
+	mux := http.NewServeMux()
+	h.Register(mux)
+	pod.FailNext("list", 1)
+	if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/unknown"}).do(mux); rec.Code != http.StatusBadGateway {
+		t.Fatalf("un-delete with a failing lookup = %d %s, want 502", rec.Code, rec.Body.String())
+	}
+	// A lookup that works and finds nothing is a plain 404.
+	if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/unknown"}).do(mux); rec.Code != http.StatusNotFound {
+		t.Fatalf("un-delete of an id that does not exist = %d, want 404", rec.Code)
+	}
+}

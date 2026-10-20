@@ -1,40 +1,218 @@
 # Deletion features: the cost-aware three-tier delete path and its APIs.
 
-- id: lh.feature.deletion.three_tier_strategy
-  title: Three-tier deletion strategy
+- id: lh.feature.deletion.write_once_tombstones
+  title: Write-once tombstones, read from the bucket by every pod
   status: shipped
-  since: v0.18.2
   area: deletion
   readme_section: Deletion
-  surfaces: [api, storage]
-  rows: [lh.delete.rewrite_keeps_kept_rows]
+  surfaces: [api, storage, flag]
+  rows:
+    - lh.delete.tombstone_visible_all_pods_bound
+    - lh.delete.view_staleness_gate
+    - lh.delete.view_gate_scopes
+    - lh.delete.tombstone_write_once
+    - lh.delete.pod_clocks_only
+    - lh.delete.gc_every_maintenance_pod
+    - lh.flag.delete_cache_dir
+    - lh.flag.delete_tombstone_metrics_alerts
+    - lh.delete.range_semantics_late_rows
+    - lh.delete.undeleted_id_not_reusable
+    - lh.delete.no_empty_row_residue
+    - lh.delete.run_task_repeat_idempotent
+    - lh.delete.compaction_has_no_tombstone_view
+    - lh.delete.traces_by_id_deleted_404
+    - lh.delete.kept_rows_stay
   tests:
-    - internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite
-    - internal/delete/rewriter_test.go#TestRewriteFile_MatchingRowsRemoved
-    - internal/delete/storageclass_test.go#TestDetector
-    - internal/delete/rewrite_manifest_test.go#TestRewrite_PublishesReplacementIntoManifest
-    - internal/delete/rewrite_crash_refresh_test.go#TestRewriteCrashMatrix_WithManifestRefresh
-    - internal/delete/rewrite_crash_refresh_test.go#TestRewriteRefreshAtEveryStep
-    - internal/delete/rewrite_refresh_test.go#TestRewriteRefresh_SupersededObjectWhoseDeleteFailedIsNotReadopted
-    - internal/delete/intents_test.go#TestResumeRewrites_RetriesUntilTheDeleteLands
-    - internal/delete/rewrite_tenant_key_test.go#TestRewrite_TenantFileStaysWithItsTenantInTheManifest
-    - internal/compaction/delete_race_test.go#TestDeleteRace_CompactionPublishesWhileTheRewriteIsInFlight
-    - internal/compaction/delete_clean_marking_test.go#TestDeleteRace_EligibilityBoundaryCrossedDuringTheMerge
-    - internal/compaction/delete_refresh_test.go#TestDeleteRefresh_MergedSourceWhoseDeleteFailedIsNotReadopted
-    - internal/compaction/delete_property_test.go#TestDeleteLifecycleProperties
-    - internal/manifest/refresh_retired_test.go#TestRefresh_DoesNotReadoptTheSourceARewriteReplaced
+    - internal/delete/coverage_test.go#TestStart_PollsUntilCancelled
+    - internal/delete/coverage_test.go#TestStart_RetriesTheFirstSyncAndStopsOnCancel
+    - internal/delete/coverage_test.go#TestStart_WithoutABackendReturns
+    - internal/delete/coverage_test.go#TestViewAge_AfterASync
+    - internal/delete/coverage_test.go#TestViewAgeGauge_NeverSyncedIsThePodsAge
+    - internal/delete/coverage_test.go#TestIsConditionalUnsupported
+    - internal/s3reader/list_after_test.go#TestClientPool_ListAfter_PagesAndResumes
+    - internal/s3reader/list_after_test.go#TestClientPool_ListAfter_AllKeysAndCallbackError
+    - internal/s3reader/list_after_test.go#TestClientPool_ListAfter_Error
+    - internal/delete/coverage_test.go#TestBodyCache_RoundTripEachAndFailures
+    - internal/delete/coverage_test.go#TestBodyCache_UnwritableDirIsTolerated
+    - internal/delete/coverage_test.go#TestTombstoneFilter
+    - internal/delete/deletetest/bucket_test.go#TestBucket_CreateIsConditionalAndOrdered
+    - internal/delete/deletetest/bucket_test.go#TestBucket_ListAfterPagesShortAndFailures
+    - internal/delete/deletetest/bucket_test.go#TestPod_GetExistsDeleteCountAndFail
+    - internal/delete/deletetest/bucket_test.go#TestBucket_Clock
+    - internal/delete/keys_test.go#TestIDTime
+    - internal/delete/keys_test.go#TestNamedTenants
+    - internal/delete/delete_fuzz_test.go#FuzzNamedTenants
+    - internal/delete/delete_fuzz_test.go#FuzzTombstoneSync
+    - internal/delete/deletetest/memstore/memstore_test.go#TestMemstore_PodsShareOneBucket
+    - internal/delete/deletetest/memstore/memstore_test.go#TestMemstore_NewIsSynced
+    - internal/delete/deletetest/memstore/memstore_test.go#TestMemstore_CreateFailsTheTestOnAnError
+    - internal/delete/deletetest/memstore/memstore_test.go#TestMemstore_MustFailsOnAnError
+    - internal/delete/keys_test.go#TestKeys_FormatAndParse
+    - internal/delete/keys_test.go#TestKeys_LexicalOrderIsTimeOrder
+    - internal/delete/keys_test.go#TestKeys_ParseRejectsEverythingElse
+    - internal/delete/keys_test.go#TestDefinition_CanonicalBytes
+    - internal/delete/keys_test.go#TestDefinition_OldShapesAreRejected
+    - internal/delete/delete_fuzz_test.go#FuzzTombstoneKeyCodec
+    - internal/delete/delete_fuzz_test.go#FuzzParseKey
+    - internal/delete/delete_fuzz_test.go#FuzzDefinitionRoundTrip
+    - internal/delete/delete_fuzz_test.go#FuzzTombstonePrefix
+    - internal/delete/protocol_test.go#TestPoll_LearnsADeleteTakenElsewhere
+    - internal/delete/protocol_test.go#TestPoll_ListsOnlyRecentKeys
+    - internal/delete/protocol_test.go#TestShortListing_NeverDropsOrDeletes
+    - internal/delete/protocol_test.go#TestRestart_FromStaleCache_DoesNotResurrectAnUndeletedTombstone
+    - internal/delete/protocol_test.go#TestCache_SavesTheReadsOfTheFirstListing
+    - internal/delete/protocol_test.go#TestFullListing_ForgetsOnlyOnA404
+    - internal/delete/protocol_test.go#TestGate_FailsClosedWhenTheViewIsStale
+    - internal/delete/protocol_test.go#TestGate_WaitingReadsAreReleasedByTheFirstSync
+    - internal/delete/protocol_test.go#TestGate_NoBackendIsAlwaysOpen
+    - internal/delete/protocol_test.go#TestGate_ListFailure_ClosesAllTenants
+    - internal/delete/protocol_test.go#TestGate_UndecodableDefinition_ClosesOnlyItsTenants
+    - internal/delete/protocol_test.go#TestGate_UndecodableDefinitionNamingNoTenant_ClosesEveryTenant
+    - internal/delete/protocol_test.go#TestGate_DeleteDisabled_EnforcesButNeverRefuses
+    - internal/delete/protocol_test.go#TestStopTask_IsANoOp_RowsStayHidden
+    - internal/delete/protocol_test.go#TestUndelete_PermanentAndAutoAreIrreversible
+    - internal/delete/protocol_test.go#TestUndo_NamesOnlyItsOwnDefinition
+    - internal/delete/protocol_test.go#TestUndelete_AnUndoneIdIsNotReusable
+    - cmd/lakehouse-logs/public_delete_mount_test.go#TestDefaultConfig_RunTaskIsReversible
+    - lakehouse-traces/public_delete_test.go#TestDefaultConfig_RunTaskIsReversible
+    - internal/config/config_test.go#TestDefaultConfig_DeleteConfig
+    - internal/delete/protocol_test.go#TestUndo_BindsToItsDefinitionKeyNotTheID
+    - internal/delete/handler_scope_test.go#TestDeleteAPI_UndeleteOfAnUnpolledIrreversibleIDDoesNotLeakItsExistence
+    - internal/delete/handler_scope_test.go#TestDeleteAPI_UndeleteWhenTheLookupFailsIs502
+    - internal/delete/gc_test.go#TestGC_RunsOnFullListingsAndCollectsAnOldUndoKey
+    - internal/s3reader/list_after_test.go#TestClientPool_ListAfter_RepeatedOrEmptyTokenIsAnError
+    - internal/delete/trace_encoding_test.go#TestTombstone_LeavesADeltaEncodedObjectUntouched
+    - internal/delete/s3backend_test.go#TestS3Backend_GetExistsDelete
+    - internal/delete/tombstone_sync_test.go#TestTombstoneSync_DeleteCreatedDuringAListingIsLearnedNextPoll
+    - internal/vlstorage/vlstorage_test.go#TestDeleteActiveTasks_AFinishedTaskIsNotListed
+    - internal/vlstorage/vlstorage_test.go#TestDeleteActiveTasks_NeverListsTombstones
+    - internal/vlstorage/vlstorage_test.go#TestDeleteStopTask_IsANoOp
+    - lakehouse-traces/internal/vlstorage/vlstorage_test.go#TestDeleteActiveTasks_AFinishedTaskIsNotListed
+    - lakehouse-traces/internal/vlstorage/vlstorage_test.go#TestDeleteActiveTasks_NeverListsTombstones
+    - lakehouse-traces/internal/vlstorage/vlstorage_test.go#TestDeleteStopTask_IsANoOp
+    - internal/delete/column_fence_test.go#TestTombstones_NeverWriteOutsideTheTombstonePrefix
+    - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneHidesWholeRows_NoEmptyResidue
+    - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneHidesWholeRows_NoEmptyResidue
+    - internal/delete/tombstone_sync_test.go#TestTombstoneSync_KeyOutsidePollWindow_LearnedAtFullListingOnly
+    - internal/delete/tombstone_sync_test.go#TestTombstoneSync_OnTimeKeyIsNotLate
+    - internal/delete/tombstone_sync_test.go#TestTombstoneSync_FailedFirstListing_SweepsAndCollectsNothing
+    - internal/delete/tombstone_sync_test.go#TestRunTask_SameIDDifferentContent_SecondIsAlreadyRegistered
+    - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_StaleViewFailsEverySurfaceClosed
+    - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_DeleteDisabledNeverRefuses
+    - internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_UndecodableDefinitionClosesOnlyItsTenants
+    - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_StaleViewFailsEverySurfaceClosed
+    - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_DeleteDisabledNeverRefuses
+    - lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go#TestTombstoneGate_UndecodableDefinitionClosesOnlyItsTenants
+    - cmd/lakehouse-logs/tombstones_test.go#TestAttachTombstones_GateFollowsDeleteEnabled
+    - cmd/lakehouse-logs/tombstones_test.go#TestTombstonesReady_OnlyASelectPodWithDeletesOnWaits
+    - lakehouse-traces/tombstones_test.go#TestAttachTombstones_GateFollowsDeleteEnabled
+    - lakehouse-traces/tombstones_test.go#TestTombstonesReady_OnlyASelectPodWithDeletesOnWaits
+    - internal/compaction/no_tombstone_view_test.go#TestCompactorConfig_HasNoTombstoneView
+    - internal/delete/protocol_test.go#TestTransientReadError_HealsOnTheNextSync
+    - internal/delete/protocol_test.go#TestForeignKeysAreIgnoredAndCounted
+    - internal/delete/protocol_test.go#TestDefinitionIDMustMatchItsKey
+    - internal/delete/protocol_test.go#TestTwoDefinitionsForOneID_EarlierKeyWins
+    - internal/delete/protocol_test.go#TestCreate_WritesOnceAndRepeatsAreIdempotent
+    - internal/delete/protocol_test.go#TestCreate_FailureOwesNothing
+    - internal/delete/protocol_test.go#TestCreate_Refusals
+    - internal/delete/handler_undelete_test.go#TestHandler_Delete_StoreFailureIsAnErrorAndNothingIsHeld
+    - tests/e2e/own_tombstone_test.go#TestOwnTombstoneKeyShapes
+    - internal/delete/protocol_test.go#TestCache_CorruptFileFallsBackToTheBucket
+    - internal/delete/protocol_test.go#TestFullListing_ShortListingDoesNotStormHEADs
+    - internal/delete/protocol_test.go#TestUnreadableKeyKeepsPollsAsPolls
+    - internal/delete/protocol_test.go#TestExpiredDefinitionsAreNotReadAgain
+    - internal/delete/protocol_test.go#TestUndelete_PropagatesWithinOnePoll
+    - internal/delete/multiinstance_test.go#TestMI_Delete_VisibleEverywhereWithinOnePoll
+    - internal/delete/multiinstance_test.go#TestMI_ConcurrentCreateOfOneTask_ExactlyOneObject
+    - internal/delete/multiinstance_test.go#TestMI_NoKeyIsEverOverwritten
+    - internal/delete/multiinstance_test.go#TestMI_RestartLosesNothingAndNoProgressRecordExists
+    - internal/delete/multiinstance_test.go#TestMI_BootWritesNothing
+    - internal/delete/multiinstance_test.go#TestMI_SlowReaderFailsClosedThenCatchesUp
+    - internal/delete/multiinstance_test.go#TestMI_TombstoneOutlivesALateFlush
+    - internal/delete/gc_test.go#TestExpiryAt
+    - internal/delete/gc_test.go#TestGC_SteadyState
+    - internal/delete/gc_test.go#TestGC_CrashLeavesTheDefinitionAndARestartFinishes
+    - internal/delete/gc_test.go#TestGC_NoRetentionNeverDeletes
+    - internal/delete/gc_test.go#TestGC_ShortListingNeverDeletesLiveKeys
+    - internal/delete/s3backend_test.go#TestS3Backend_ConditionalCreate
+    - internal/delete/s3backend_test.go#TestS3Backend_FallbackWithoutConditionalWrites
+    - internal/delete/s3backend_test.go#TestS3Backend_ListAfterPaginates
+    - internal/delete/s3backend_test.go#TestS3Backend_ProtocolEndToEnd
+    - internal/delete/scale_test.go#TestScale_PollRequestsAreFlatInTheNumberOfTombstones
+    - internal/delete/scale_test.go#TestScale_MemoryOfTheView
+    - internal/delete/scale_test.go#TestScale_MassExpiryIsOnePass
+    - internal/delete/scale_test.go#TestStore_IndexCountersStayConsistent
+    - internal/delete/tasks_test.go#TestRunTask_IdenticalTaskIsIdempotent
+    - internal/delete/tasks_test.go#TestRunTask_ConcurrentSameIDRegistersOnce
+    - internal/delete/tasks_test.go#TestRunTask_AFreshPodLearnsTheScope
+    - internal/vlstorage/vlstorage_test.go#TestDeleteStopTask_IsANoOpOnEveryPod
+    - lakehouse-traces/internal/vlstorage/vlstorage_test.go#TestDeleteStopTask_IsANoOpOnEveryPod
+    - tests/s3compat/s3compat_test.go#TestProd_TombstoneProtocol
+    - internal/delete/handler_scope_test.go#TestDeleteAPI_UndeleteOfAnUnpolledIDIsTenantScoped
+    - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_UndeleteByAnotherTenantThroughAnUnpolledPodIsRefused
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_UndeleteByAnotherTenantThroughAnUnpolledPodIsRefused
+    - internal/delete/tombstone_sync_test.go#TestTombstoneSync_OutageDoesNotCountKeysAsLate
+    - internal/delete/tombstone_sync_test.go#TestTombstoneSync_UndoSurvivesAFailedDefinitionRead
+    - internal/delete/protocol_test.go#TestGate_UndecodableDefinition_ProjectZeroIsTheWholeAccount
+    - internal/delete/coverage_test.go#TestRowFields_RenderTheFieldsATombstoneMatches
+    - internal/delete/coverage_test.go#TestSynced_FollowsTheFirstCompleteSync
+    - internal/delete/scale_test.go#TestScale_MemoryOfParsedFilters
+    - internal/delete/s3backend_test.go#TestS3Backend_ConditionalRequestConflictIsRetried
+    - internal/s3reader/list_after_test.go#TestClientPool_ListAfter_TruncatedWithoutTokenIsAnError
+    - internal/compaction/no_tombstone_view_test.go#TestNoTombstoneView_WalkSeesDeleteTypesBehindInterfaces
+    - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+    - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_ShortListingNeverDropsOrDeletes
+    - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StaleViewFailsReadsClosedAndSparesIngest
+    - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StoreWithoutConditionalWrites
+    - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeleteAndUndeleteReachEveryPod
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_ShortListingNeverDropsOrDeletes
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StaleViewFailsReadsClosedAndSparesIngest
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StoreWithoutConditionalWrites
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_StaleViewFailsTraceByIDClosed
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_DeletedTraceByIDAnswers404
+    - cmd/lakehouse-logs/maintenance_gate_test.go#TestRun_StartsTheTombstoneSyncOnEveryNode
+    - lakehouse-traces/maintenance_gate_test.go#TestRun_StartsTheTombstoneSyncOnEveryNode
   docs:
     - docs/deletion-strategy.md
-    - docs/operations.md#background-rewriter
+    - docs/architecture/roles.md
+    - docs/operations.md#tombstone-management
     - docs/durability.md#31-deletes-and-rewrites
-    - docs/manifest-system.md#what-the-refresh-does-not-adopt
+  # The 0.132.1 leftovers API (GET .../leftovers) is removed in this release: a delete no longer
+  # has retired or pending keys or unfinished rewrites to list, and the route answers 404. The
+  # released changelog line stays in history; it maps here, to the feature that replaced it.
+  changelog_bullets:
+    - 'Delete leftovers API — what an instance still owes.'
   highlight: >-
-    **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
+    **Write-once tombstones**: a delete is a small object that is created once and never overwritten; every pod, writer or reader, learns it by listing the new keys, within one minute, and a pod that cannot refresh fails reads closed instead of showing rows that may be deleted.
   description: >-
-    Deleting from an object store costs money and, on archival classes, retrieval fees. The
-    strategy picks the cheapest tier that satisfies the request: hide it instantly with a
-    tombstone, rewrite the file only where rewriting is cheap, and otherwise let lifecycle expire
-    the data on schedule.
+    A delete is the definition object plus, when a hide delete is undone, an undo object. Both are
+    written once with If-None-Match, so nothing under the tombstone prefix is ever rewritten, pods
+    cannot overwrite each other, a pod's disk can never bring back a deleted tombstone, and no
+    progress record exists to go stale. Key times are pod clocks only (an upstream task id is its
+    creator's nanosecond clock, so a duplicate lands on the same key). A pod lists only the keys
+    created in the last ten minutes each minute (one request, however many tombstones exist) and
+    everything once an hour; it drops a tombstone only on positive evidence (an un-delete of a
+    hide delete, retention, a 404) and never because a listing did not contain it. A tombstone
+    lives until the data it covers is past retention, so rows a writer flushes late are still
+    hidden. The read gate is active only when delete.enabled is true.
+
+- id: lh.feature.deletion.physical_removal
+  title: Physical removal of deleted rows (permanent and auto modes)
+  status: planned
+  area: deletion
+  surfaces: [api, storage]
+  rows: [lh.delete.physical_removal_not_enabled]
+  docs:
+    - docs/deletion-strategy.md
+  highlight: >-
+    **Physical removal** (planned): rewriting stored objects so `permanent` and `auto` deletes remove data from the bucket.
+  description: >-
+    Rewriting stored objects to remove the rows a delete hides, so that the `permanent` and
+    `auto` modes remove data from the bucket and the read cost of an active tombstone ends. Until
+    it ships every mode hides the rows at query time and compaction copies them forward unchanged
+    (they stay hidden because the tombstone stays in force until retention).
 
 - id: lh.feature.deletion.endpoints
   title: Delete APIs for logs and traces
@@ -76,16 +254,16 @@
   rows: [lh.delete.hide_survives_crash, lh.query.tombstone_per_file_fast_path]
   tests:
     - internal/delete/tombstone_test.go#TestTombstoneStore_AddAndActive
+    - internal/delete/protocol_test.go#TestRestart_FromStaleCache_DoesNotResurrectAnUndeletedTombstone
+    - internal/delete/multiinstance_test.go#TestMI_RestartLosesNothingAndNoProgressRecordExists
+    - cmd/lakehouse-logs/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
+    - lakehouse-traces/tombstone_multiinstance_test.go#TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden
     - internal/delete/handler_test.go#TestHandler_handleDelete_Valid
     - tests/e2e/delete_test.go#TestDelete_TombstoneAndQuery
-    - internal/delete/tombstone_durability_test.go#TestTombstoneDurability_SurvivesACrashViaDisk
-    - internal/delete/tombstone_durability_test.go#TestTombstoneDurability_RestoreUnionsDiskAndS3
     - internal/storage/parquets3/fields_tombstones_test.go#TestFieldValues_TombstonedValueDisappears
     - internal/storage/parquets3/fields_tombstones_span_test.go#TestFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow
     - internal/storage/parquets3/pure_buffer_tombstone_test.go#TestRunQuery_PureBufferWindowHonoursTombstones
     - lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go#TestTraceFieldValues_TombstoneInsideAScannedFileButOutsideTheWindow
-    - internal/compaction/tombstones_test.go#TestCompaction_HideModeRowsAreCarriedForward
-    - internal/delete/tenant_scope_test.go#TestTenantScope_UnscopedRecordIsRejectedOnRestore
   docs:
     - docs/deletion-strategy.md
     - docs/operations.md#tombstone-management
@@ -94,9 +272,10 @@
   highlight: >-
     **Tombstones**: a delete is recorded as a predicate and applied at query time, so data disappears from every read immediately and at zero S3 cost.
   description: >-
-    The tombstone store is consulted on every query path, including the ones that answer from
-    metadata, so a tombstoned row cannot reappear through a fast path. Physical removal, when
-    requested, happens afterwards on its own schedule.
+    The tombstone view is consulted on every query path, including the ones that answer from
+    metadata, so a tombstoned row cannot reappear through a fast path. Compaction copies the rows
+    forward unchanged and they stay hidden, because the tombstone stays in force until the data
+    is past retention. Physical removal is planned (lh.feature.deletion.physical_removal).
 
 - id: lh.feature.deletion.modes
   title: Hide, permanent and auto delete modes
@@ -109,16 +288,17 @@
     - internal/delete/handler_test.go#TestHandler_handleDelete_ModeHide
     - internal/delete/handler_test.go#TestHandler_handleDelete_ModePermanent
     - internal/delete/handler_test.go#TestHandler_handleDelete_ModeAuto
-    - internal/delete/integration_test.go#TestIntegration_ModeHide_NoRewrite
   docs:
     - docs/deletion-strategy.md
     - docs/configuration.md
   highlight: >-
-    **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
+    **Three modes**: `hide` (tombstone only, never rewrites), `permanent` and `auto` (physical removal once it ships; until then they hide, like `hide`).
   description: >-
-    The mode is the operator's statement about intent and budget: `hide` never touches S3,
-    `permanent` rewrites or deletes objects, and `auto` chooses per file from its storage class
-    so an archival object is never dragged out of Glacier by a routine delete.
+    The mode is the operator's statement about intent and budget: `hide` never touches S3, and
+    `permanent` and `auto` ask for physical removal, `auto` choosing per file from its storage
+    class so an archival object is never dragged out of Glacier by a routine delete. Physical
+    removal is not enabled yet: every mode hides the rows at query time and the mode is recorded
+    in the definition for when it is.
 
 - id: lh.feature.deletion.estimate
   title: Delete cost estimation
@@ -153,39 +333,40 @@
   tests:
     - internal/delete/handler_test.go#TestHandler_handleVerify_WithMatchingTombstone
     - internal/delete/handler_test.go#TestHandler_handleVerify_PartialCoverage
-    - internal/delete/scheduler_test.go#TestSchedulerVerify
     - tests/e2e/delete_test.go#TestDelete_Verify
   docs:
     - docs/deletion-strategy.md
   highlight: >-
-    **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
+    **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) reports which tombstones cover a query and how much of the requested range they cover.
   description: >-
-    Compliance needs proof, not a promise. Normal verification re-runs the predicate and asserts
-    nothing is returned; deep verification checks the objects themselves, and partial coverage is
-    reported as partial rather than rounded up to success.
+    Compliance needs proof, not a promise. Verification names the tombstones that cover a query
+    and the fraction of the requested range they cover, and partial coverage is reported as
+    partial rather than rounded up to success.
 
 - id: lh.feature.deletion.undelete
-  title: Un-delete by removing a tombstone
+  title: Un-delete of a hide delete
   status: shipped
   since: v0.18.2
   area: deletion
   readme_section: Deletion
   surfaces: [api]
+  rows: [lh.delete.undelete_hide_only, lh.delete.permanent_undelete_refused]
   tests:
-    - internal/delete/integration_test.go#TestIntegration_Undelete
     - internal/delete/handler_test.go#TestHandler_handleTombstoneByID_DeleteExisting
+    - internal/delete/protocol_test.go#TestUndelete_PropagatesWithinOnePoll
+    - internal/delete/protocol_test.go#TestUndelete_PermanentAndAutoAreIrreversible
     - internal/delete/tombstone_test.go#TestTombstoneStore_Remove
-    - internal/delete/tombstone_removal_test.go#TestUndelete_SurvivesACrashWhileTheS3DeleteIsPending
-    - internal/delete/intents_test.go#TestHandler_UndeleteMidRewriteIsAConflict
   docs:
     - docs/deletion-strategy.md
     - docs/operations.md#un-delete-restoring-data
   highlight: >-
-    **Un-delete**: remove a tombstone to restore data visibility instantly.
+    **Un-delete**: undo a hide-mode tombstone and its rows are visible again on every pod within one minute; permanent and auto deletes cannot be undone.
   description: >-
-    Because a hide-mode delete never touched the data, it is reversible: deleting the tombstone
-    makes the rows visible again immediately, which is what makes tombstone-first the safe
-    default for an accidental over-broad predicate.
+    Because a hide-mode delete never touched the data, it is reversible: undoing the tombstone
+    writes a write-once undo key, and the rows are visible again on the pod that undid it at once
+    and on every other pod at its next poll. A permanent or auto delete (never the default: delete.default_mode
+    is hide) is meant to remove the rows physically, so it is not reversible and the call
+    answers 409. That is what makes hide the safe mode for an over-broad predicate.
 
 - id: lh.feature.deletion.compliance
   title: Glacier-safe, GDPR-compatible deletion
@@ -201,42 +382,13 @@
   docs:
     - docs/deletion-strategy.md
   highlight: >-
-    **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure, with optional physical delete for strict compliance.
+    **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **Right to erasure**: the data is inaccessible from every read path at once; physical removal for strict compliance is planned.
   description: >-
     The two constraints that usually conflict — "erase it now" and "do not pay to retrieve an
     archive" — are reconciled by separating visibility from physical presence: erasure is
-    immediate and total from every read path, while the bytes leave on the lifecycle schedule
-    unless physical deletion is explicitly demanded.
-
-- id: lh.feature.deletion.leftovers_api
-  title: Leftovers API — what an instance still owes
-  status: shipped
-  area: deletion
-  readme_section: Deletion
-  surfaces: [api]
-  rows: [lh.delete.leftovers.status]
-  tests:
-    - internal/delete/handler_leftovers_test.go#TestLeftovers_ListsRetiredPendingAndUnfinishedRewrites
-    - internal/delete/handler_leftovers_test.go#TestLeftovers_IsBounded
-    - internal/delete/handler_leftovers_test.go#TestLeftovers_RejectsNonGET
-    - internal/delete/handler_leftovers_test.go#TestLeftovers_IsRegistered
-    - internal/delete/handler_scope_test.go#TestDeleteAPI_LeftoversTenantView
-    - internal/metrics/assets_test.go#TestDeleteMetrics_AreVisibleSomewhere
-  docs:
-    - docs/deletion-strategy.md
-    - docs/operations.md#what-this-instance-still-owes-prefixleftovers
-    - docs/operations.md#rolling-back
-  changelog_bullets:
-    - 'Delete leftovers API — what an instance still owes.'
-  highlight: >-
-    **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
-  description: >-
-    The alerts on retired-key eviction, non-durable tombstone records and unfinished rewrites all
-    ask an operator to act on specific objects, which until now no API could name. The listing is
-    read-only, bounded by a limit, and reports for each entry why it is still there — the delete
-    that is owed, the upload that is held, or the rewrite state a restart would resolve from. Like
-    the tombstone listing beside it, a tenant sees its own objects and tombstones and the
-    global-read credential the whole instance.
+    immediate and total from every read path, while the bytes leave on the lifecycle schedule.
+    Physical deletion on demand is planned (lh.feature.deletion.physical_removal) and is not
+    available yet.
 
 - id: lh.feature.deletion.tenant_scoped
   title: Tenant-scoped deletes
@@ -256,26 +408,22 @@
     - internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_OrgIDKeyLayout
     - lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_ScanHidesOnlyTheScopedTenant
     - lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go#TestTombstoneScope_OrgIDKeyLayout
-    - internal/delete/tenant_scope_test.go#TestTenantScope_PersistsThroughDiskAndS3
-    - internal/delete/tenant_scope_test.go#TestTenantScope_UnscopedRecordIsRejectedOnRestore
-    - internal/delete/tenant_scope_test.go#TestTenantScope_RestoreMergeIntersectsTenants
-    - internal/delete/tenant_scope_test.go#TestTenantScope_RejectedRecordCountedOncePerProcess
-    - internal/delete/tenant_scope_test.go#TestTenantScope_RejectedRecordStaysGoneAcrossRestarts
-    - internal/delete/tenant_scope_test.go#TestTenantScope_RejectionOwesAnS3DeleteOncePerObject
+    - lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go#TestFilesForScope_ListsOnlyTheNamedTenants
+    - internal/storage/parquets3/tombstone_scope_test.go#TestFilesForScope_ListsOnlyTheNamedTenants
+    - internal/compaction/tombstone_scope_test.go#TestCompaction_ScopedTombstoneCoversOnlyItsTenantsOutput
     - internal/delete/tenant_scope_test.go#TestFilterCache_EvictedWithTheLastTombstoneUsingIt
+    - internal/delete/tenant_scope_test.go#TestTenantScope_CloneIsDeep
     - internal/delete/tenant_scope_test.go#TestTombstone_UnscopedIsInvalidAndActsOnNothing
-    - internal/delete/tenant_scope_test.go#TestScheduler_TenantScopedTombstoneRewritesOnlyItsTenant
-    - internal/compaction/tombstone_scope_test.go#TestCompaction_TenantScopedTombstoneDropsOnlyItsTenantsRows
     - internal/delete/handler_scope_test.go#TestDeleteAPI_CreateIsScopedToTheCallersTenant
     - internal/delete/handler_scope_test.go#TestDeleteAPI_ListGetUndeleteVerifyAreTenantScoped
     - internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_BothTenantFormsOnBothKeyLayouts
     - internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_UnknownOrgIDAnswersLikeSelect
     - internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_IntTenantAnswerIndependentOfAliases
     - internal/delete/handler_tenant_forms_test.go#TestDeleteAPI_OrgIDLayoutRefusesNonZeroProject
-    - internal/delete/tasks_test.go#TestPublicTasks_AreTenantScoped
     - internal/delete/tasks_test.go#TestRunTask_RelativeTimeFilterIsPinnedToTheTaskTimestamp
-    - cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_TasksAreTenantScoped
-    - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_TasksAreTenantScoped
+    - internal/delete/tasks_test.go#TestPublicTasks_AnswerTheSameToEveryCaller
+    - cmd/lakehouse-logs/public_delete_mount_test.go#TestMountPublicDelete_TasksAnswerTheSameToEveryCaller
+    - lakehouse-traces/public_delete_test.go#TestMountPublicDelete_TasksAnswerTheSameToEveryCaller
     - cmd/lakehouse-logs/public_delete_tenant_forms_test.go#TestMountPublicDelete_StringTenants
     - cmd/lakehouse-logs/public_delete_tenant_forms_test.go#TestMountPublicDelete_IntTenantAnswerIndependentOfAliases
     - lakehouse-traces/public_delete_tenant_forms_test.go#TestMountPublicDelete_StringTenants
@@ -289,11 +437,11 @@
   description: >-
     A delete is resolved to its tenant exactly like a select — integer tenants as upstream,
     string OrgIDs through the aliases as a lakehouse extension — and the tombstone it creates acts
-    only on objects and buffered rows of that tenant: on every read path, in the rewriter and in
-    compaction, so one tenant's delete can neither hide nor remove another's data, nor cost it a
-    metadata fast path. The lakehouse delete API and upstream's stop_task and active_tasks show
-    each tenant only its own; the global-read credential is the operator view. A record naming no
-    tenant is not a tombstone: it is never created and is rejected on restore.
+    only on objects and buffered rows of that tenant, on every read path, so one tenant's delete can neither hide nor remove another's data, nor cost it a
+    metadata fast path. The lakehouse delete API shows each tenant only its own tombstones (the
+    global-read credential is the operator view); upstream's stop_task and active_tasks answer the
+    same to every caller (a registered task is finished). A definition
+    naming no tenant is not a tombstone: it is never created and is rejected when read.
 
 - id: lh.feature.deletion.upstream_api
   title: Upstream delete API (`/delete/run_task`, `stop_task`, `active_tasks`)
@@ -309,6 +457,7 @@
     - vl.internal.select.non_post.differ
     - vl.delete.stop_task.status
     - vl.delete.active_tasks.status
+    - lh.delete.task_finished_once_registered
     - vt.delete.run_task.status
     - vt.delete.run_task.non_post
     - vt.internal.delete.non_post
@@ -357,4 +506,6 @@
     lakehouse: off by default with upstream's own answer, served through upstream's handler (a
     drift-tested copy of VictoriaTraces' in the traces binary) when `-delete.enable` and the
     lakehouse `delete.enabled` are both on. Each task is registered as a tombstone scoped to the
-    requesting tenant, hidden at once and physically removed per `delete.default_mode`.
+    requesting tenant and hidden at once on every pod that reads the bucket. A task delivered
+    twice with the same content (the fan-out of one task to several nodes) is a success;
+    physical removal per `delete.default_mode` is planned.

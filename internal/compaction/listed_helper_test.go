@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 )
 
@@ -23,7 +22,3 @@ func listCompletely(t testing.TB, m *manifest.Manifest) {
 		t.Fatal("fixture: the listing was rejected")
 	}
 }
-
-// retireAlways lets reconcileTombstones complete every tombstone it touches, for
-// tests about the bookkeeping rather than the retirement gate.
-func retireAlways(delete.Tombstone) bool { return true }

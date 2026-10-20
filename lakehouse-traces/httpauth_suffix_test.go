@@ -12,6 +12,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest/memstore"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
@@ -124,7 +125,7 @@ var suffixPaths = []string{
 // served. The logs signal's /delete/logsql/* is not mounted here.
 func TestHTTPAuth_DeleteAPIsKeepBasicAuthThroughTheServer(t *testing.T) {
 	enablePublicDelete(t)
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	internalvlstorage.SetStorage(nopStorage{}, store)
 	mux := http.NewServeMux()
 	mountPublicDelete(mux, true, testGlobalRead)

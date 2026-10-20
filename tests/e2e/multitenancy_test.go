@@ -146,11 +146,19 @@ var hivePartitionRe = regexp.MustCompile(
 // "inside a tenant prefix" means any numeric pair, not just those two.
 var tenantPrefixRe = regexp.MustCompile(`^\d+/\d+/`)
 
+// ownTombstoneRe matches the tombstone objects (definition, undo) a
+// deployment keeps under the default tenant's signal prefix. They are Lakehouse
+// metadata, not stray objects, and exactly the two key shapes of the protocol:
+// t<16 hex>-<escaped id>.json|undo. Nothing else under _tombstones/
+// is accepted.
+var ownTombstoneRe = regexp.MustCompile(`^\d+/\d+/(logs|traces)/_tombstones/t[0-9a-f]{16}-[A-Za-z0-9_%-]+\.(json|undo)$`)
+
 // isOwnMetadata reports Lakehouse's own non-Parquet objects under a tenant
 // prefix: _meta/ (stats, aliases, markers), _segments/ (insert-buffer commit
-// markers) and the label index.
+// markers), the tombstone objects and the label index.
 func isOwnMetadata(key string) bool {
 	return strings.Contains(key, "/_meta/") || strings.Contains(key, "/_segments/") ||
+		ownTombstoneRe.MatchString(key) ||
 		strings.HasSuffix(key, "/_label_index.json")
 }
 

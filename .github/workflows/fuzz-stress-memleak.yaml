@@ -199,9 +199,12 @@ jobs:
           - internal/bloomindex:FuzzChecksumTamper
           - internal/manifest:FuzzExtractPartition
           - internal/delete:FuzzTombstoneMatchesRow
-          - internal/delete:FuzzRewritePartitionFromKey
-          - internal/delete:FuzzTombstoneRoundTrip
-          - internal/delete:FuzzNormalizeTombstonePrefix
+          - internal/delete:FuzzTombstoneKeyCodec
+          - internal/delete:FuzzParseKey
+          - internal/delete:FuzzDefinitionRoundTrip
+          - internal/delete:FuzzNamedTenants
+          - internal/delete:FuzzTombstoneSync
+          - internal/delete:FuzzTombstonePrefix
           - internal/manifest:FuzzParsePartitionTime
           - internal/manifest:FuzzUnmarshalFileMetaSidecar
           - internal/pmeta:FuzzDecodeBundle

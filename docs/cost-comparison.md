@@ -192,7 +192,7 @@ Why the Lakehouse column is a straight line:
 - **Retention is a single S3 lifecycle rule.** Lengthening retention adds S3 bytes and nothing else (on Standard, the default). Optionally, an example ladder moves older objects to a cheaper class; Glacier Instant Retrieval stores at $0.004 against $0.023 per GB-month (83% less) and stays queryable, but at $0.03 per GB read back, so that saving holds only while the cold data is rarely read ([break-even](cost-estimates.md#break-even-when-a-cold-class-stops-paying)).
   - Transition fees follow the object count. At the assumed 64 MB average object that is about 15,600 objects per stored TB, about $0.31 per TB moved into Glacier IR; at 12 MiB (an anecdotal synthetic object, used here only as an illustration) about 79,500 objects, $1.59 per TB.
   - Loki's 1.5 MB chunks need about 670,000 objects per TB, about $13 per TB.
-  - Objects must stay 90 days in Glacier IR (30 in Standard-IA) before compaction or a delete rewrites them, or AWS bills the remainder. Lakehouse freezes tiered objects against compaction for that reason.
+  - Objects must stay 90 days in Glacier IR (30 in Standard-IA) before compaction (or, once it ships, a physical delete) rewrites them, or AWS bills the remainder. Lakehouse freezes tiered objects against compaction for that reason.
 
 ## 6. Long retention: Standard by default, cold-class ladders as an option
 

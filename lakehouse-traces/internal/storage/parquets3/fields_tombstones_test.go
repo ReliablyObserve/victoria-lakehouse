@@ -10,9 +10,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -254,35 +252,6 @@ func TestTraceFieldValues_TombstoneCombinesWithTheUserFilter(t *testing.T) {
 }
 
 // --- pmeta catalog rebuild after rows are removed (mirror) ---------------------
-
-func TestTracePmetaOnRewritten_RebuildsTheCatalogValues(t *testing.T) {
-	s := testStorage()
-	s.PmetaRebuildCatalogValues([]string{"traces/dt=2026-01-01/hour=00/a.parquet"}) // no catalog: no-op
-
-	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
-	oldKey := "traces/dt=2026-09-05/hour=02/old.parquet"
-	newKey := "traces/dt=2026-09-05/hour=02/new.parquet"
-	part := manifest.ExtractTenantPartition(oldKey)
-
-	s.catalog.OnFileFlush(pmeta.FileContribution{Partition: part, FileKey: oldKey,
-		Labels: map[string][]string{"service.name": {"api", "leaky"}}})
-	newFI := manifest.FileInfo{Key: newKey, RowCount: 1, Labels: map[string][]string{"service.name": {"api"}}}
-	s.manifest.AddFile("dt=2026-09-05/hour=02", newFI)
-
-	s.PmetaOnRewritten([]manifest.FileInfo{newFI}, []string{oldKey}, nil)
-
-	if got := s.catalog.FieldValues(part, "service.name", "", 0); len(got) != 1 || got[0] != "api" {
-		t.Fatalf("catalog after a rewrite = %v, want only [api]; the deleted span's service must not stay enumerable", got)
-	}
-
-	unlabeled := "traces/dt=2026-09-05/hour=02/unlabeled.parquet"
-	s.manifest.AddFile("dt=2026-09-05/hour=02", manifest.FileInfo{Key: unlabeled, RowCount: 3})
-	before := metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file")
-	s.PmetaRebuildCatalogValues([]string{newKey})
-	if metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file") <= before {
-		t.Error("a partition with an unlabeled file must be skipped and counted")
-	}
-}
 
 // --- field-name and stream-id paths around the tombstone gate --------------------
 

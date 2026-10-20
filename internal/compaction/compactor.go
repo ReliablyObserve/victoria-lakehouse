@@ -17,7 +17,6 @@ import (
 	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -54,19 +53,6 @@ type CompactorConfig struct {
 	// parameter per knob. Passed by value because the struct is small
 	// and the compactor doesn't mutate it.
 	CompactionConfig config.CompactionConfig
-
-	// Tombstones lets compaction act as a second reaper: rows matching a
-	// tombstone that is eligible for physical removal are dropped from the
-	// merged output instead of being copied forward, and the tombstone's
-	// bookkeeping follows the rows (see reconcileTombstones). Optional — a nil
-	// store leaves compaction behaving exactly as it did before.
-	Tombstones *delete.TombstoneStore
-
-	// TombstoneRewriteDelay is the delete path's rewrite_delay: the un-delete
-	// window during which a permanent or auto tombstone's rows must NOT be
-	// physically removed. Compaction honours the same window the rewrite
-	// scheduler does (Tombstone.EligibleForPhysicalRemoval).
-	TombstoneRewriteDelay time.Duration
 
 	// NeverDeletePrefixes mirrors the orphan sweep's protected list so the
 	// reap bookkeeping never claims an object compaction is not allowed to
@@ -120,8 +106,6 @@ type Compactor struct {
 	bloomRebuilder   BloomRebuilder
 	cfg              config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
-	tombstones       *delete.TombstoneStore
-	tombstoneDelay   time.Duration
 	neverDelete      []string
 }
 
@@ -141,8 +125,6 @@ func NewCompactor(cfg CompactorConfig) *Compactor {
 		bloomRebuilder:   cfg.BloomRebuilder,
 		cfg:              cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
-		tombstones:       cfg.Tombstones,
-		tombstoneDelay:   cfg.TombstoneRewriteDelay,
 		neverDelete:      neverDelete,
 	}
 }
@@ -252,17 +234,6 @@ func (c *Compactor) claimOutputKey(prefix, partition string, level int) (string,
 	return "", false
 }
 
-// keyScope attributes a merge's inputs to their tenant with the manifest's own
-// key parser, so compaction applies a tenant-scoped tombstone to exactly the
-// objects the read path serves to that tenant.
-func (c *Compactor) keyScope(keys []string) keyScope {
-	ks := keyScope{keys: keys}
-	if c.manifest != nil {
-		ks.parse = c.manifest.TenantKeyParser()
-	}
-	return ks
-}
-
 func groupFilesByTenant(files []manifest.FileInfo) []tenantFileGroup {
 	type groupKey struct {
 		Prefix string
@@ -328,9 +299,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		allData   [][]byte
 		inputKeys []string
 		bytesRead int64
-		// appliedTombstones is the set of tombstones the merge filtered out of
-		// the output, the only ones the output may be recorded clean for.
-		appliedTombstones map[string]bool
 	)
 	// Invariant: a merge reads each source once. A source named twice (a
 	// manifest that tracked a key twice) would be merged twice — its rows
@@ -341,8 +309,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		logger.Errorf("compaction refused: source key tracked twice in one merge group; partition=%s, key=%s", partition, dup)
 		return nil, fmt.Errorf("compaction of %s refused: source %s is listed twice", partition, dup)
 	}
-	// One clock reading for the whole merge, so eligibility is judged once.
-	now := time.Now()
 	var keptFiles []manifest.FileInfo
 	var fenced []string
 	for _, f := range g.Files {
@@ -389,14 +355,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// traceIDHex is the output's lh.trace_id_hex attestation (see
 	// schema.CompactedTraceIDHex), recorded in its footer and its manifest entry.
 	var traceIDHex bool
-	// survivors describes the merged output when tombstoned rows were dropped
-	// from it (nil otherwise). The label set and raw size normally come from
-	// the INPUT files' manifest entries, which is exact for a pure row union;
-	// once rows are dropped those inputs describe data the output no longer
-	// holds, and a label value only the dropped rows carried would be fed to
-	// the pmeta field catalog and served by field_values after the rows are gone.
-	var survivors *survivorMeta
-
 	// Pick the per-output-level compression. Tenant override beats
 	// the global progressive schedule, which in turn beats the
 	// static c.compressionLevel — that last fallback keeps
@@ -437,18 +395,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		if err != nil {
 			return nil, err
 		}
-		// Drop tombstoned rows BEFORE anything is derived from the merge:
-		// row count, time bounds, label aggregates and blooms all feed the
-		// manifest, and deriving them from rows that are about to be dropped
-		// would publish metadata describing data the output does not contain.
-		var dropped int
-		merged, dropped, appliedTombstones = dropTombstonedLogRows(c.tombstones, merged, now, c.tombstoneDelay, c.keyScope(inputKeys))
-		if dropped > 0 {
-			survivors = &survivorMeta{
-				labels:   schema.ExtractLogLabels(merged),
-				rawBytes: schema.EstimateRawBytesLogs(merged),
-			}
-		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
 			// True min/max scan — NOT merged[0]/merged[len-1]. The merge
@@ -481,15 +427,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		merged, err := c.mergeTraceFiles(allData)
 		if err != nil {
 			return nil, err
-		}
-		// See the logs branch: suppression happens before any derived metadata.
-		var dropped int
-		merged, dropped, appliedTombstones = dropTombstonedTraceRows(c.tombstones, merged, now, c.tombstoneDelay, c.keyScope(inputKeys))
-		if dropped > 0 {
-			survivors = &survivorMeta{
-				labels:   schema.ExtractTraceLabels(merged),
-				rawBytes: schema.EstimateRawBytesTraces(merged),
-			}
 		}
 		rowsMerged = int64(len(merged))
 		if rowsMerged > 0 {
@@ -546,9 +483,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	for _, f := range g.Files {
 		inputRawBytes += f.RawBytes
 	}
-	if survivors != nil {
-		inputRawBytes = survivors.rawBytes
-	}
 
 	// Per-output-level compression observability. The ratio is
 	// inputRawBytes / len(outputData) — same denominator as the
@@ -575,9 +509,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 	// the bug. The union is bounded by maxLabelsPerField inside
 	// indexFileLabels so a misbehaving input can't blow up the index.
 	mergedLabels := mergeFileLabels(g.Files)
-	if survivors != nil {
-		mergedLabels = survivors.labels
-	}
 
 	// Publish: register the output and drop the sources in ONE step, and only
 	// if every source is still registered. A source can leave the manifest
@@ -631,16 +562,6 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 		}
 		c.manifest.ConfirmDeleted(f.Key)
 	}
-
-	// The merged output is published and the sources are gone. Every tombstone
-	// that named a source must now name the output instead, marked clean only
-	// when compaction actually filtered that tombstone's rows out of it — so a
-	// tombstone can never complete while a file that still holds its rows
-	// exists (which would un-hide those rows the moment it retires).
-	// Retiring a tombstone means its rows stop being hidden, so it waits for a
-	// tombstone store that was restored completely and for a complete listing
-	// that began after the tombstone was created (see tombstoneRetireGate).
-	reconcileTombstones(c.tombstones, inputKeys, outputKey, c.neverDelete, appliedTombstones, tombstoneRetireGate(c.manifest, c.tombstones), c.keyScope(nil).parse)
 
 	return &compactGroupResult{
 		InputKeys:    inputKeys,
@@ -866,11 +787,11 @@ func columnBytesFromFooter(data []byte) map[string]int64 {
 
 // WriteLogs writes rows exactly as a compaction output is written: zstd at the
 // given level, the SBBF column blooms for the configured bloom set (including
-// Tier-2 slot blooms), and the slot binding in the footer KV. Exported so the
-// delete rewriter produces replacements that are indistinguishable from a
-// compaction output of the same rows — a rewrite must never reduce a file's
-// prunability, and sharing the one writer means a later improvement to the
-// output format reaches both producers at once.
+// Tier-2 slot blooms), and the slot binding in the footer KV. Exported so any
+// other producer of replacement objects (physical removal, when it ships)
+// writes outputs indistinguishable from a compaction output of the same rows —
+// a rewrite must never reduce a file's prunability, and sharing the one writer
+// means a later improvement to the output format reaches every producer at once.
 //
 // The footer's lh.trace_id_hex attestation is derived from the rows written; a
 // delete rewrite keeps a subset of one file's rows, so it never needs more.

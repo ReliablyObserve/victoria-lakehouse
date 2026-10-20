@@ -1,6 +1,7 @@
 package delete
 
 import (
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -158,16 +159,18 @@ func TestDocs_DeleteTimestampsAreNanoseconds(t *testing.T) {
 	}
 }
 
+var errNotNs = errors.New("not nanoseconds")
+
 func parseNs(v string) (int64, error) {
 	var ns int64
 	for _, c := range v {
 		if c < '0' || c > '9' {
-			return 0, errInjected
+			return 0, errNotNs
 		}
 		ns = ns*10 + int64(c-'0')
 	}
 	if v == "" {
-		return 0, errInjected
+		return 0, errNotNs
 	}
 	return ns, nil
 }

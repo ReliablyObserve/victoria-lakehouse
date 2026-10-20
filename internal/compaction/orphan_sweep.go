@@ -30,7 +30,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
@@ -53,12 +52,6 @@ type OrphanSweepConfig struct {
 	// Freeze is the scheduler's lifecycle freeze; a steal never rewrites what
 	// the scheduler would not.
 	Freeze *LifecycleFreeze
-	// Tombstones and TombstoneRewriteDelay make a Tier A steal drop
-	// tombstoned rows exactly like a scheduled merge (same meaning as the
-	// SchedulerConfig fields). Without them a steal would carry deleted rows
-	// into the merged output.
-	Tombstones            *delete.TombstoneStore
-	TombstoneRewriteDelay time.Duration
 	// SegmentGuard returns the insert-buffer segment guard for a run
 	// (Scheduler.SegmentGuard), so a steal leaves the objects of live buffer
 	// segments alone exactly as a scheduled merge does. It is called at most
@@ -279,9 +272,6 @@ func (o *OrphanSweep) RunTierA(ctx context.Context) (int, error) {
 			RowGroupSize:     o.cfg.RowGroupSize,
 			CompressionLevel: o.cfg.CompressionLevel,
 			BloomRebuilder:   o.cfg.BloomRebuilder,
-
-			Tombstones:            o.cfg.Tombstones,
-			TombstoneRewriteDelay: o.cfg.TombstoneRewriteDelay,
 		})
 		var (
 			removed []string
@@ -376,11 +366,6 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("tier_b list %s: %w", o.cfg.Prefix, err)
 	}
-	// Objects an unfinished delete rewrite still names (its source or its
-	// replacement): the rewrite may yet be undone, which makes a retired source
-	// live again, so neither may go before the rewrite settles.
-	inRewrite := o.unfinishedRewriteKeys()
-
 	// Bucket keys by date prefix so we can hash-assign each prefix to
 	// a single pod (avoids 3 pods all LIST+HEADing the same date).
 	byPrefix := groupByDatePrefix(keys, o.cfg.Prefix)
@@ -449,7 +434,7 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 			case time.Since(rk.At) < o.cfg.OrphanTTL:
 				metrics.CompactionOrphansSkipped.Inc("retired_too_recently")
 				continue
-			case inRewrite[key], o.cfg.Manifest.IsPending(key), o.cfg.Manifest.IsHeld(key):
+			case o.cfg.Manifest.IsPending(key), o.cfg.Manifest.IsHeld(key):
 				metrics.CompactionOrphansSkipped.Inc("rewrite_unfinished")
 				continue
 			}
@@ -490,26 +475,6 @@ func (o *OrphanSweep) RunTierB(ctx context.Context) (int, error) {
 		}
 	}
 	return deleted, nil
-}
-
-// unfinishedRewriteKeys returns every source and replacement an unfinished
-// delete rewrite still names (nil without a tombstone store).
-func (o *OrphanSweep) unfinishedRewriteKeys() map[string]bool {
-	if o.cfg.Tombstones == nil {
-		return nil
-	}
-	recs := o.cfg.Tombstones.UnfinishedRewriteRecords()
-	if len(recs) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, 2*len(recs))
-	for _, r := range recs {
-		out[r.Source] = true
-		if r.Replacement != "" {
-			out[r.Replacement] = true
-		}
-	}
-	return out
 }
 
 // keyInManifestAt re-reads the manifest snapshot and reports whether

@@ -18,13 +18,17 @@ type Policy struct {
 	defaultTTL time.Duration
 	rules      []parsedRule
 	minTTL     time.Duration
+	maxTTL     time.Duration
 }
 
 func newPolicy(enabled bool, defaultTTL time.Duration, rules []parsedRule) *Policy {
-	p := &Policy{enabled: enabled, defaultTTL: defaultTTL, rules: rules, minTTL: defaultTTL}
+	p := &Policy{enabled: enabled, defaultTTL: defaultTTL, rules: rules, minTTL: defaultTTL, maxTTL: defaultTTL}
 	for _, r := range rules {
 		if r.keep < p.minTTL {
 			p.minTTL = r.keep
+		}
+		if r.keep > p.maxTTL {
+			p.maxTTL = r.keep
 		}
 	}
 	return p
@@ -53,6 +57,11 @@ func NewPolicy(cfg Config) (*Policy, error) {
 	}
 	return newPolicy(true, defaultTTL, rules), nil
 }
+
+// MaxTTL is the longest time any file can be kept: the longest of the default and
+// every rule. Meaningful only when Enabled. A delete record expires once the data
+// it covers is past this (delete.ExpiryAt).
+func (p *Policy) MaxTTL() time.Duration { return p.maxTTL }
 
 // Enabled reports whether the policy expires anything at all.
 func (p *Policy) Enabled() bool { return p != nil && p.enabled }
