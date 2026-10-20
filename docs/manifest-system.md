@@ -273,9 +273,8 @@ A retired key with `Reclaim` set is an object this node owes a delete (its
 first delete failed). The compaction scheduler retries those deletes on every
 scan (`ReclaimRetired`, at most 1,000 per scan). Retired keys are persisted with
 the snapshot; pending keys are not — whether an interrupted upload was published
-is not something a periodic snapshot can know, so the delete rewriter records
-that durably on the tombstone instead (see
-[Operations → Background Rewriter](operations.md#background-rewriter)).
+is not something a periodic snapshot can know (see
+[Durability → 3.1](durability.md#31-deletes-and-rewrites) for the known gap).
 
 ### Refresh Schedule
 
@@ -297,19 +296,17 @@ flowchart TD
     BOOT[Startup] --> DISK{Disk snapshot?}
     DISK -->|Yes| LOAD[LoadFrom disk<br/>Instant restore]
     DISK -->|No| EMPTY[Empty manifest]
-    LOAD --> RESOLVE[Resolve interrupted<br/>delete rewrites]
-    EMPTY --> RESOLVE
-    RESOLVE --> S3[RefreshFromS3<br/>5 min timeout]
+    LOAD --> S3[RefreshFromS3<br/>5 min timeout]
+    EMPTY --> S3
     S3 --> WARM[WarmLabelIndex<br/>Sample 10 files]
     WARM --> READY[PhaseReady<br/>Start periodic refresh]
 ```
 
 On startup:
 1. Load disk snapshot if available (fast, < 100 ms)
-2. Apply every delete rewrite a previous process left unfinished to the manifest's view (retire the objects the refresh must not adopt)
-3. Full S3 refresh (may take seconds for large buckets)
-4. Sample files to build label index for field discovery
-5. Mark ready and start periodic refresh ticker
+2. Full S3 refresh (may take seconds for large buckets)
+3. Sample files to build label index for field discovery
+4. Mark ready and start periodic refresh ticker
 
 ## Persistence
 

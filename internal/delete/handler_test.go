@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest"
 )
 
 // mockManifest returns predictable FileInfo for testing.
@@ -29,6 +30,9 @@ func (m *mockManifest) GetFilesForRange(startNs, endNs int64) []FileInfo {
 
 func newTestHandler(cfg *config.DeleteConfig, files []FileInfo) *Handler {
 	store := NewTombstoneStore()
+	if err := store.Attach(Options{Backend: deletetest.NewBucket().Pod("test"), Prefix: testPrefix}); err != nil {
+		panic(err)
+	}
 	manifest := &mockManifest{files: files}
 	detector := NewStorageClassDetector(nil) // no lifecycle rules
 	return NewHandler(store, manifest, detector, cfg, "logs")
@@ -281,8 +285,11 @@ func TestHandler_handleEstimate_Valid(t *testing.T) {
 	if len(classes) == 0 {
 		t.Error("expected non-empty storage_classes")
 	}
-	if result["recommended_mode"] == "" {
-		t.Error("expected non-empty recommended_mode")
+	// Whatever the storage classes, the recommendation is hide: every mode hides
+	// the rows today and only hide can be undone (main recommended "permanent"
+	// for rewritable files).
+	if result["recommended_mode"] != "hide" {
+		t.Errorf("recommended_mode = %v, want hide: the other modes are irreversible and identical today", result["recommended_mode"])
 	}
 	if result["auto_behavior"] == "" {
 		t.Error("expected non-empty auto_behavior")
@@ -347,8 +354,8 @@ func TestHandler_handleListTombstones_WithTombstones(t *testing.T) {
 
 	// Add some tombstones of the default tenant (the caller below sends no
 	// tenant headers).
-	h.store.Add(Tombstone{ID: "ts-1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
-	h.store.Add(Tombstone{ID: "ts-2", Query: "warn", StartNs: 2000, EndNs: 6000, Mode: "permanent", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-2", Query: "warn", StartNs: 2000, EndNs: 6000, Mode: "permanent", Tenants: []TenantRef{{}}})
 
 	w := getRequest(h.handleListTombstones, "/delete/logsql/tombstones")
 
@@ -365,7 +372,7 @@ func TestHandler_handleListTombstones_WithTombstones(t *testing.T) {
 
 func TestHandler_handleTombstoneByID_GetExisting(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-abc", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-abc", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	w := getRequest(h.handleTombstoneByID, "/delete/logsql/tombstone/ts-abc")
 
@@ -390,7 +397,7 @@ func TestHandler_handleTombstoneByID_GetMissing(t *testing.T) {
 
 func TestHandler_handleTombstoneByID_DeleteExisting(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-del", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-del", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	w := deleteRequest(h.handleTombstoneByID, "/delete/logsql/tombstone/ts-del")
 
@@ -425,7 +432,7 @@ func TestHandler_handleTombstoneByID_DeleteMissing(t *testing.T) {
 
 func TestHandler_handleVerify_WithMatchingTombstone(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-v1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-v1", Query: "error", StartNs: 1000, EndNs: 5000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"error"},
@@ -472,7 +479,7 @@ func TestHandler_handleVerify_WithoutMatchingTombstone(t *testing.T) {
 func TestHandler_handleVerify_PartialCoverage(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
 	// Tombstone covers only half the range
-	h.store.Add(Tombstone{ID: "ts-partial", Query: "error", StartNs: 1000, EndNs: 3000, Mode: "hide", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-partial", Query: "error", StartNs: 1000, EndNs: 3000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"error"},
@@ -535,7 +542,7 @@ func TestHandler_handleEstimate_CachedStorageClass(t *testing.T) {
 	if result["recommended_mode"] != "hide" {
 		t.Errorf("expected recommended_mode=hide for glacier files, got %v", result["recommended_mode"])
 	}
-	if result["auto_behavior"] != "hide data at query time" {
+	if result["auto_behavior"] != "hide data at query time (physical removal is not enabled)" {
 		t.Errorf("expected hide behavior, got %v", result["auto_behavior"])
 	}
 }
@@ -574,7 +581,7 @@ func TestHandler_handleEstimate_InvalidEnd(t *testing.T) {
 
 func TestHandler_handleVerify_ZeroRange(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-zero", Query: "error", StartNs: 1000, EndNs: 1000, Mode: "hide", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-zero", Query: "error", StartNs: 1000, EndNs: 1000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"error"},
@@ -714,7 +721,7 @@ func TestHandler_Register(t *testing.T) {
 
 func TestHandler_handleVerify_WildcardTombstone(t *testing.T) {
 	h := newTestHandler(defaultCfg(), testFiles())
-	h.store.Add(Tombstone{ID: "ts-wild", Query: "*", StartNs: 0, EndNs: 100000, Mode: "hide", Tenants: []TenantRef{{}}})
+	mustCreate(t, h.store, Tombstone{ID: "ts-wild", Query: "*", StartNs: 0, EndNs: 100000, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	params := url.Values{
 		"query": {"anything"},
@@ -735,7 +742,7 @@ func TestHandler_handleVerify_WildcardTombstone(t *testing.T) {
 // --- Trace mode handler tests ---
 
 func TestHandler_TraceMode_Delete(t *testing.T) {
-	store := NewTombstoneStore()
+	store := newTestStore(t)
 	manifest := &mockManifest{files: []FileInfo{
 		{Key: "traces/dt=2026-05-02/hour=10/batch.parquet", Size: 1024, MinTimeNs: 1000, MaxTimeNs: 5000},
 	}}
@@ -767,7 +774,7 @@ func TestHandler_TraceMode_Delete(t *testing.T) {
 }
 
 func TestHandler_TraceMode_Estimate(t *testing.T) {
-	store := NewTombstoneStore()
+	store := newTestStore(t)
 	manifest := &mockManifest{files: []FileInfo{
 		{Key: "traces/dt=2026-05-02/hour=10/batch.parquet", Size: 2048, MinTimeNs: 1000, MaxTimeNs: 5000},
 	}}
@@ -794,7 +801,7 @@ func TestHandler_TraceMode_Estimate(t *testing.T) {
 }
 
 func TestHandler_TraceMode_ListTombstones(t *testing.T) {
-	store := NewTombstoneStore()
+	store := newTestStore(t)
 	manifest := &mockManifest{}
 	detector := NewStorageClassDetector(nil)
 	cfg := defaultCfg()
@@ -813,7 +820,7 @@ func TestHandler_TraceMode_ListTombstones(t *testing.T) {
 }
 
 func TestHandler_TraceMode_LogsEndpointReturns404(t *testing.T) {
-	store := NewTombstoneStore()
+	store := newTestStore(t)
 	manifest := &mockManifest{}
 	detector := NewStorageClassDetector(nil)
 	cfg := defaultCfg()
@@ -833,7 +840,7 @@ func TestHandler_TraceMode_LogsEndpointReturns404(t *testing.T) {
 
 // TestNewHandler_DefaultMode exercises the empty-mode branch (previously 66.7%).
 func TestNewHandler_DefaultMode(t *testing.T) {
-	store := NewTombstoneStore()
+	store := newTestStore(t)
 	manifest := &mockManifest{}
 	detector := NewStorageClassDetector(nil)
 	cfg := defaultCfg()

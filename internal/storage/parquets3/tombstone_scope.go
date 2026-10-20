@@ -1,10 +1,13 @@
 package parquets3
 
 import (
+	"context"
+	"net/http"
 	"strconv"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -265,18 +268,25 @@ func (s *Storage) AccountOnlyTenantKeys() bool {
 	return s.manifest != nil && s.manifest.AccountOnlyTenantKeys()
 }
 
-// TenantFileKeys lists the cold-tier objects of exactly the given tenants whose
-// rows may fall in [startNs, endNs] — the same tenant-scoped listing the read
-// path serves them from, legacy untenanted objects included for 0:0. It is what
-// a delete task records as the tombstone's affected keys.
-func (s *Storage) TenantFileKeys(tenantIDs []logstorage.TenantID, startNs, endNs int64) []string {
-	if len(tenantIDs) == 0 {
+// tombstoneGate fails a read that would show rows when this pod's view of the
+// deletes is too old to trust: the cold tier and the buffer bridge answer
+// 503 until the view has been refreshed (delete.TombstoneStore.Gate), rather than
+// show a row somebody deleted. Reads of a pod without a bucket-backed view are
+// not gated. The gate closes for every tenant when the view is stale, and for the
+// request's tenants only when a definition naming them cannot be decoded (every
+// tenant for a global-read request or none named). Ingest and flush never call it.
+func (s *Storage) tombstoneGate(ctx context.Context, tenantIDs []logstorage.TenantID) error {
+	if s.tombstones == nil {
 		return nil
 	}
-	files := s.filesForScope("delete_task", startNs, endNs, resolveTenantScope(tenantIDs))
-	keys := make([]string, 0, len(files))
-	for i := range files {
-		keys = append(keys, files[i].Key)
+	// A read of every tenant (the validated global-read credential) is gated for
+	// every tenant, whatever its headers name.
+	refs := delete.TenantRefsOf(tenantIDs)
+	if scopeFor(ctx, tenantIDs).all {
+		refs = nil
 	}
-	return keys
+	if err := s.tombstones.Gate(ctx, refs); err != nil {
+		return &httpserver.ErrorWithStatusCode{Err: err, StatusCode: http.StatusServiceUnavailable}
+	}
+	return nil
 }

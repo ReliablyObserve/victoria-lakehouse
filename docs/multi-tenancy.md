@@ -368,7 +368,7 @@ Each override flows to exactly one subsystem:
 | `cardinality.max_streams` | `tenant.CardinalityLimiter` mounted as `TenantCardinalityGate` on the vlstorage insert paths (logs + traces) | per-tenant distinct stream set with fast-path RLock for known entries; a row of a stream over the limit is answered as a success and not stored, counted per row in `lakehouse_insert_rows_dropped_total{reason="cardinality_limit"}` and logged (throttled); a row that was admitted is never judged again when the buffer is flushed. The set of admitted streams is per process and starts empty after a restart, so a stream admitted before can be refused afterwards (#485). |
 | `cardinality.max_fields` | none yet | The override is parsed and stored but nothing enforces it: no insert path calls `AllowField` (#495). |
 | `ingest.max_bytes_per_sec` / `max_rows_per_sec` | `tenant.IngestRateLimiter` + `tenant.RateLimitMiddleware` | independent byte/sec + row/sec token buckets per tenant; pre-flight Content-Length check returns `429 Too Many Requests` + `X-RateLimit-Limit-Bytes` / `X-RateLimit-Remaining-Bytes` / `X-RateLimit-Retry-After-Ms` headers. |
-| `lifecycle` | `delete.StorageClassDetector.SetTenantRules` consumed by both the manual `predict` handler and the background rewriter scheduler | tenant-keyed rule lookup parses `(account, project)` from the file's S3 key prefix, so manual predictions and the rewriter agree on what storage class a file should end up in. |
+| `lifecycle` | `delete.StorageClassDetector.SetTenantRules` consumed by the manual `predict` handler and the delete estimate | tenant-keyed rule lookup parses `(account, project)` from the file's S3 key prefix, so manual predictions and the rewriter agree on what storage class a file should end up in. |
 | `compaction.compression_level_by_output_level` | `compaction.SchedulerConfig.TenantCompressionLookup` closure → per-tenant slice resolved on every Compactor construction | when the slice is set, output files for that tenant's compactions use the per-tenant level instead of the global progressive schedule. Empty falls through to global; slot saturation matches the global rule (out-of-range output levels use the last slot). |
 | `s3.bucket` | s3reader `PoolRegistry` + writer `SetTenantBucket`/`SetTenantPool` | tenant's reads/writes route to the dedicated bucket; manifest stamps the bucket so post-migration reads still resolve correctly. |
 
@@ -613,12 +613,12 @@ Every read (`RunQuery` and the field/stream enumeration calls) resolves the tena
 
 Tombstones are tenant-scoped. A delete request is resolved to its tenant like a select (headers,
 `X-Scope-OrgID` aliases, `0:0` without headers) and its tombstone names that tenant; query-time
-suppression, field enumeration, the rewriter and compaction apply a tombstone only to objects
+suppression and field enumeration apply a tombstone only to objects
 (attributed by key, as the read path does) and buffered rows of its own tenants, so a delete by
-tenant A cannot hide or remove tenant B's data. The delete API lists, verifies and un-deletes only
+tenant A cannot hide tenant B's data. The delete API lists, verifies and un-deletes only
 the caller's own tombstones; the global-read credential sees all of them. The records themselves
-live under the deployment's one prefix (`{prefix}_tombstones/{id}.json`), each carrying its
-`Tenants`; a record naming none is rejected, never applied. Tenants resolve in both forms: integer
+live under the deployment's one prefix (`{prefix}_tombstones/t<time>-<id>.json`, written once and
+never overwritten), each carrying its tenants; a definition naming none is rejected, never applied. Tenants resolve in both forms: integer
 `AccountID`/`ProjectID` headers (upstream's) and string `X-Scope-OrgID` through the aliases (the
 lakehouse extension).
 See [deletion-strategy.md → Tenant Scope](deletion-strategy.md#tenant-scope).

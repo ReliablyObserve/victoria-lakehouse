@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest"
 	lhmanifest "github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 )
@@ -41,10 +44,12 @@ func newLayoutHandler(t *testing.T, l keyLayout, aliases bool) (*TombstoneStore,
 	for _, k := range []string{l.key1001, l.key2002} {
 		m.AddFile("dt=2026-03-01/hour=07", lhmanifest.FileInfo{Key: k, Size: 1024, RowCount: 10, MinTimeNs: 1, MaxTimeNs: 1 << 40})
 	}
-	markListed(t, m, []string{l.key1001, l.key2002})
-	store := NewTombstoneStore()
+	if !m.ApplyListing([]lhmanifest.ListedObject{{Key: l.key1001, Size: 1024}, {Key: l.key2002, Size: 1024}}, time.Now()) {
+		t.Fatal("fixture: the listing was rejected")
+	}
+	store, _ := newSyncedPod(t, deletetest.NewBucket(), "pod")
 	auth := tenant.NewGlobalReadAuth(globalHeader, "letmein", "")
-	h := NewHandler(store, &scopedManifest{leftoverManifest{m: m}}, NewStorageClassDetector(nil), defaultCfg(), "logs",
+	h := NewHandler(store, &scopedManifest{m: m}, NewStorageClassDetector(nil), defaultCfg(), "logs",
 		WithGlobalReadAuthorizer(func(r *http.Request) bool { return auth.Enabled() && auth.Authorize(r) }))
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -76,7 +81,7 @@ func TestDeleteAPI_BothTenantFormsOnBothKeyLayouts(t *testing.T) {
 		for _, form := range forms {
 			t.Run(l.name+"/"+form.name, func(t *testing.T) {
 				store, srv := newLayoutHandler(t, l, true)
-				store.Add(Tombstone{ID: "other", Query: "*", EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
+				mustCreate(t, store, Tombstone{ID: "other", Query: "*", EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
 
 				// create: scoped to 2002:0, over 2002's object only
 				rec := scopeReq{method: http.MethodPost, path: "/delete/logsql/delete", form: deleteForm("level:error"), headers: form.headers}.do(srv)
@@ -85,8 +90,8 @@ func TestDeleteAPI_BothTenantFormsOnBothKeyLayouts(t *testing.T) {
 					t.Fatalf("create = %d %v, want tenant 2002:0 over its 1 object", rec.Code, body)
 				}
 				id := body["tombstone_id"].(string)
-				if ts, _ := store.Get(id); len(ts.AffectedKeys) != 1 || ts.AffectedKeys[0] != l.key2002 {
-					t.Fatalf("affected keys = %v, want only %s", ts.AffectedKeys, l.key2002)
+				if ts, _ := store.Get(id); !ts.ScopedExactlyTo(2002, 0) {
+					t.Fatalf("tenants = %v, want only 2002:0", ts.Tenants)
 				}
 
 				// estimate: 2002's objects only
@@ -118,12 +123,6 @@ func TestDeleteAPI_BothTenantFormsOnBothKeyLayouts(t *testing.T) {
 					t.Errorf("verify = %v, want only its own tombstone", b)
 				}
 
-				// leftovers: the tenant view
-				rec = scopeReq{method: http.MethodGet, path: "/delete/logsql/leftovers", headers: form.headers}.do(srv)
-				if b := decodeJSON(t, rec.Body); b["scope"] != "tenant" {
-					t.Errorf("leftovers scope = %v, want tenant", b["scope"])
-				}
-
 				// un-delete its own
 				if rec := (scopeReq{method: http.MethodDelete, path: "/delete/logsql/tombstone/" + id, headers: form.headers}).do(srv); rec.Code != http.StatusOK {
 					t.Errorf("un-delete own = %d", rec.Code)
@@ -147,7 +146,6 @@ func TestDeleteAPI_UnknownOrgIDAnswersLikeSelect(t *testing.T) {
 			{method: http.MethodPost, path: "/delete/logsql/delete", form: deleteForm("*"), headers: unknown},
 			{method: http.MethodPost, path: "/delete/logsql/estimate", form: deleteForm("*"), headers: unknown},
 			{method: http.MethodGet, path: "/delete/logsql/tombstones", headers: unknown},
-			{method: http.MethodGet, path: "/delete/logsql/leftovers", headers: unknown},
 			{method: http.MethodDelete, path: "/delete/logsql/tombstone/x", headers: unknown},
 		} {
 			rec := r.do(srv)
@@ -161,13 +159,15 @@ func TestDeleteAPI_UnknownOrgIDAnswersLikeSelect(t *testing.T) {
 	}
 }
 
+var createdAtRE = regexp.MustCompile(`"CreatedAt":"[^"]*"`)
+
 // Integer tenants are upstream's form: their answers do not change whether or
 // not string-tenant aliases are configured.
 func TestDeleteAPI_IntTenantAnswerIndependentOfAliases(t *testing.T) {
 	answer := func(aliases bool) []string {
 		store, srv := newLayoutHandler(t, keyLayouts()[0], aliases)
-		store.Add(Tombstone{ID: "fixed", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 2002}}})
-		store.Add(Tombstone{ID: "foreign", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
+		mustCreate(t, store, Tombstone{CreatedAt: time.Unix(0, 5000).UTC(), ID: "fixed", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 2002}}})
+		mustCreate(t, store, Tombstone{CreatedAt: time.Unix(0, 6000).UTC(), ID: "foreign", Query: "level:error", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{AccountID: 1001}}})
 		h := map[string]string{"AccountID": "2002"}
 		var out []string
 		for _, r := range []scopeReq{
@@ -178,7 +178,9 @@ func TestDeleteAPI_IntTenantAnswerIndependentOfAliases(t *testing.T) {
 			{method: http.MethodPost, path: "/delete/logsql/verify", form: url.Values{"query": {"level:error"}, "start": {"0"}, "end": {"10"}}, headers: h},
 		} {
 			rec := r.do(srv)
-			out = append(out, r.path+" "+http.StatusText(rec.Code)+" "+normalizeJSON(t, rec.Body.String()))
+			// CreatedAt is the creating pod's clock, which differs between the two runs.
+			body := createdAtRE.ReplaceAllString(normalizeJSON(t, rec.Body.String()), `"CreatedAt":""`)
+			out = append(out, r.path+" "+http.StatusText(rec.Code)+" "+body)
 		}
 		rec := scopeReq{method: http.MethodPost, path: "/delete/logsql/delete", form: deleteForm("*"), headers: h}.do(srv)
 		b := decodeJSON(t, rec.Body)
@@ -210,11 +212,11 @@ func TestDeleteAPI_OrgIDLayoutRefusesNonZeroProject(t *testing.T) {
 	if store.Count() != 0 {
 		t.Fatal("a refused delete created a tombstone")
 	}
-	if !l.accountOnly() || !AccountOnlyKeys(&scopedManifest{leftoverManifest{m: func() *lhmanifest.Manifest {
+	if !l.accountOnly() || !AccountOnlyKeys(&scopedManifest{m: func() *lhmanifest.Manifest {
 		m := lhmanifest.New("b", "")
 		m.SetPrefixTemplate(l.template)
 		return m
-	}()}}) {
+	}()}) {
 		t.Fatal("the {OrgID} manifest must report account-only keys")
 	}
 }

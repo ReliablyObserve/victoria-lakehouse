@@ -15,6 +15,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage/netselect"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest/memstore"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/internaldelete"
 )
 
@@ -63,7 +64,7 @@ func runTaskForm(tenants string) url.Values {
 // wrote an instance-wide tombstone, so any client reaching the port could hide
 // every tenant's matching rows. By default it now gets upstream's own answer.
 func TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing(t *testing.T) {
-	ts := delete.NewTombstoneStore()
+	ts := memstore.New(t)
 	h := internalDeleteServer(t, ts, false, true)
 
 	for _, path := range []string{"/internal/delete/run_task", "/internal/delete/stop_task", "/internal/delete/active_tasks"} {
@@ -82,7 +83,7 @@ func TestInternalDelete_DefaultAnswersLikeUpstreamAndHidesNothing(t *testing.T) 
 // upstream (its search has no tenant to match), and a task id that is already
 // registered gets upstream's refusal.
 func TestInternalDelete_EnabledRunTaskIsTenantScoped(t *testing.T) {
-	ts := delete.NewTombstoneStore()
+	ts := memstore.New(t)
 	h := internalDeleteServer(t, ts, true, true)
 
 	rec := postForm(h, "/internal/delete/run_task", runTaskForm(`[{"account_id":7,"project_id":3},{"account_id":7,"project_id":3}]`))
@@ -120,27 +121,28 @@ func TestInternalDelete_EnabledRunTaskIsTenantScoped(t *testing.T) {
 }
 
 // With both switches on, the read and un-delete halves of the protocol still
-// work: active_tasks lists and stop_task removes a tombstone.
+// work as for a finished task: active_tasks lists nothing and stop_task answers ok
+// and changes nothing.
 func TestInternalDelete_EnabledStopAndListStillWork(t *testing.T) {
-	ts := delete.NewTombstoneStore()
+	ts := memstore.New(t)
 	h := internalDeleteServer(t, ts, true, true)
-	ts.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t1", Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "hide"})
+	memstore.Create(t, ts, delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: "t1", Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "hide"})
 
 	rec := postForm(h, "/internal/delete/active_tasks", url.Values{"version": {netselect.DeleteActiveTasksProtocolVersion}})
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"t1"`) {
-		t.Fatalf("active_tasks: got %d %q, want 200 listing t1", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("active_tasks: got %d %q, want 200 and an empty list", rec.Code, rec.Body.String())
 	}
 	rec = postForm(h, "/internal/delete/stop_task", url.Values{"version": {netselect.DeleteStopTaskProtocolVersion}, "task_id": {"t1"}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("stop_task: got %d %q, want 200", rec.Code, rec.Body.String())
 	}
-	if n := ts.Count(); n != 0 {
-		t.Fatalf("tombstones after stop_task = %d, want 0", n)
+	if n := ts.Count(); n != 1 {
+		t.Fatalf("tombstones after stop_task = %d, want 1: stop_task never brings rows back", n)
 	}
 }
 
 func TestInternalDelete_DeleteFeatureOffIsRefused(t *testing.T) {
-	ts := delete.NewTombstoneStore()
+	ts := memstore.New(t)
 	h := internalDeleteServer(t, ts, true, false)
 	rec := postForm(h, "/internal/delete/run_task", runTaskForm(`[]`))
 	if rec.Code != http.StatusBadRequest || rec.Body.String() != internaldelete.DeleteDisabledMessage+"\n" {

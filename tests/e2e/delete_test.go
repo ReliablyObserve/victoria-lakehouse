@@ -29,7 +29,9 @@ func TestDelete_TombstoneAndQuery(t *testing.T) {
 	// Create a tombstone via POST /delete/logsql/delete.
 	startNs := fmt.Sprintf("%d", dataMinTime)
 	endNs := fmt.Sprintf("%d", dataMaxTime)
-	deleteURL := fmt.Sprintf("/delete/logsql/delete?query=%s&start=%s&end=%s",
+	// mode=hide: only a hide delete can be un-deleted below; the default mode
+	// (auto) is irreversible and would hide this window for every later test.
+	deleteURL := fmt.Sprintf("/delete/logsql/delete?query=%s&start=%s&end=%s&mode=hide",
 		url.QueryEscape(`service.name:="nginx"`), startNs, endNs)
 
 	resp := httpPost(t, logsBaseURL, deleteURL, "application/x-www-form-urlencoded", nil)
@@ -117,7 +119,8 @@ func TestDelete_Verify(t *testing.T) {
 	endNs := fmt.Sprintf("%d", dataMaxTime)
 
 	// Create a tombstone first.
-	deleteURL := fmt.Sprintf("/delete/logsql/delete?query=%s&start=%s&end=%s",
+	// mode=hide: see TestDelete_TombstoneAndQuery.
+	deleteURL := fmt.Sprintf("/delete/logsql/delete?query=%s&start=%s&end=%s&mode=hide",
 		url.QueryEscape("*"), startNs, endNs)
 
 	resp := httpPost(t, logsBaseURL, deleteURL, "application/x-www-form-urlencoded", nil)

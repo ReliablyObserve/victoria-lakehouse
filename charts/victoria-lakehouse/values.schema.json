@@ -232,6 +232,16 @@
             }
           },
           "additionalProperties": false
+        },
+        "delete": {
+          "type": "object",
+          "description": "Tombstones: the deletes every pod reads from the bucket.",
+          "properties": {
+            "cache_dir": {
+              "type": "string",
+              "description": "Optional local copy of the tombstone objects this pod has read (never written back). Empty disables it."
+            }
+          }
         }
       }
     },

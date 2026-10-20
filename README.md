@@ -552,16 +552,15 @@ Each binary supports three roles for independent scaling:
 - **Auth key support**: optional `X-Cross-Signal-Key` header for securing cross-deployment communication.
 
 ### Deletion
-- **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **GDPR compliant**: immediate inaccessibility satisfies right-to-erasure, with optional physical delete for strict compliance.
+- **Glacier-safe**: never triggers retrieval fees — the tombstone suppresses reads and data ages out via lifecycle. **Right to erasure**: the data is inaccessible from every read path at once; physical removal for strict compliance is planned.
 - **`lakehouse-logs`**: `/delete/logsql/*` endpoints. **`lakehouse-traces`**: `/delete/tracessql/*` endpoints.
 - **Cost estimation**: `/delete/logsql/estimate` (or `/delete/tracessql/estimate`) returns per-storage-class cost breakdown before executing.
-- **Leftovers API**: `GET /delete/logsql/leftovers` (or `/delete/tracessql/leftovers`) names the retired keys, unpublished uploads and unfinished rewrites an instance is still holding on to.
-- **Three modes**: `hide` (tombstone only, never rewrites), `permanent` (physical removal), `auto` (smart default).
+- **Three modes**: `hide` (tombstone only, never rewrites), `permanent` and `auto` (physical removal once it ships; until then they hide, like `hide`).
 - **Tenant-scoped deletes**: a tombstone names the tenant that issued it (integer AccountID/ProjectID, or a string X-Scope-OrgID through the aliases) and never hides, rewrites or compacts away another tenant's rows; each tenant lists, stops and un-deletes only its own.
-- **Three-tier strategy**: tombstone (instant, $0) -> selective rewrite (S3 Standard only) -> lifecycle expiry (Glacier/IA).
-- **Un-delete**: remove a tombstone to restore data visibility instantly.
+- **Un-delete**: undo a hide-mode tombstone and its rows are visible again on every pod within one minute; permanent and auto deletes cannot be undone.
 - **Upstream delete API**: VictoriaLogs' and VictoriaTraces' `/delete/run_task`, `stop_task` and `active_tasks`, behind upstream's `-delete.enable`; a task becomes a tombstone scoped to the requesting tenant.
-- **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) confirms tombstoned data is invisible (normal mode) or physically deleted (deep mode).
+- **Verification**: `/delete/logsql/verify` (or `/delete/tracessql/verify`) reports which tombstones cover a query and how much of the requested range they cover.
+- **Write-once tombstones**: a delete is a small object that is created once and never overwritten; every pod, writer or reader, learns it by listing the new keys, within one minute, and a pod that cannot refresh fails reads closed instead of showing rows that may be deleted.
 
 ### Loki Drilldown Compatibility
 - **loki-vl-proxy hot+cold routing** with automatic time-based query routing: recent queries to VictoriaLogs (hot), older queries to lakehouse (cold), with configurable overlap. Trace-to-logs linking via derived fields lets a trace ID in Grafana jump straight to the correlated logs.
@@ -575,7 +574,7 @@ Each binary supports three roles for independent scaling:
 - **Global read mode**: configurable `X-Lakehouse-Global-Read` header (or Bearer token) allows admin/Grafana dashboards to query across all tenants (must be explicitly enabled).
 - **Single binary, all tenants**: one lakehouse-logs/traces process serves all tenants simultaneously via header-based routing (`X-Scope-AccountID` / `X-Scope-ProjectID`, vmauth-compatible). Same pattern as Grafana Loki and Tempo.
 - **Per-tenant ingest rate limits**: `tenant.IngestRateLimiter` adds independent byte/sec and row/sec token buckets with `X-RateLimit-*` headers and HTTP 429 on overflow.
-- **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector and rewriter scheduler both consult the per-tenant rules so manual predictions and the background rewriter agree.
+- **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector consults the per-tenant rules so manual predictions and the delete estimate agree.
 - **One process, many buckets**: optional per-tenant bucket overrides route a tenant's reads and writes to its own S3 bucket via the YAML policy file's `tenant.bucket` field (no template required). The s3reader pool registry caches a separate client per bucket so a single lakehouse process serves isolated buckets without restart. Manifest sidecars stay in the default bucket so a fleet-wide manifest still resolves files across many tenant buckets.
 - **Per-tenant config overrides** with global-default inheritance: `Retention`, `Cardinality`, `Ingest` rate limits, `Lifecycle` transitions, and `S3` bucket can be overridden per `(AccountID, ProjectID)` via a YAML policy file. Unspecified knobs fall back to the global defaults. Overrides keyed by OrgID alias re-resolve on the same cadence as alias sync, so late-registered tenants pick up their overrides without a restart.
 - **In-path S3 isolation**: The `BufferFlusher` drains each segment per `(AccountID, ProjectID)` and writes Parquet files per tenant per partition under the resolved `{AccountID}/{ProjectID}/<mode>/` prefix. Single-tenant batches keep the fast path (one upload, one manifest entry, one stats callback). Every Parquet tool (DuckDB, ClickHouse, Trino, Spark) can query a tenant's prefix directly.

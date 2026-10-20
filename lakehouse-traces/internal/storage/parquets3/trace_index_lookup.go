@@ -59,6 +59,9 @@ const traceIndexLookupParallelism = 16
 // would tell a caller whether another tenant holds a trace ID and when, and
 // in a bucket-per-tenant deployment would read other tenants' buckets.
 func (s *Storage) LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.TenantID, traceID string) (startNs, endNs int64, found bool, err error) {
+	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
+		return 0, 0, false, err
+	}
 	if traceID == "" {
 		metrics.TraceIndexLookups.Inc("miss")
 		return 0, 0, false, nil

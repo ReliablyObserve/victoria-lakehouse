@@ -119,23 +119,20 @@
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestMaintenanceJobs_StartedByRole
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_WritesNothingToTheBucket
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts
-    - cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_RetriesAFailedTombstoneWrite
     - cmd/lakehouse-logs/maintenance_inventory_test.go#TestMaintenanceInventory_EveryS3WriterIsGated
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestCompactionOwnership_RingIsTheWritersOnly
-    - cmd/lakehouse-logs/maintenance_gate_test.go#TestResolveInterruptedRewrites_OnlyWhereRewritesRun
     - cmd/lakehouse-logs/maintenance_gate_test.go#TestSelectRole_ShutdownWritesNothing
-    - cmd/lakehouse-logs/maintenance_gate_test.go#TestRun_StartsTheTombstoneWriteRetryOnEveryNode
     - cmd/lakehouse-logs/maintenance_inventory_test.go#TestMaintenanceInventory_InternalPackagesWriters
     - lakehouse-traces/maintenance_gate_test.go#TestMaintenanceJobs_StartedByRole
     - lakehouse-traces/maintenance_gate_test.go#TestSelectRole_WritesNothingToTheBucket
     - lakehouse-traces/maintenance_gate_test.go#TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts
-    - lakehouse-traces/maintenance_gate_test.go#TestSelectRole_RetriesAFailedTombstoneWrite
     - lakehouse-traces/maintenance_inventory_test.go#TestMaintenanceInventory_EveryS3WriterIsGated
     - lakehouse-traces/maintenance_gate_test.go#TestCompactionOwnership_RingIsTheWritersOnly
-    - lakehouse-traces/maintenance_gate_test.go#TestResolveInterruptedRewrites_OnlyWhereRewritesRun
     - lakehouse-traces/maintenance_gate_test.go#TestSelectRole_ShutdownWritesNothing
-    - lakehouse-traces/maintenance_gate_test.go#TestRun_StartsTheTombstoneWriteRetryOnEveryNode
     - lakehouse-traces/maintenance_inventory_test.go#TestMaintenanceInventory_InternalPackagesWriters
+    - cmd/lakehouse-logs/tombstones_test.go#TestAttachTombstones_OnlyMaintenancePodsDeleteExpiredKeys
+    - lakehouse-traces/tombstones_test.go#TestAttachTombstones_OnlyMaintenancePodsDeleteExpiredKeys
+    - internal/delete/gc_test.go#TestGC_SteadyState
   docs:
     - docs/architecture/roles.md
     - docs/operations.md

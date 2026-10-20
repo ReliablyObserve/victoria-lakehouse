@@ -12,9 +12,10 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
-// Compaction is the second reaper: it drops rows of eligible tombstones while
-// merging. A tenant-scoped tombstone must only ever drop rows of its own
-// tenants' objects, and must follow its rows only onto its own tenant's output.
+// Deletes only hide rows: compaction merges every row forward and a tombstone
+// stays in force until its retention passes. A tenant-scoped tombstone must hide
+// the rows of its own tenants' objects only, and compaction must never mix
+// tenants into one output, so the hiding follows the output key.
 
 // tenantCompactionFixture holds one tenant-prefixed source pair per tenant in
 // the same partition and window, each with an "error" row a tombstone matches.
@@ -59,16 +60,15 @@ func newTenantCompactionFixture(t *testing.T) *tenantCompactionFixture {
 	return f
 }
 
-func TestCompaction_TenantScopedTombstoneDropsOnlyItsTenantsRows(t *testing.T) {
+func TestCompaction_TenantScopedTombstoneHidesOnlyItsTenantsRows(t *testing.T) {
 	f := newTenantCompactionFixture(t)
 	store := delete.NewTombstoneStore()
 	store.Add(delete.Tombstone{
 		ID: "ts-2002", Query: `severity_text:="error"`, StartNs: 0, EndNs: 1 << 40,
-		AffectedKeys: f.byTenant["2002/0"], CreatedAt: time.Now().Add(-time.Hour),
-		Mode: "permanent", Reaped: map[string]bool{},
+		CreatedAt: time.Now().Add(-time.Hour), Mode: "permanent",
 		Tenants: []delete.TenantRef{{AccountID: 2002}},
 	})
-	c := NewCompactor(CompactorConfig{Pool: f.pool, Manifest: f.manifest, Mode: config.ModeLogs, RowGroupSize: 100, Tombstones: store})
+	c := NewCompactor(CompactorConfig{Pool: f.pool, Manifest: f.manifest, Mode: config.ModeLogs, RowGroupSize: 100})
 
 	res, err := c.Compact(context.Background(), tenantCompactionPartition, f.files, 0)
 	if err != nil {
@@ -88,70 +88,80 @@ func TestCompaction_TenantScopedTombstoneDropsOnlyItsTenantsRows(t *testing.T) {
 				nErr++
 			}
 		}
+		// Nothing is physically removed: both tenants' outputs keep every row.
+		if len(rows) != 4 || nErr != 2 {
+			t.Errorf("%s: %d rows, %d error rows; want all 4 and 2 (hide-only: compaction copies rows forward)", out, len(rows), nErr)
+		}
+		// The read path hides the error rows of tenant 2002's output only.
+		covered := len(delete.ForKey(store.Active(), nil, out)) == 1
 		switch {
-		case len(out) > 5 && out[:5] == "2002/":
-			if nErr != 0 || len(rows) != 2 {
-				t.Errorf("tenant 2002's output %s: %d rows, %d deleted rows carried; want 2 kept, 0 deleted", out, len(rows), nErr)
-			}
-		case len(out) > 5 && out[:5] == "1001/":
-			if nErr != 2 || len(rows) != 4 {
-				t.Errorf("tenant 1001's output %s lost rows to tenant 2002's delete: %d rows, %d error rows; want 4 and 2", out, len(rows), nErr)
-			}
-		default:
+		case strings.HasPrefix(out, "2002/") && !covered:
+			t.Errorf("tenant 2002's output %s is not covered by its tenant's tombstone", out)
+		case strings.HasPrefix(out, "1001/") && covered:
+			t.Errorf("tenant 1001's output %s is covered by tenant 2002's delete", out)
+		case !strings.HasPrefix(out, "2002/") && !strings.HasPrefix(out, "1001/"):
 			t.Errorf("unexpected output key %s", out)
 		}
 	}
-	// Tenant 1001's group merges first (groups run in key order) while the
-	// tombstone is still active — the order in which a leak would show. With
-	// its own tenant's output clean, the tombstone then has nothing left.
-	if ts, still := store.Get("ts-2002"); still {
-		t.Errorf("the tombstone must retire once its tenant's output is clean; still active with keys %v", ts.AffectedKeys)
+	// Compaction does not retire a tombstone: it lives until retention.
+	if _, still := store.Get("ts-2002"); !still {
+		t.Error("compaction must not retire a tombstone")
 	}
 }
 
 func TestKeyScope_AppliesOnlyWhenEveryInputBelongsToTheTombstonesTenants(t *testing.T) {
 	scoped := delete.Tombstone{ID: "s", Tenants: []delete.TenantRef{{AccountID: 1001}}}
-	unscoped := delete.Tombstone{ID: "n"} // invalid; must never apply
+	unscoped := delete.Tombstone{ID: "n"} // names no tenant; must never apply
 	cases := []struct {
 		name string
-		ks   keyScope
-		want []string
+		keys []string
+		want bool // applies to every key
 	}{
-		{"own tenant's inputs", keyScope{keys: []string{"1001/0/logs/a", "1001/0/logs/b"}}, []string{"s"}},
-		{"another tenant's inputs", keyScope{keys: []string{"2002/0/logs/a"}}, nil},
-		{"a group mixing tenants withholds the tombstone", keyScope{keys: []string{"1001/0/logs/a", "2002/0/logs/b"}}, nil},
-		{"no inputs named", keyScope{}, nil},
+		{"own tenant's inputs", []string{"1001/0/logs/a", "1001/0/logs/b"}, true},
+		{"another tenant's inputs", []string{"2002/0/logs/a"}, false},
+		// Compaction never mixes tenants into one output; were a group to, the
+		// tombstone is withheld from the foreign key.
+		{"a group mixing tenants", []string{"1001/0/logs/a", "2002/0/logs/b"}, false},
 	}
 	for _, tc := range cases {
-		got := tc.ks.tombstones([]delete.Tombstone{scoped, unscoped})
-		var ids []string
-		for _, ts := range got {
-			ids = append(ids, ts.ID)
+		every := true
+		for _, key := range tc.keys {
+			got := delete.ForKey([]delete.Tombstone{scoped, unscoped}, nil, key)
+			for _, ts := range got {
+				if ts.ID == "n" {
+					t.Errorf("%s: a tombstone naming no tenant applies to %s", tc.name, key)
+				}
+			}
+			if len(got) == 0 {
+				every = false
+			}
 		}
-		if strings.Join(ids, ",") != strings.Join(tc.want, ",") {
-			t.Errorf("%s: applied %v, want %v", tc.name, ids, tc.want)
+		if every != tc.want {
+			t.Errorf("%s: applies to every input = %v, want %v", tc.name, every, tc.want)
 		}
 	}
 }
 
-func TestReconcileTombstones_ScopedTombstoneNeverFollowsOntoAnotherTenantsOutput(t *testing.T) {
-	src := "1001/0/logs/dt=2026-07-09/hour=11/src.parquet"
+func TestCompaction_ScopedTombstoneCoversOnlyItsTenantsOutput(t *testing.T) {
+	f := newTenantCompactionFixture(t)
 	store := delete.NewTombstoneStore()
 	store.Add(delete.Tombstone{
-		ID: "t", Query: "*", StartNs: 0, EndNs: 1 << 40, AffectedKeys: []string{src},
-		CreatedAt: time.Now().Add(-time.Hour), Mode: "permanent", Reaped: map[string]bool{},
+		ID: "t", Query: "*", StartNs: 0, EndNs: 1 << 40,
+		CreatedAt: time.Now().Add(-time.Hour), Mode: "permanent",
 		Tenants: []delete.TenantRef{{AccountID: 1001}},
 	})
-	foreignOut := "2002/0/logs/dt=2026-07-09/hour=11/out.parquet"
-	reconcileTombstones(store, []string{src}, foreignOut, nil, nil, nil, nil)
-	ts, ok := store.Get("t")
-	if !ok {
-		t.Fatal("tombstone vanished")
+	c := NewCompactor(CompactorConfig{Pool: f.pool, Manifest: f.manifest, Mode: config.ModeLogs, RowGroupSize: 100})
+	res, err := c.Compact(context.Background(), tenantCompactionPartition, f.files, 0)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
 	}
-	if containsKey(ts.AffectedKeys, foreignOut) {
-		t.Errorf("tenant 1001's tombstone was transferred onto tenant 2002's output: %v", ts.AffectedKeys)
-	}
-	if !ts.Reaped[src] {
-		t.Error("the merged-away source must still be marked reaped")
+	for _, out := range res.OutputFiles {
+		covered := len(delete.ForKey(store.Active(), nil, out)) == 1
+		if strings.HasPrefix(out, "2002/") && covered {
+			t.Errorf("tenant 1001's tombstone covers tenant 2002's output %s", out)
+		}
+		if strings.HasPrefix(out, "1001/") && !covered {
+			t.Errorf("tenant 1001's tombstone does not cover its own output %s (the hiding must follow the rows)", out)
+		}
 	}
 }

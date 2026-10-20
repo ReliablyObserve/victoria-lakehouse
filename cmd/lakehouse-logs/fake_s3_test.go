@@ -28,6 +28,7 @@ type fakeReq struct {
 	Off, Len       int64 // byte range served by a GET (a whole-object GET: 0, size)
 	Status         int
 	Start, End     time.Time
+	Cond           bool // the request carried If-None-Match: *
 }
 
 type fakeS3 struct {
@@ -43,7 +44,33 @@ type fakeS3 struct {
 	inflight atomic.Int64
 	peak     atomic.Int64
 	upSeq    atomic.Int64
+	skew     atomic.Int64 // ns the store's clock (Date header, LastModified) is ahead of the host's
+	shortN   atomic.Int64 // >0: the next listing returns only this many keys and claims to be complete
+	noCond   atomic.Bool  // a PUT with If-None-Match answers 501 NotImplemented
+	failAll  atomic.Bool  // every request answers 503
+	failList atomic.Bool  // every listing answers 503
 }
+
+// now is the store's clock.
+func (m *fakeS3) now() time.Time { return time.Now().Add(time.Duration(m.skew.Load())) }
+
+// SetClockSkew moves the store's clock (the Date header and LastModified).
+func (m *fakeS3) SetClockSkew(d time.Duration) { m.skew.Store(int64(d)) }
+
+// ShortListOnce makes the next listing return only its first n keys while
+// claiming to be complete: the silent short listing a store can return.
+func (m *fakeS3) ShortListOnce(n int) { m.shortN.Store(int64(n)) }
+
+// RejectConditionalWrites makes a PUT with If-None-Match answer 501, as a store
+// without conditional writes does.
+func (m *fakeS3) RejectConditionalWrites(on bool) { m.noCond.Store(on) }
+
+// FailListings makes every listing answer 503 while on; reads and writes of
+// single keys keep working.
+func (m *fakeS3) FailListings(on bool) { m.failList.Store(on) }
+
+// FailEverything makes every request answer 503 while on.
+func (m *fakeS3) FailEverything(on bool) { m.failAll.Store(on) }
 
 func newFakeS3() *fakeS3 {
 	m := &fakeS3{mu: new(sync.Mutex), objs: map[string][]byte{}, mods: map[string]time.Time{}, uploads: map[string]map[int][]byte{}}
@@ -162,10 +189,21 @@ func (m *fakeS3) handle(w http.ResponseWriter, r *http.Request) {
 	bucket, key, _ := strings.Cut(path, "/")
 	key, _ = url.PathUnescape(key)
 	q := r.URL.Query()
-	rec := fakeReq{Key: key, Class: classify(key), In: int64(len(body)), Start: start}
+	rec := fakeReq{Key: key, Class: classify(key), In: int64(len(body)), Start: start, Cond: r.Header.Get("If-None-Match") == "*" && r.Method == http.MethodPut}
+	w.Header().Set("Date", m.now().UTC().Format(http.TimeFormat))
 	var status int
 	var out int64
-	if s, _ := m.failPut.Load().(string); r.Method == http.MethodPut && s != "" && strings.Contains(key, s) {
+	if m.failAll.Load() || (m.failList.Load() && r.Method == http.MethodGet && key == "") {
+		rec.Op = r.Method
+		w.WriteHeader(503)
+		status = 503
+	} else if m.noCond.Load() && r.Method == http.MethodPut && r.Header.Get("If-None-Match") != "" {
+		rec.Op = "PUT"
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(501)
+		_, _ = io.WriteString(w, `<?xml version="1.0"?><Error><Code>NotImplemented</Code><Message>A header you provided implies functionality that is not implemented</Message></Error>`)
+		status = 501
+	} else if s, _ := m.failPut.Load().(string); r.Method == http.MethodPut && s != "" && strings.Contains(key, s) {
 		rec.Op = "PUT"
 		w.WriteHeader(500)
 		status = 500
@@ -275,7 +313,7 @@ func (m *fakeS3) serve(w http.ResponseWriter, r *http.Request, bucket, key strin
 			return 412, 0
 		}
 		m.objs[full] = body
-		m.mods[full] = time.Now()
+		m.mods[full] = m.now()
 		m.mu.Unlock()
 		w.Header().Set("ETag", etagOf(body))
 		w.WriteHeader(200)
@@ -390,6 +428,25 @@ func (m *fakeS3) list(w http.ResponseWriter, bucket string, q url.Values) (int, 
 	}
 	m.mu.Unlock()
 	sort.Strings(keys)
+	if n := int(m.shortN.Swap(0)); n > 0 {
+		// Only the keys after the resume point count toward the short page.
+		var after2 []string
+		for _, k := range keys {
+			if after == "" || k > after {
+				after2 = append(after2, k)
+			}
+		}
+		if n < len(after2) {
+			cut := after2[n-1]
+			shortened := keys[:0:0]
+			for _, k := range keys {
+				if k <= cut {
+					shortened = append(shortened, k)
+				}
+			}
+			keys = shortened
+		}
+	}
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult>`)
 	fmt.Fprintf(&b, "<Name>%s</Name><Prefix>%s</Prefix>", bucket, xmlEsc(prefix))

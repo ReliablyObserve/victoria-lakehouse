@@ -10,11 +10,12 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest/memstore"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/hiddenfields"
 )
 
 func TestMemLeak_TracesAdapter_TombstoneAddRemoveCycles(t *testing.T) {
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	a := &adapter{
 		store:      mockStore{},
 		tombstones: store,
@@ -33,7 +34,7 @@ func TestMemLeak_TracesAdapter_TombstoneAddRemoveCycles(t *testing.T) {
 			id := fmt.Sprintf("task-%d-%d", c, i)
 			// run_task is refused (tombstones are not tenant-scoped), so the
 			// cycle adds through the store and removes through the adapter.
-			store.Add(delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: id, Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "auto"})
+			memstore.Create(t, store, delete.Tombstone{Tenants: []delete.TenantRef{{}}, ID: id, Query: "level:error", EndNs: time.Now().UnixNano(), CreatedAt: time.Now(), Mode: "auto"})
 		}
 		for i := 0; i < itemsPerCycle; i++ {
 			id := fmt.Sprintf("task-%d-%d", c, i)
@@ -53,8 +54,11 @@ func TestMemLeak_TracesAdapter_TombstoneAddRemoveCycles(t *testing.T) {
 	t.Logf("Traces adapter tombstone add/remove: heap_before=%dKB, heap_after=%dKB",
 		heapBefore/1024, heapAfter/1024)
 
-	// TombstoneStore map: 2MB max
-	maxGrowth := uint64(2 * 1024 * 1024)
+	// An un-deleted tombstone stays in the view and the bucket until its
+	// retention passes (a late repeat of the task must meet its fate key), so
+	// the heap grows with the number of tasks, by about 1KB each: bounded at
+	// 2KB per task here (measured ~1KB).
+	maxGrowth := uint64(cycles * itemsPerCycle * 2 * 1024)
 	if heapAfter > heapBefore+maxGrowth {
 		t.Errorf("Possible memory leak: heap grew from %dKB to %dKB after %d cycles",
 			heapBefore/1024, heapAfter/1024, cycles)
@@ -62,7 +66,7 @@ func TestMemLeak_TracesAdapter_TombstoneAddRemoveCycles(t *testing.T) {
 }
 
 func TestMemLeak_TracesAdapter_DeleteActiveTasksCycles(t *testing.T) {
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	a := &adapter{
 		store:      mockStore{},
 		tombstones: store,
@@ -70,7 +74,7 @@ func TestMemLeak_TracesAdapter_DeleteActiveTasksCycles(t *testing.T) {
 
 	// Pre-populate
 	for i := 0; i < 10; i++ {
-		store.Add(delete.Tombstone{
+		memstore.Create(t, store, delete.Tombstone{
 			Tenants:   []delete.TenantRef{{}},
 			ID:        fmt.Sprintf("active-%d", i),
 			Query:     "*",

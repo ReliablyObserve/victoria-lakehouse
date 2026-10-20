@@ -9,13 +9,14 @@ import (
 // parsedFilters memoises logstorage.ParseFilter by query string.
 //
 // Tombstone.MatchesRow is called once per candidate ROW — by the query row
-// filter, by the rewriter, by the compactor and by the field enumeration paths.
+// filter and by the field enumeration paths.
 // Re-parsing the LogsQL expression on every one of those calls dominated the
 // cost of having any tombstone at all (a parse is orders of magnitude more
 // expensive than the match it enables). The parse is a pure function of the
-// query string, so the result is cached forever; the set of distinct tombstone
-// queries is bounded by the number of delete requests an operator has issued,
-// and each entry is a few hundred bytes.
+// query string, so the result is cached while some tombstone of the view uses it
+// (store.go evicts it with the last one); the cache holds one entry per distinct
+// query of the tombstones in the view, about 560 bytes each (measured,
+// TestScale_MemoryOfParsedFilters).
 //
 // A query that fails to parse is cached as a nil filter so a malformed
 // tombstone costs one parse, not one per row. A nil filter never matches, which
@@ -48,22 +49,6 @@ func parseFilterCached(query string, at int64) *logstorage.Filter {
 	}
 	parsedFilters.Store(k, f)
 	return f
-}
-
-// forgetFilterLocked drops the cached parse of ts's filter unless another
-// tombstone of the store still uses it, which keeps the cache bounded by the
-// live tombstones. It is not exact — the cache is process-wide, and a reader
-// holding a snapshot copy of a removed tombstone can repopulate an entry — but
-// an entry is a pure function of (query, timestamp), so it can never produce a
-// wrong match. Caller holds s.mu (write) and has already removed ts.
-func (s *TombstoneStore) forgetFilterLocked(ts Tombstone) {
-	k := filterKey{query: ts.Query, at: ts.FilterAt}
-	for _, other := range s.tombstones {
-		if other.Query == k.query && other.FilterAt == k.at {
-			return
-		}
-	}
-	parsedFilters.Delete(k)
 }
 
 // parseFilterAt parses query with relative time filters evaluated at at (unix

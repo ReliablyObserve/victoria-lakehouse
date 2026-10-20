@@ -238,7 +238,7 @@
     - docs/tenant-stats.md
     - docs/multi-tenancy.md
   highlight: >-
-    **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector and rewriter scheduler both consult the per-tenant rules so manual predictions and the background rewriter agree.
+    **Per-tenant lifecycle overrides**: tenants with their own S3 transition schedule (e.g. `ONEZONE_IA @ 7d` → `GLACIER @ 60d`) shadow the global rules; the storage-class detector consults the per-tenant rules so manual predictions and the delete estimate agree.
   description: >-
     Storage-class policy is a cost decision each tenant may make differently. Both the predictor
     that estimates cost and the scheduler that acts on it read the same per-tenant rules, so an

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Deletes: a tombstone is a write-once object that every pod reads from the bucket.** The definition (and, for a `hide` delete that is undone, an `.undo` object) is created once with `If-None-Match` under `{prefix}_tombstones/`; every pod lists new keys each minute and enforces them, so a delete reaches all pods within a minute instead of at the next restart, and nothing a pod holds locally ever causes a DELETE. While `delete.enabled` is true, a pod that cannot refresh its list for three minutes answers cold and buffer-bridge reads with `503` (an undecodable definition closes only the tenants it names), and a select pod is ready only after its first sync. Only a `hide` delete can be un-deleted; `permanent` and `auto` hide the rows like `hide` and answer `409` to an un-delete, because physical removal is not enabled in this release (#627); `delete.default_mode` now defaults to `hide` (it was `auto`), also for upstream's `run_task`: the bytes stay until retention and direct Parquet readers still see them. `active_tasks` is `[]` and `stop_task` a no-op, as for a finished upstream task. Key times are pod clocks (late keys are counted: `LakehouseTombstoneClockSkew`). New: `lakehouse_delete_tombstone_view_age_seconds`, `LakehouseTombstoneViewStale`, `LakehouseTombstoneUnreadable`. See `docs/deletion-strategy.md`.
+
+### Removed
+
+- **The mutable tombstone protocol and everything built on it:** the per-tombstone record, its disk and S3 write-through, the delete rewriter and scheduler, the leftovers API (`GET /delete/logsql/leftovers`, `/delete/tracessql/leftovers`), their metrics and alerts, and the unread knobs `delete.auto_rewrite_classes`, `delete.rewrite_delay`, `delete.rewrite_max_concurrent`, `delete.verify_interval`. **Upgrade note: tombstones written by an earlier release (`_tombstones/<id>.json`) no longer hide rows and are not migrated; they are rejected without error and counted each hour in `lakehouse_delete_tombstone_keys_rejected_total`. Re-issue those deletes, and remove the old objects by hand.**
+
 ## [0.157.1] - 2026-10-19
 
 ### Changed

@@ -70,7 +70,7 @@ func podConfig(t *testing.T, role config.Role, endpoint string) *config.Config {
 	cfg.Cache.DiskPath = ""
 	cfg.Manifest.PersistPath = t.TempDir()
 	cfg.Insert.BufferDir = t.TempDir()
-	cfg.Delete.PersistPath = t.TempDir()
+	cfg.Delete.CacheDir = t.TempDir()
 
 	cfg.Compaction.Enabled = true
 	cfg.Compaction.Interval = 50 * time.Millisecond
@@ -79,7 +79,6 @@ func podConfig(t *testing.T, role config.Role, endpoint string) *config.Config {
 	cfg.Compaction.MinAge = 0
 
 	cfg.Delete.Enabled = true
-	cfg.Delete.VerifyInterval = 50 * time.Millisecond
 
 	cfg.Retention.Enabled = true
 	cfg.Retention.Default = "720h" // 30 days: the 60-day-old seed expires, the 2-day-old one does not
@@ -115,6 +114,12 @@ type seedGroup struct {
 // number of rows written.
 func seedFlushes(t *testing.T, store *parquets3.Storage, cfg *config.Config, rowsEach int, groups ...seedGroup) int {
 	t.Helper()
+	return seedFlushesAfter(t, store, cfg, rowsEach, 0, groups...)
+}
+
+// seedFlushesAfter is seedFlushes on a pod that already holds `existing` objects.
+func seedFlushesAfter(t *testing.T, store *parquets3.Storage, cfg *config.Config, rowsEach, existing int, groups ...seedGroup) int {
+	t.Helper()
 	segs, err := membuffer.OpenSegments(membuffer.Config{Path: cfg.Insert.BufferDir})
 	if err != nil {
 		t.Fatal(err)
@@ -145,11 +150,11 @@ func seedFlushes(t *testing.T, store *parquets3.Storage, cfg *config.Config, row
 		segs.MustAddRows(lr)
 		logstorage.PutLogRows(lr)
 		deadline := time.Now().Add(20 * time.Second)
-		for store.Manifest().TotalFiles() < f+1 && time.Now().Before(deadline) {
+		for store.Manifest().TotalFiles() < existing+f+1 && time.Now().Before(deadline) {
 			time.Sleep(20 * time.Millisecond)
 		}
-		if got := store.Manifest().TotalFiles(); got != f+1 {
-			t.Fatalf("after batch %d the insert pod holds %d objects, want %d", f, got, f+1)
+		if got := store.Manifest().TotalFiles(); got != existing+f+1 {
+			t.Fatalf("after batch %d the insert pod holds %d objects, want %d", f, got, existing+f+1)
 		}
 	}
 	return rows
@@ -199,7 +204,6 @@ func bucketRows(t *testing.T, s3 *fakeS3) (rows int64, objects int) {
 // wires them, and returns what each returned plus a stop function.
 type startedJobs struct {
 	compaction  bool // the scheduler and the orphan sweep
-	deleteRew   bool
 	retention   bool
 	stop        func()
 	statsCancel chan struct{}
@@ -208,6 +212,11 @@ type startedJobs struct {
 func startAllJobs(t *testing.T, cfg *config.Config, store *parquets3.Storage) *startedJobs {
 	t.Helper()
 	tombstones := delete.NewTombstoneStore()
+	ret := &tombstoneRetention{}
+	if err := attachTombstones(cfg, store.Pool(), tombstones, ret, fastPoll); err != nil {
+		t.Fatal(err)
+	}
+	store.SetTombstoneStore(tombstones)
 	detector := newStorageClassDetector(cfg)
 	var holder *tenant.PolicyRegistry
 	resolver := tenant.NewResolver(tenant.ResolverConfig{})
@@ -219,16 +228,14 @@ func startAllJobs(t *testing.T, cfg *config.Config, store *parquets3.Storage) *s
 	holder = policy
 
 	j := &startedJobs{statsCancel: make(chan struct{})}
-	sched, sweep, stopCompaction := setupCompaction(cfg, store, nil, ":9428", &holder, tombstones, detector, selfaddr.Env{})
+	sched, sweep, stopCompaction := setupCompaction(cfg, store, nil, ":9428", &holder, detector, selfaddr.Env{})
 	j.compaction = sched != nil || sweep != nil || stopCompaction != nil
-	rewrite := startDeleteRewrite(cfg, store, nil, tombstones, detector)
-	j.deleteRew = rewrite != nil
 	stopRetention := startRetention(cfg, store, policy)
 	j.retention = stopRetention != nil
 	startStatsLoops(cfg, store, registry, resolver, ":9428", j.statsCancel)
 	// The alias registry's periodic sync (conditional PUTs, only for an alias
-	// that was registered on this pod) and the tombstone write retry, as run()
-	// starts them.
+	// that was registered on this pod) and the tombstone sync, as run() starts
+	// them.
 	aliasReg, err := tenant.NewRegistry(resolver, tenant.RegistryConfig{
 		Pool:        store.Pool(),
 		Key:         cfg.AutoPrefix() + "_meta/tenant-aliases.json",
@@ -239,9 +246,7 @@ func startAllJobs(t *testing.T, cfg *config.Config, store *parquets3.Storage) *s
 		t.Fatal(err)
 	}
 	startTenantAliasPersist(cfg, aliasReg, j.statsCancel)
-	if rewrite == nil {
-		startTombstoneWriteRetry(cfg, tombstones, j.statsCancel)
-	}
+	startTombstoneSync(tombstones, j.statsCancel)
 
 	var once sync.Once
 	j.stop = func() {
@@ -249,9 +254,6 @@ func startAllJobs(t *testing.T, cfg *config.Config, store *parquets3.Storage) *s
 			close(j.statsCancel)
 			if stopRetention != nil {
 				stopRetention()
-			}
-			if rewrite != nil {
-				rewrite.Stop()
 			}
 			if stopCompaction != nil {
 				stopCompaction()
@@ -277,7 +279,6 @@ func TestMaintenanceJobs_StartedByRole(t *testing.T) {
 			j := startAllJobs(t, cfg, store)
 			for name, got := range map[string]bool{
 				"compaction scheduler and orphan sweep": j.compaction,
-				"delete rewrite scheduler":              j.deleteRew,
 				"retention manager":                     j.retention,
 			} {
 				if got != tc.want {
@@ -451,7 +452,7 @@ func TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts(t *testing.T) {
 	var stops []func()
 	for _, p := range pods {
 		var holder *tenant.PolicyRegistry
-		_, _, stop := setupCompaction(p.cfg, p.store, nil, p.name+":9428", &holder, delete.NewTombstoneStore(), newStorageClassDetector(p.cfg), selfaddr.Env{})
+		_, _, stop := setupCompaction(p.cfg, p.store, nil, p.name+":9428", &holder, newStorageClassDetector(p.cfg), selfaddr.Env{})
 		if stop != nil {
 			stops = append(stops, stop)
 		}
@@ -511,57 +512,6 @@ func TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts(t *testing.T) {
 		}
 		bucket.mu.Unlock()
 		t.Errorf("the bucket holds %d objects after compaction, want 1: %v", objects, keys)
-	}
-}
-
-// A select pod takes the delete requests and never rewrites, so nothing but the
-// tombstone write retry stands between a transient PUT failure and a delete
-// that lives on that pod's disk alone (a lost volume would lose it for the
-// fleet). The retry runs on every node without a rewrite scheduler.
-func TestSelectRole_RetriesAFailedTombstoneWrite(t *testing.T) {
-	s3 := newFakeS3()
-	defer s3.Close()
-	cfg := podConfig(t, config.RoleSelect, s3.URL())
-	store := newPod(t, cfg)
-
-	ts := delete.NewTombstoneStore()
-	ts.EnablePersistence(delete.PersistenceConfig{
-		Dir:    t.TempDir(),
-		Pool:   &s3PoolAdapter{pool: store.Pool()},
-		Prefix: cfg.AutoPrefix(),
-	})
-	s3.FailPuts("tombstone-under-test")
-	ts.Add(delete.Tombstone{ID: "tombstone-under-test", Query: "*", CreatedAt: time.Now(), Mode: "hide"})
-	if ts.PendingS3Writes() == 0 {
-		t.Fatal("the failed PUT left no pending write; the test proves nothing")
-	}
-
-	if rewrite := startDeleteRewrite(cfg, store, nil, ts, newStorageClassDetector(cfg)); rewrite != nil {
-		rewrite.Stop()
-		t.Fatal("a select pod started the delete rewrite scheduler")
-	}
-	stop := make(chan struct{})
-	defer close(stop)
-	startTombstoneWriteRetry(cfg, ts, stop)
-
-	s3.FailPuts("") // the bucket recovers
-	deadline := time.Now().Add(10 * time.Second)
-	for ts.PendingS3Writes() > 0 && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if n := ts.PendingS3Writes(); n != 0 {
-		t.Fatalf("%d tombstone writes are still pending after the bucket recovered: the select pod does not retry them", n)
-	}
-	found := false
-	s3.mu.Lock()
-	for k := range s3.objs {
-		if strings.Contains(k, "tombstone-under-test") {
-			found = true
-		}
-	}
-	s3.mu.Unlock()
-	if !found {
-		t.Fatal("the tombstone object never reached the bucket")
 	}
 }
 
@@ -626,46 +576,6 @@ func TestCompactionOwnership_RingIsTheWritersOnly(t *testing.T) {
 	}
 }
 
-// A select pod that restarts restores the tombstone records of a writer's live
-// rewrite from the bucket. Resolving them there would write the records back
-// (a blind PUT) and undo a rewrite that is still running, so only a pod that runs
-// rewrites resolves anything.
-func TestResolveInterruptedRewrites_OnlyWhereRewritesRun(t *testing.T) {
-	for _, tc := range []struct {
-		role     config.Role
-		resolves bool
-	}{{config.RoleSelect, false}, {config.RoleInsert, true}} {
-		t.Run(string(tc.role), func(t *testing.T) {
-			s3 := newFakeS3()
-			defer s3.Close()
-			cfg := podConfig(t, tc.role, s3.URL())
-			store := newPod(t, cfg)
-			ts := delete.NewTombstoneStore()
-			ts.EnablePersistence(delete.PersistenceConfig{Dir: t.TempDir(), Pool: &s3PoolAdapter{pool: store.Pool()}, Prefix: cfg.AutoPrefix()})
-			ts.Add(delete.Tombstone{
-				ID: "t1", Query: "*", CreatedAt: time.Now(), Mode: "permanent",
-				Superseded: map[string]delete.Supersession{"src.parquet": {NewKey: "new.parquet", State: delete.SupersessionPrepared, At: time.Now()}},
-			})
-			ts.FlushPending(context.Background())
-			s3.Reset()
-
-			n := resolveInterruptedRewrites(cfg, ts, store.Manifest())
-			cur, _ := ts.Get("t1")
-			state := cur.Superseded["src.parquet"].State
-			writes := bucketWrites(s3.Requests())
-			if !tc.resolves {
-				if n != 0 || state != delete.SupersessionPrepared || len(writes) != 0 {
-					t.Fatalf("select pod: resolved=%d state=%q writes=%v, want 0, prepared, none", n, state, writesOf(writes))
-				}
-				return
-			}
-			if n != 1 || state != delete.SupersessionDiscarded || len(writes) == 0 {
-				t.Fatalf("insert pod: resolved=%d state=%q writes=%d, want 1, discarded and the record written back (the control of the select case)", n, state, len(writes))
-			}
-		})
-	}
-}
-
 // The shutdown of a select pod writes nothing either: no stats snapshot, no
 // tombstone object that is not owed, no pmeta bundle.
 func TestSelectRole_ShutdownWritesNothing(t *testing.T) {
@@ -704,7 +614,7 @@ func TestSelectRole_ShutdownWritesNothing(t *testing.T) {
 				internalselect.Init(0)
 			}
 			s3.Reset()
-			runShutdown(cfg, addr, store, nil, delete.NewTombstoneStore(), registry, nil)
+			runShutdown(cfg, addr, store, registry, nil)
 			w := bucketWrites(s3.Requests())
 			snapshot := false
 			for _, r := range w {
@@ -719,10 +629,10 @@ func TestSelectRole_ShutdownWritesNothing(t *testing.T) {
 	}
 }
 
-// run() starts the tombstone write retry on every node, as a top-level statement:
-// a condition around it would leave a class of nodes (a select pod) with only the
-// rewrite scheduler's six-hourly pass, or none.
-func TestRun_StartsTheTombstoneWriteRetryOnEveryNode(t *testing.T) {
+// run() starts the tombstone sync on every node, as a top-level statement: a
+// condition around it would leave a class of nodes (a select pod) enforcing a
+// view of the deletes that never refreshes.
+func TestRun_StartsTheTombstoneSyncOnEveryNode(t *testing.T) {
 	f, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -736,7 +646,7 @@ func TestRun_StartsTheTombstoneWriteRetryOnEveryNode(t *testing.T) {
 		for _, st := range fd.Body.List {
 			if es, ok := st.(*ast.ExprStmt); ok {
 				if call, ok := es.X.(*ast.CallExpr); ok {
-					if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "startTombstoneWriteRetry" {
+					if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "startTombstoneSync" {
 						found = true
 					}
 				}
@@ -744,6 +654,6 @@ func TestRun_StartsTheTombstoneWriteRetryOnEveryNode(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("run() has no top-level call to startTombstoneWriteRetry")
+		t.Fatal("run() has no top-level call to startTombstoneSync")
 	}
 }

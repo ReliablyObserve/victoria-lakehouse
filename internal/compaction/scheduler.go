@@ -18,7 +18,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
@@ -69,14 +68,6 @@ type SchedulerConfig struct {
 	// optional (nil = use the global schedule for every tenant).
 	TenantCompressionLookup func(tenantPrefix string) []int
 
-	// Tombstones is forwarded to every Compactor the scheduler builds, making
-	// compaction drop tombstoned rows rather than copy them forward. Optional;
-	// nil keeps the pre-existing behaviour.
-	Tombstones *delete.TombstoneStore
-	// TombstoneRewriteDelay is forwarded with it: the un-delete window inside
-	// which compaction must carry a tombstone's rows forward (see
-	// CompactorConfig.TombstoneRewriteDelay).
-	TombstoneRewriteDelay time.Duration
 	// OnCompacted is fired after a successful compaction. blooms carries the
 	// combined pmeta bloom of each output (outputKey -> column -> values) so the
 	// embedder can feed the bloom facet (compacted files stay bloom-prunable).
@@ -156,8 +147,6 @@ type Scheduler struct {
 	backoff          planBackoff
 	compactionCfg    config.CompactionConfig
 	tenantLookup     func(tenantPrefix string) []int
-	tombstones       *delete.TombstoneStore
-	tombstoneDelay   time.Duration
 	onCompacted      func(added []manifest.FileInfo, removed []string, blooms map[string]map[string][]string)
 
 	ringChangeRate int
@@ -235,8 +224,6 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		scanBudget:       scanBudget,
 		compactionCfg:    cfg.CompactionConfig,
 		tenantLookup:     cfg.TenantCompressionLookup,
-		tombstones:       cfg.Tombstones,
-		tombstoneDelay:   cfg.TombstoneRewriteDelay,
 		onCompacted:      cfg.OnCompacted,
 		ringChangeRate:   rate,
 		drainTimeout:     drainTimeout,
@@ -603,8 +590,6 @@ func (s *Scheduler) runMerge(ctx context.Context, partition string, selected []m
 		BloomRebuilder:          s.bloomRebuilder,
 		CompactionConfig:        s.compactionCfg,
 		TenantCompressionLookup: s.tenantLookup,
-		Tombstones:              s.tombstones,
-		TombstoneRewriteDelay:   s.tombstoneDelay,
 	})
 	result, err := compactor.Compact(ctx, partition, selected, level)
 

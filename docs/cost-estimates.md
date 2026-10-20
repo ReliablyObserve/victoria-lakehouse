@@ -46,7 +46,7 @@ Every input is labelled **measured**, **sourced** (vendor documentation or price
 **What a cold class costs.** A cold class is cheaper to store and dearer to use. Besides the storage price, AWS charges:
 - **Retrieval, per GB read.** Every byte a query fetches from the class, including the ranged reads Lakehouse makes of single columns and row groups.
 - **Higher request prices.** GET is 2.5x Standard on Standard-IA and 25x on Glacier IR.
-- **Early deletion.** An object deleted, overwritten or moved out before the minimum duration is billed for the rest of it. A rewrite deletes the old object, so a forced delete rewrite or a compaction of a cold object pays retrieval and, inside the minimum, early deletion as well. Lakehouse avoids this by freezing tiered objects against compaction and by hiding deletes with tombstones ([operations](operations.md), [deletion strategy](deletion-strategy.md)).
+- **Early deletion.** An object deleted, overwritten or moved out before the minimum duration is billed for the rest of it. A rewrite deletes the old object, so a compaction of a cold object (or the physical removal planned for deletes) pays retrieval and, inside the minimum, early deletion as well. Lakehouse avoids this by freezing tiered objects against compaction and by hiding deletes with tombstones ([operations](operations.md), [deletion strategy](deletion-strategy.md)).
 - **A minimum billable object size** of 128 KB, and no default transition for objects under 128 KB.
 - **A transition fee per 1,000 objects** moved in.
 

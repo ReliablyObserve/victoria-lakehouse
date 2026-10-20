@@ -132,9 +132,9 @@
       "name": "Timeout",
       "doc": "Timeout bounds a cross-signal request."
     },
-    "delete.auto_rewrite_classes": {
-      "name": "AutoRewriteClasses",
-      "doc": "AutoRewriteClasses are the S3 storage classes whose files auto mode rewrites."
+    "delete.cache_dir": {
+      "name": "CacheDir",
+      "doc": "CacheDir is the directory holding a local copy of the tombstone objects this pod has read. Optional: the objects never change, so the copy only saves reading them again after a restart (it is never written back to the bucket). Empty disables it."
     },
     "delete.cost_warning_threshold": {
       "name": "CostWarningThreshold",
@@ -142,11 +142,11 @@
     },
     "delete.default_mode": {
       "name": "DefaultMode",
-      "doc": "DefaultMode is the delete mode of a request that names none: hide, permanent or auto."
+      "doc": "DefaultMode is the delete mode of a request that names none (and of an upstream run_task): hide, permanent or auto. The default is hide, the only mode that can be undone: until physical removal exists (#627) permanent and auto hide the rows exactly like hide and cannot be undone."
     },
     "delete.enabled": {
       "name": "Enabled",
-      "doc": "Enabled serves the delete API."
+      "doc": "Enabled serves the delete API and creates tombstones, and turns the read gate on: while it is true a pod that cannot refresh its list of deletes answers reads with 503, and a select pod is ready only after its first read of it. With false the tombstones already in the bucket are still enforced and no read is refused."
     },
     "delete.force_glacier_header": {
       "name": "ForceGlacierHeader",
@@ -156,25 +156,9 @@
       "name": "LifecycleRules",
       "doc": "LifecycleRules are the bucket lifecycle rules used to predict storage classes for delete cost estimates."
     },
-    "delete.persist_path": {
-      "name": "PersistPath",
-      "doc": "PersistPath is the directory tombstones persist to."
-    },
     "delete.rewrite_batch_size": {
       "name": "RewriteBatchSize",
       "doc": "RewriteBatchSize is the number of files per rewrite batch."
-    },
-    "delete.rewrite_delay": {
-      "name": "RewriteDelay",
-      "doc": "RewriteDelay is the wait after a tombstone before files are rewritten, so tombstones batch."
-    },
-    "delete.rewrite_max_concurrent": {
-      "name": "RewriteMaxConcurrent",
-      "doc": "RewriteMaxConcurrent is the number of concurrent rewrite workers."
-    },
-    "delete.verify_interval": {
-      "name": "VerifyInterval",
-      "doc": "VerifyInterval is how often completed deletes are verified again."
     },
     "discovery.headless_service": {
       "name": "HeadlessService",
@@ -928,7 +912,7 @@
     },
     "delete": {
       "name": "DeleteConfig",
-      "doc": "DeleteConfig controls the delete API, tombstones and file rewrites."
+      "doc": "DeleteConfig controls the delete API and the tombstones."
     },
     "discovery": {
       "name": "DiscoveryConfig",

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
@@ -47,52 +46,6 @@ func TestReview404R4_TierBKeepsLiveObjectAfterSilentSmallDrop(t *testing.T) {
 	}
 	if deleted > 0 {
 		t.Fatalf("Tier B deleted %d LIVE object(s) the manifest only lost through one silently short listing", deleted)
-	}
-}
-
-// Review regression (#404 round 4, F4): compaction's canRetire was Listed()
-// only. A tombstone created AFTER the last complete listing began was completed
-// by compaction although the manifest cannot know a file published between
-// that listing's start and the tombstone (the scheduler refuses exactly this
-// via CompleteSince). Compaction now uses the same per-tombstone condition, and
-// still completes the tombstone once such a listing has been applied.
-func TestReview404R4_CompactionRetiresTombstoneOnlyAfterCompleteSince(t *testing.T) {
-	m := manifest.New("bkt", "logs/")
-	a := "logs/dt=2026-01-01/hour=00/a.parquet"
-	b := "logs/dt=2026-01-01/hour=00/b.parquet"
-	m.AddFile("dt=2026-01-01/hour=00", manifest.FileInfo{Key: a, Size: 1, RowCount: 1})
-	m.AddFile("dt=2026-01-01/hour=00", manifest.FileInfo{Key: b, Size: 1, RowCount: 1})
-	if !m.ApplyListing([]manifest.ListedObject{{Key: a, Size: 1}, {Key: b, Size: 1}}, time.Now()) {
-		t.Fatal("fixture")
-	}
-	time.Sleep(2 * time.Millisecond)
-	// A peer publishes logs/.../peer.parquet now (not in this manifest), then
-	// the tombstone is created; its work list is what this manifest holds.
-	store := delete.NewTombstoneStore()
-	ts := delete.Tombstone{ID: "t1", Query: "*", Mode: "rewrite", StartNs: 0, EndNs: 1 << 62,
-		CreatedAt: time.Now(), AffectedKeys: []string{a, b}}
-	store.Add(ts)
-	if m.CompleteSince(ts.CreatedAt) {
-		t.Fatal("fixture: the last complete listing must predate the tombstone")
-	}
-	out := "logs/dt=2026-01-01/hour=00/out.parquet"
-	reconcileTombstones(store, []string{a, b}, out, nil,
-		map[string]bool{"t1": true}, tombstoneRetireGate(m, store), nil)
-	got, ok := store.Get("t1")
-	if !ok {
-		t.Fatal("compaction completed a tombstone created after the last complete listing began: a peer file published in between still holds its rows and they reappear when it is adopted")
-	}
-	if !got.Reaped[a] || !got.Reaped[b] {
-		t.Fatalf("the bookkeeping must still be recorded (sources reaped): %+v", got)
-	}
-	// A complete listing that began after the tombstone lets the next merge
-	// that touches it complete it.
-	time.Sleep(2 * time.Millisecond)
-	if !m.ApplyListing([]manifest.ListedObject{{Key: out, Size: 1}}, time.Now()) {
-		t.Fatal("fixture: listing rejected")
-	}
-	if !tombstoneRetireGate(m, store)(got) {
-		t.Fatal("the gate must open once a complete listing began after the tombstone")
 	}
 }
 

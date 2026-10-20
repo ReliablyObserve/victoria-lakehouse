@@ -51,11 +51,11 @@ type taskCallerKey struct{}
 
 // ScopeTaskRequests puts the caller of a public delete-API request
 // (/delete/run_task, /delete/stop_task, /delete/active_tasks) on its context,
-// resolved exactly like a lakehouse delete-API caller, so the storage calls
-// upstream's handler makes (DeleteStopTask, DeleteActiveTasks) act for that
-// tenant only. It never answers itself: an unparseable tenant is left to
-// upstream's handler (run_task answers "cannot obtain tenantID") and sees no
-// task. globalRead validates the operator credential; nil means no operator.
+// resolved exactly like a lakehouse delete-API caller. A task is complete once it
+// is registered, so stop_task and active_tasks have nothing tenant-specific to
+// answer (see tasks.go); the caller stays on the context for the storage calls.
+// It never answers itself. globalRead validates the operator credential; nil
+// means no operator.
 func ScopeTaskRequests(globalRead func(*http.Request) bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := resolveCaller(r, globalRead)
@@ -64,16 +64,6 @@ func ScopeTaskRequests(globalRead func(*http.Request) bool, next http.HandlerFun
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), taskCallerKey{}, c)))
 	}
-}
-
-// taskCallerFrom returns the public-API caller on ctx; ok=false for a request
-// that carries none (the cluster delete protocol), which is not scoped.
-func taskCallerFrom(ctx context.Context) (deleteCaller, bool) {
-	if ctx == nil {
-		return deleteCaller{}, false
-	}
-	c, ok := ctx.Value(taskCallerKey{}).(deleteCaller)
-	return c, ok
 }
 
 // resolveCaller resolves the request's tenant the way the select path does.
@@ -105,12 +95,6 @@ func (c deleteCaller) sees(ts *Tombstone) bool {
 		return false
 	}
 	return c.global || ts.ScopedExactlyTo(c.tenant.AccountID, c.tenant.ProjectID)
-}
-
-// ownsKey reports whether the object at key is the caller's (every object is
-// the operator's).
-func (c deleteCaller) ownsKey(parse KeyTenantFunc, key string) bool {
-	return c.global || KeyBelongsTo(parse, key, c.tenant)
 }
 
 // scopeName is what the responses report as the view they were computed over.

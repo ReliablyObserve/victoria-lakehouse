@@ -1,11 +1,23 @@
 package delete
 
 import (
-	"encoding/json"
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest"
 )
+
+func mustCreate(t *testing.T, s *TombstoneStore, ts Tombstone) Tombstone {
+	t.Helper()
+	got, err := s.Create(context.Background(), ts)
+	if err != nil {
+		t.Fatalf("create %s: %v", ts.ID, err)
+	}
+	return got
+}
 
 // TestHandler_TraceMode_TombstoneByIDAndUndelete: the by-id route is registered
 // under the mode's own prefix (/delete/tracessql/tombstone/), so the id must be
@@ -13,8 +25,8 @@ import (
 // "/delete/tracessql/tombstone/<id>" into "ne/<id>", so looking a tombstone up —
 // and un-deleting it — always 404'd on the traces binary.
 func TestHandler_TraceMode_TombstoneByIDAndUndelete(t *testing.T) {
-	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "trace-ts-1", Query: `service.name:="x"`, StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
+	store := newTestStore(t)
+	mustCreate(t, store, Tombstone{ID: "trace-ts-1", Query: `service.name:="x"`, StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
 
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "traces")
 	mux := http.NewServeMux()
@@ -37,8 +49,8 @@ func TestHandler_TraceMode_TombstoneByIDAndUndelete(t *testing.T) {
 }
 
 func TestHandler_LogsMode_TombstoneByIDStillWorks(t *testing.T) {
-	store := NewTombstoneStore()
-	store.Add(Tombstone{ID: "logs-ts-1", Query: "*", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
+	store := newTestStore(t)
+	mustCreate(t, store, Tombstone{ID: "logs-ts-1", Query: "*", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "logs")
 	mux := http.NewServeMux()
 	h.Register(mux)
@@ -56,36 +68,24 @@ func TestHandler_LogsMode_TombstoneByIDStillWorks(t *testing.T) {
 	}
 }
 
-// TestHandler_ListTombstones_ReportsDurability: the listing tells an operator
-// whether the tombstones it shows would survive a pod loss — persistence armed,
-// and how many records are still owed to S3.
-func TestHandler_ListTombstones_ReportsDurability(t *testing.T) {
-	store := NewTombstoneStore()
-	pool := newFlakyS3Pool()
-	pool.failUploads = 1
-	store.EnablePersistence(PersistenceConfig{Dir: t.TempDir(), Pool: pool, Prefix: "logs/"})
-	store.Add(Tombstone{ID: "ts", Query: "*", StartNs: 0, EndNs: 10, Mode: "hide", Tenants: []TenantRef{{}}})
-
+// A delete the object store cannot take is an error to the caller; nothing is
+// queued and nothing is enforced that was not stored.
+func TestHandler_Delete_StoreFailureIsAnErrorAndNothingIsHeld(t *testing.T) {
+	b := deletetest.NewBucket()
+	store, pod := newSyncedPod(t, b, "pod")
+	pod.FailNext("put", 1)
 	h := NewHandler(store, &mockManifest{}, NewStorageClassDetector(nil), defaultCfg(), "logs")
 	mux := http.NewServeMux()
 	h.Register(mux)
 
+	req := httptest.NewRequest(http.MethodPost, "/delete/logsql/delete", strings.NewReader("query=error&start=0&end=100&mode=hide"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/delete/logsql/tombstones", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("list tombstones: %d", w.Code)
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("a failed write answered %d %s, want 502", w.Code, w.Body.String())
 	}
-	var body struct {
-		Count       int `json:"count"`
-		Persistence struct {
-			Enabled         bool `json:"enabled"`
-			PendingS3Writes int  `json:"pending_s3_writes"`
-		} `json:"persistence"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if body.Count != 1 || !body.Persistence.Enabled || body.Persistence.PendingS3Writes != 1 {
-		t.Fatalf("listing = %+v, want count 1, persistence enabled, 1 pending S3 write", body)
+	if store.Count() != 0 || len(b.Keys(TombstonePrefix(testPrefix))) != 0 {
+		t.Fatal("a delete that was not stored is held in the view or the bucket")
 	}
 }

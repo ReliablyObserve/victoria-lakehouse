@@ -262,54 +262,57 @@ groups:
 
   - name: lakehouse-deletes
     rules:
-      - alert: LakehouseTombstoneS3Backlog
-        expr: lakehouse_delete_tombstone_persist_pending > 0
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Tombstone records are not reaching S3"
-          description: "{{ $value }} tombstone record(s) exist only on the local disk. They survive a restart on this node but not a pod move or volume loss. Check S3 write permissions for the _tombstones/ prefix."
-
-      - alert: LakehouseTombstonePersistenceDisabled
-        expr: increase(lakehouse_delete_startup_inconsistencies_total{kind="persistence_disabled"}[1h]) > 0
+      - alert: LakehouseTombstoneViewStale
+        expr: lakehouse_delete_tombstone_view_age_seconds > 180
+        for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Tombstones have no durable target"
-          description: "The delete self-check found write-through persistence disabled. Every delete on this instance is lost on an ungraceful restart."
+          summary: "This pod cannot refresh its list of deleted data: reads answer 503"
+          description: "{{ $labels.instance }} has not completed a sync with the tombstone prefix for {{ $value }}s, more than three minutes (three poll intervals). Cold-tier and buffer-bridge reads on this pod answer 503 instead of showing rows that may have been deleted on another pod; ingest and flush are unaffected. Check that the object store is reachable and that the pod may list and read the _tombstones/ prefix (docs/deletion-strategy.md)."
 
-      - alert: LakehouseDeleteRewriteManifestErrors
-        expr: increase(lakehouse_delete_rewrite_manifest_errors_total[15m]) > 0
+      - alert: LakehouseTombstoneUnreadable
+        expr: lakehouse_delete_tombstone_unreadable > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A tombstone object cannot be read: the pod fails reads closed"
+          description: "{{ $labels.instance }} cannot read or parse {{ $value }} object(s) under _tombstones/. The view of the deletes is incomplete, so reads fail closed until the object is readable or removed. The log names the key. Repair or remove it."
+
+      - alert: LakehouseTombstoneSyncFailing
+        expr: sum by (instance) (increase(lakehouse_delete_tombstone_sync_errors_total[15m])) > 5
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "Delete rewrites are failing to publish into the manifest"
-          description: "{{ $value }} rewrite(s) could not be published in 15 minutes. The superseded files are kept and the rewrites retry, so no rows are lost, but deletes are not completing."
+          summary: "Tombstone syncs keep failing"
+          description: "{{ $labels.instance }} had {{ $value }} failed tombstone syncs in 15 minutes. After three missed minutes reads on this pod fail closed (LakehouseTombstoneViewStale)."
 
-      - alert: LakehouseDeleteRewriteRefusedNoManifest
-        expr: increase(lakehouse_delete_rewrite_skipped_no_manifest_total[1h]) > 0
+      - alert: LakehouseTombstoneForgotten
+        expr: increase(lakehouse_delete_tombstones_forgotten_total[1h]) > 0
         labels:
           severity: warning
         annotations:
-          summary: "Delete rewrites refused: no manifest wired into the scheduler"
-          description: "Permanent and auto deletes stay hidden at query time but are never physically removed. This is a deployment wiring problem."
+          summary: "A tombstone stopped being enforced because its key was removed"
+          description: "{{ $value }} tombstone(s) were dropped by {{ $labels.instance }} because their definition key no longer exists in the bucket and a HEAD confirmed it. Only an operator or a lifecycle rule on the _tombstones/ prefix does that: its rows are visible again."
 
-      - alert: LakehouseDeleteTenantScopeViolation
-        expr: sum by (site) (increase(lakehouse_delete_tenant_scope_skips_total[1h])) > 0
+      - alert: LakehouseTombstoneClockSkew
+        expr: increase(lakehouse_delete_tombstones_learned_late_total[1h]) > 0
         labels:
           severity: warning
         annotations:
-          summary: "A tenant-scoped tombstone named another tenant's object ({{ $labels.site }})"
-          description: "A tombstone record listed an object of a tenant it is not scoped to. The object was left untouched and recorded clean for that tombstone, so no rows were removed, but the record was written by a defect or edited by hand. Inspect it with GET /delete/logsql/tombstones (traces: /delete/tracessql/tombstones) using the global-read credential."
+          summary: "A delete reached this pod late: a creating pod's clock is behind"
+          description: "{{ $labels.instance }} learned {{ $value }} tombstone(s) from a key older than the ten-minute poll window, so the polls could not list them and the hourly full listing found them. Tombstone key times are the clocks of the pods that create them; until a pod learns a key it can still show the deleted rows. lakehouse_delete_tombstone_key_skew_seconds shows the age of the last key learned. Fix NTP on the pod that created the delete."
 
-      - alert: LakehouseDeleteStateInconsistent
-        expr: sum by (kind) (increase(lakehouse_delete_startup_inconsistencies_total{kind!="persistence_disabled"}[1h])) > 0
+      - alert: LakehouseTombstoneConditionalWritesOff
+        expr: lakehouse_delete_conditional_writes == 0
+        for: 10m
         labels:
           severity: info
         annotations:
-          summary: "Tombstones and manifest disagreed at startup ({{ $labels.kind }})"
-          description: "The delete self-check found restored tombstones and the restored manifest describing different moments. The rewrite scheduler converges these; alert only if it recurs on every boot."
+          summary: "The object store does not support conditional writes: tombstone keys use a weaker create"
+          description: "{{ $labels.instance }} creates tombstone keys with a check followed by a write because the store rejected If-None-Match. Two pods creating the same task at the same instant can both write it (identical bytes), with the same bytes. Use a store with conditional writes (docs/deletion-strategy.md)."
 
       - alert: LakehouseCompactionPublishConflicts
         expr: rate(lakehouse_compaction_publish_conflicts_total[30m]) > 0.01
@@ -320,22 +323,13 @@ groups:
           summary: "Compactions repeatedly abandoned at publish"
           description: "Compaction keeps finding its sources replaced mid-merge ({{ $value }}/s). Occasional conflicts with delete rewrites are expected; a sustained rate means two writers own the same partitions."
 
-      - alert: LakehouseSupersededObjectDeletesFailing
-        expr: (increase(lakehouse_manifest_retired_reclaim_errors_total[1h]) + increase(lakehouse_delete_rewrite_old_object_errors_total[1h]) + increase(lakehouse_delete_rewrite_abandoned_object_errors_total[1h])) > 0
-        for: 1h
-        labels:
-          severity: warning
-        annotations:
-          summary: "Objects replaced by a rewrite or compaction are not being deleted"
-          description: "Deletes of superseded or abandoned Parquet objects have kept failing for an hour. They stay out of the manifest, so no row is served twice, but they occupy storage, keep their tombstones active, and are forgotten by the manifest after 7 days — after which a refresh would serve them again. Check S3 delete permissions."
-
       - alert: LakehouseManifestRetiredKeyEvicted
         expr: increase(lakehouse_manifest_retired_evicted_total{reason!="ttl"}[1h]) > 0
         labels:
           severity: warning
         annotations:
           summary: "The manifest forgot a retired key before its object was deleted"
-          description: "{{ $value }} retired key(s) reached the size bound. If their objects still exist, the next manifest refresh serves their rows again next to the files that replaced them. List what is outstanding on the instance with GET /delete/logsql/leftovers (traces: /delete/tracessql/leftovers), then delete those objects or fix why their deletes never succeeded."
+          description: "{{ $value }} retired key(s) reached the size bound. If their objects still exist, the next manifest refresh serves their rows again next to the files that replaced them. The retired keys are counted in lakehouse_manifest_retired_keys; delete those objects or fix why their deletes never succeeded."
 
       - alert: LakehouseManifestRetiredKeyEvictedWithDeleteOwed
         expr: increase(lakehouse_manifest_retired_evicted_total{reason="cap_delete_owed"}[1h]) > 0
@@ -343,7 +337,7 @@ groups:
           severity: critical
         annotations:
           summary: "The manifest forgot a key whose object it still owed a delete for"
-          description: "{{ $value }} key(s) this instance superseded were dropped from the retired set while their objects were still in the bucket. The next refresh adopts them: their rows are served next to the files that replaced them, and rows a delete removed come back. List them with GET /delete/logsql/leftovers and delete the objects by hand. lakehouse_manifest_retired_delete_owed shows how close the set is to its bound."
+          description: "{{ $value }} key(s) this instance superseded were dropped from the retired set while their objects were still in the bucket. The next refresh adopts them: their rows are served next to the files that replaced them, and rows a delete removed come back. Delete the objects by hand. lakehouse_manifest_retired_delete_owed shows how close the set is to its bound."
 
       - alert: LakehouseManifestRetiredGuardEvictedAfterDelete
         expr: increase(lakehouse_manifest_retired_evicted_total{reason="cap_delete_landed"}[1h]) > 0
@@ -361,27 +355,3 @@ groups:
           summary: "Deleted keys are not being settled by the manifest refresh"
           description: "Keys whose objects are already deleted are held so a bucket listing older than the delete cannot adopt them back, and each is released by the first accepted listing that began after it. Guards are outstanding and NOT ONE has been released in 30 minutes, so refreshes are not completing or are being rejected: check lakehouse_manifest_refresh_cliff_guard_rejections_total and the manifest refresh phase in GET /lakehouse/info. The set grows with every compaction and permanent delete until a refresh lands. (The gauge alone cannot answer this: a node compacting faster than it refreshes refills the set as fast as it drains, so a non-zero gauge is normal — the settled counter is what proves progress.)"
 
-      - alert: LakehouseTombstoneRestoreFailed
-        expr: increase(lakehouse_delete_startup_inconsistencies_total{kind="s3_restore_failed"}[1h]) > 0 and on() lakehouse_delete_tombstone_restore_pending > 0
-        labels:
-          severity: critical
-        annotations:
-          summary: "The tombstone store could not be read from S3"
-          description: "This instance started without the S3 copy of the tombstone store. Deletes made on other nodes are NOT enforced here (their rows are visible in queries), and every interrupted rewrite stays unresolved until the read succeeds. It is retried every minute; check S3 read permissions for the _tombstones/ prefix. GET /delete/logsql/leftovers reports s3_restore_pending and what is outstanding."
-
-      - alert: LakehouseTombstoneRecordNotDurable
-        expr: increase(lakehouse_delete_tombstone_not_durable_total[30m]) > 0
-        labels:
-          severity: warning
-        annotations:
-          summary: "Delete rewrites are held: their records are not reaching durable storage"
-          description: "{{ $value }} tombstone change(s) could not be confirmed durable in 30 minutes, so no rewrite deleted the object it superseded (nothing is lost — the rewrites wait). lakehouse_delete_rewrite_deferred_total{reason=\"not_durable\"} counts the deferrals and lakehouse_delete_tombstone_persist_pending the backlog; check S3 write permissions for the _tombstones/ prefix."
-
-      - alert: LakehouseDeleteRewritesUnfinished
-        expr: lakehouse_delete_rewrites_unfinished > 0
-        for: 2h
-        labels:
-          severity: warning
-        annotations:
-          summary: "Delete rewrites have been unfinished for hours"
-          description: "{{ $value }} rewrite record(s) are still open: a replacement is uploaded or published but its superseded object has not been deleted. GET /delete/logsql/leftovers lists them with their state. Drain these to zero before rolling back to a release before v0.10.x — an older binary drops the records and nothing would finish them (see docs/operations.md → Rolling back)."

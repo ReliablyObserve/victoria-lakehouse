@@ -367,16 +367,52 @@
         "y": 60
       },
       "id": 71,
-      "title": "Tombstones (active / retired)",
+      "title": "Tombstones in force",
+      "description": "Tombstones in this pod's view. A tombstone lives until the data it covers is past retention, so the count follows the deletes taken within retention.",
       "type": "timeseries",
       "targets": [
         {
           "expr": "lakehouse_delete_tombstones_active{instance=~\"$instance\"}",
-          "legendFormat": "active"
+          "legendFormat": "in force"
         },
         {
-          "expr": "rate(lakehouse_delete_tombstones_completed_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "retired/s"
+          "expr": "increase(lakehouse_delete_tombstones_total{instance=~\"$instance\"}[1h])",
+          "legendFormat": "created (1h)"
+        }
+      ]
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 60
+      },
+      "id": 72,
+      "title": "Tombstone view age vs the 3 minute gate",
+      "description": "Time since this pod's last complete sync with the tombstone prefix. Above three minutes the pod answers cold-tier and buffer-bridge reads with 503 instead of showing rows that may be deleted.",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "lakehouse_delete_tombstone_view_age_seconds{instance=~\"$instance\"}",
+          "legendFormat": "view age"
+        },
+        {
+          "expr": "180",
+          "legendFormat": "reads fail closed above this"
         }
       ]
     },
@@ -397,36 +433,28 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 8,
+        "x": 16,
         "y": 60
       },
-      "id": 72,
-      "title": "Rewrite Outcomes",
+      "id": 73,
+      "title": "Tombstone sync and refused reads",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "rate(lakehouse_delete_rewrite_manifest_updated_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "published"
+          "expr": "sum by (kind) (rate(lakehouse_delete_tombstone_sync_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "sync {{kind}}"
         },
         {
-          "expr": "rate(lakehouse_delete_rewrite_superseded_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "superseded by compaction"
+          "expr": "sum by (kind) (rate(lakehouse_delete_tombstone_sync_errors_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "sync errors {{kind}}"
         },
         {
-          "expr": "rate(lakehouse_delete_rewrite_manifest_errors_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "manifest errors"
+          "expr": "lakehouse_delete_tombstone_unreadable{instance=~\"$instance\"}",
+          "legendFormat": "unreadable objects"
         },
         {
-          "expr": "rate(lakehouse_delete_rewrite_errors_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "rewrite errors"
-        },
-        {
-          "expr": "rate(lakehouse_delete_rewrite_old_object_errors_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "superseded object not deleted"
-        },
-        {
-          "expr": "rate(lakehouse_delete_rewrite_skipped_no_manifest_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "refused: no manifest"
+          "expr": "sum by (reason) (rate(lakehouse_delete_reads_refused_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "reads refused {{reason}}"
         }
       ]
     },
@@ -447,66 +475,36 @@
       "gridPos": {
         "h": 8,
         "w": 8,
-        "x": 16,
-        "y": 60
-      },
-      "id": 73,
-      "title": "Tombstone Durability",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "sum by (target) (rate(lakehouse_delete_tombstone_persist_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "writes {{target}}"
-        },
-        {
-          "expr": "sum by (target) (rate(lakehouse_delete_tombstone_persist_errors_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "errors {{target}}"
-        },
-        {
-          "expr": "lakehouse_delete_tombstone_persist_pending{instance=~\"$instance\"}",
-          "legendFormat": "owed to S3"
-        }
-      ]
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10
-          }
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
         "x": 0,
         "y": 68
       },
       "id": 74,
-      "title": "Rows and Files Reaped",
+      "title": "Suppression, GC and key hygiene",
       "type": "timeseries",
       "targets": [
         {
           "expr": "rate(lakehouse_delete_rows_suppressed_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "rows hidden at query time"
+          "legendFormat": "rows suppressed/s"
         },
         {
-          "expr": "rate(lakehouse_delete_compaction_rows_removed_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "rows removed by compaction"
+          "expr": "rate(lakehouse_delete_tombstone_gc_deleted_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "GC deleted objects/s"
         },
         {
-          "expr": "rate(lakehouse_delete_compaction_keys_reaped_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "files reaped by compaction"
+          "expr": "increase(lakehouse_delete_tombstones_forgotten_total{instance=~\"$instance\"}[1h])",
+          "legendFormat": "forgotten (key removed by hand, 1h)"
         },
         {
-          "expr": "rate(lakehouse_delete_tombstone_keys_discovered_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "files discovered in range"
+          "expr": "increase(lakehouse_delete_tombstone_keys_rejected_total{instance=~\"$instance\"}[1h])",
+          "legendFormat": "foreign keys ignored (1h)"
+        },
+        {
+          "expr": "increase(lakehouse_delete_tombstone_definition_conflicts_total{instance=~\"$instance\"}[1h])",
+          "legendFormat": "ids with two definitions (1h)"
+        },
+        {
+          "expr": "increase(lakehouse_delete_tombstone_confirm_deferred_total{instance=~\"$instance\"}[1h])",
+          "legendFormat": "HEAD checks deferred (1h)"
         }
       ]
     },
@@ -537,10 +535,6 @@
         {
           "expr": "sum by (endpoint) (rate(lakehouse_delete_fields_scan_fallback_total{instance=~\"$instance\"}[5m]))",
           "legendFormat": "scan fallback {{endpoint}}"
-        },
-        {
-          "expr": "sum by (result) (rate(lakehouse_delete_catalog_rebuilds_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "catalog rebuild {{result}}"
         }
       ]
     },
@@ -565,12 +559,13 @@
         "y": 68
       },
       "id": 76,
-      "title": "Consistency Checks",
+      "title": "Conditional writes and compaction conflicts",
+      "description": "0 means the object store rejected If-None-Match and tombstone keys are created with a check followed by a write (weaker, see docs/deletion-strategy.md).",
       "type": "timeseries",
       "targets": [
         {
-          "expr": "sum by (kind) (increase(lakehouse_delete_startup_inconsistencies_total{instance=~\"$instance\"}[1h]))",
-          "legendFormat": "self-check {{kind}}"
+          "expr": "lakehouse_delete_conditional_writes{instance=~\"$instance\"}",
+          "legendFormat": "conditional writes in use (1) / fallback (0)"
         },
         {
           "expr": "rate(lakehouse_compaction_publish_conflicts_total{instance=~\"$instance\"}[5m])",
@@ -674,94 +669,11 @@
         "x": 16,
         "y": 76
       },
-      "id": 79,
-      "title": "Interrupted Rewrites",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "sum by (outcome) (increase(lakehouse_delete_rewrite_interrupted_total{instance=~\"$instance\"}[1h]))",
-          "legendFormat": "resolved {{outcome}}"
-        },
-        {
-          "expr": "rate(lakehouse_delete_rewrite_old_object_errors_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "superseded-object delete errors/s"
-        },
-        {
-          "expr": "rate(lakehouse_delete_rewrite_abandoned_object_errors_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "abandoned-object delete errors/s"
-        }
-      ]
-    }
-,
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 84 },
-      "id": 80,
-      "title": "Rewrite Durability & Deferrals",
-      "description": "A rewrite deletes nothing until the tombstone record authorising it is durable. Sustained deferrals mean deletes have stopped progressing (no data is at risk); unfinished rewrites must reach 0 before a rollback.",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "rate(lakehouse_delete_tombstone_not_durable_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "record not durable/s"
-        },
-        {
-          "expr": "sum by (reason) (rate(lakehouse_delete_rewrite_deferred_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "deferred {{reason}}/s"
-        },
-        {
-          "expr": "lakehouse_delete_rewrites_unfinished{instance=~\"$instance\"}",
-          "legendFormat": "unfinished rewrites"
-        },
-        {
-          "expr": "increase(lakehouse_delete_rewrite_key_collisions_total{instance=~\"$instance\"}[1h])",
-          "legendFormat": "replacement key collisions (1h)"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 84 },
-      "id": 81,
-      "title": "Tombstone Store Restore",
-      "description": "While restore_pending is 1 this node enforces only the deletes it found locally and resolves no interrupted rewrite. It is retried until it succeeds.",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "lakehouse_delete_tombstone_restore_pending{instance=~\"$instance\"}",
-          "legendFormat": "S3 restore pending"
-        },
-        {
-          "expr": "sum by (result) (increase(lakehouse_delete_tombstone_restore_attempts_total{instance=~\"$instance\"}[1h]))",
-          "legendFormat": "restore {{result}} (1h)"
-        },
-        {
-          "expr": "increase(lakehouse_delete_startup_inconsistencies_total{instance=~\"$instance\", kind=\"s3_restore_failed\"}[1h])",
-          "legendFormat": "startup restore failures (1h)"
-        }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 84 },
       "id": 82,
-      "title": "Bounded Bookkeeping & Leftovers",
-      "description": "Every cross-restart memory here is bounded, and dropping an entry has a cost: a forgotten retired key is served again, a forgotten removal marker resurrects an un-deleted tombstone. GET /delete/logsql/leftovers lists what is outstanding.",
+      "title": "Bounded Bookkeeping",
+      "description": "Every cross-restart memory here is bounded, and dropping an entry has a cost: a forgotten retired key is served again.",
       "type": "timeseries",
       "targets": [
-        {
-          "expr": "increase(lakehouse_delete_tombstone_removed_markers_evicted_total{instance=~\"$instance\"}[1h])",
-          "legendFormat": "removal markers evicted (1h)"
-        },
         {
           "expr": "lakehouse_manifest_retired_delete_owed{instance=~\"$instance\"}",
           "legendFormat": "retired keys whose delete is owed"
@@ -781,55 +693,33 @@
       ]
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
       },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 92 },
-      "id": 83,
-      "title": "Rewrite Throughput",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "rate(lakehouse_delete_rewrite_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "rewrites/s"
-        },
-        {
-          "expr": "rate(lakehouse_delete_rewrite_bytes_saved_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "bytes saved/s"
-        },
-        {
-          "expr": "increase(lakehouse_delete_rewrite_already_reaped_total{instance=~\"$instance\"}[1h])",
-          "legendFormat": "keys already gone (1h)"
-        },
-        {
-          "expr": "increase(lakehouse_delete_rewrite_skipped_glacier_total{instance=~\"$instance\"}[1h])",
-          "legendFormat": "skipped: storage class (1h)"
-        },
-        {
-          "expr": "increase(lakehouse_delete_tombstones_total{instance=~\"$instance\"}[1h])",
-          "legendFormat": "tombstones created (1h)"
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
         }
-      ]
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 10 } }
       },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 92 },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 84
+      },
       "id": 84,
       "title": "Delete Verification",
-      "description": "The verify endpoint and the scheduler's periodic pass re-run each tombstone's query. A detected leak means rows a delete covered are still visible.",
+      "description": "The verify endpoint re-runs each tombstone's query.",
       "type": "timeseries",
       "targets": [
         {
           "expr": "rate(lakehouse_delete_verify_total{instance=~\"$instance\"}[5m])",
           "legendFormat": "verifications/s"
-        },
-        {
-          "expr": "increase(lakehouse_delete_verify_leak_detected_total{instance=~\"$instance\"}[1h])",
-          "legendFormat": "leaks detected (1h)"
         }
       ]
     },

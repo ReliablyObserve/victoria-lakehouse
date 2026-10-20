@@ -35,7 +35,7 @@ func TestMemLeak_TombstoneStore_AddRemoveCycles(t *testing.T) {
 		}
 		for i := 0; i < itemsPerCycle; i++ {
 			id := fmt.Sprintf("tombstone-%d-%d", c, i)
-			store.Remove(id)
+			store.forget(id)
 		}
 	}
 
@@ -133,7 +133,7 @@ func TestMemLeak_TombstoneStore_ConcurrentAddCheck(t *testing.T) {
 					Mode:      "auto",
 				})
 				_, _ = store.Get(id)
-				store.Remove(id)
+				store.forget(id)
 			}
 		}(g)
 	}

@@ -627,30 +627,25 @@ lakehouseConfig:
     #   peer set; see internal/compaction/ownership.go and spec §2.
 
   # ---------------------------------------------------------------------------
-  # Delete — Cost-aware deletion (tombstone + selective rewrite)
+  # Delete — Tombstones, read from the bucket by every pod
   # ---------------------------------------------------------------------------
   delete:
     # -- Enable delete API endpoints.
     enabled: true
-    # -- Default delete mode: "hide", "permanent", "auto".
-    default_mode: auto
-    # -- Storage classes eligible for active rewrite.
-    auto_rewrite_classes:
-      - STANDARD
-    # -- Delay before rewriting files after tombstone creation.
-    rewrite_delay: 1h
+    # -- Default delete mode: "hide", "permanent", "auto". hide is the only mode
+    # that can be undone; until physical removal exists permanent and auto hide
+    # the rows like hide and are irreversible.
+    default_mode: hide
     # -- Maximum files per rewrite batch.
     rewrite_batch_size: 50
-    # -- Maximum concurrent rewrite workers.
-    rewrite_max_concurrent: 2
-    # -- Directory for tombstone persistence.
-    persist_path: /data/lakehouse/tombstones
+    # -- Optional directory with a local copy of the tombstone objects this pod
+    # has read. The objects never change, so the copy only saves reading them
+    # again after a restart; nothing in it is ever written back. Empty disables it.
+    cache_dir: /data/lakehouse/tombstones
     # -- Cost threshold ($) that triggers a warning.
     cost_warning_threshold: 10.0
     # -- HTTP header to force Glacier file deletion.
     force_glacier_header: X-Force-Glacier-Delete
-    # -- Interval for continuous deletion verification.
-    verify_interval: 6h
     # -- S3 lifecycle rules for delete cost estimation.
     lifecycle_rules: []
 

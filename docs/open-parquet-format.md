@@ -146,7 +146,7 @@ A span's events (`exception` events with their stack trace, log events), its lin
 - A span without events has `NULL` in `span.events_json`; there is no empty array. The same holds for links.
 - Elements are in event order and keys are written in sorted order, so the same span always produces the same bytes. An element whose index is not its position in the array (a gap, or fields that arrived without the `:<i>` suffix through the jsonline path) carries the reserved key `"$idx"` with the original suffix; a field name that itself starts with `$` is written with one more `$`.
 - The two columns are plain `BYTE_ARRAY` (UTF-8) with ZSTD and no dictionary, no bloom filter and no Lakehouse-specific framing: every engine reads them as strings, and any JSON function decodes them. Files written before the columns existed do not have them at all; engines that union such files with newer ones (DuckDB `union_by_name = true`, Spark `mergeSchema`) read `NULL`.
-- Compaction and delete rewrites carry both columns through unchanged.
+- Compaction carries both columns through unchanged.
 
 The two columns are only read for queries that name an event or link field (trace-by-ID, `event:*` / `link:*` filters, `field_values`, a wildcard read); searches, metrics and service/operation listings never touch them.
 
@@ -248,13 +248,13 @@ Lakehouse metadata that belongs to one file lives in standard Parquet footer key
 | `_trace_idx` | traces writers | the file's trace IDs with their time bounds |
 | `_bloom_body_rg_N` | flush writers | token bloom of row group N's message bodies |
 | `lakehouse.dedicated_slots` | all writers, when slots are configured | the Tier-2 slot-to-attribute binding |
-| `lh.trace_id_hex` | all writers (flush, compaction, delete rewrite; both binaries) | ASCII `1` when every `trace_id` value in the file is lowercase hex (or empty), `0` otherwise; see [read-path.md](read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex) |
+| `lh.trace_id_hex` | all writers (flush, compaction; both binaries) | ASCII `1` when every `trace_id` value in the file is lowercase hex (or empty), `0` otherwise; see [read-path.md](read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex) |
 
 `lh.trace_id_hex` is plain ASCII, so the footer stays valid UTF-8 for every reader.
 
 ## Writer Library
 
-Files are written with [parquet-go](https://github.com/parquet-go/parquet-go). Every Lakehouse writer (flush, compaction and delete rewrite, in both binaries) sets the footer's `created_by` string to `victoria-lakehouse version <release>(build )`, where `<release>` is the version the binary was built as (`dev` for an unstamped build). `parquet-tools meta` prints it. It is the only place the writer identifies itself; it carries no meaning for readers and no Lakehouse metadata. The parquet-go version behind a release is the one in that release's `go.mod`.
+Files are written with [parquet-go](https://github.com/parquet-go/parquet-go). Every Lakehouse writer (flush and compaction, in both binaries) sets the footer's `created_by` string to `victoria-lakehouse version <release>(build )`, where `<release>` is the version the binary was built as (`dev` for an unstamped build). `parquet-tools meta` prints it. It is the only place the writer identifies itself; it carries no meaning for readers and no Lakehouse metadata. The parquet-go version behind a release is the one in that release's `go.mod`.
 
 `created_by` is fixed by Lakehouse rather than left to the library on purpose. parquet-go's default reads the library version from the Go build information, which is present or absent depending on the toolchain and build mode: Go 1.27 fills it in for test binaries (`github.com/parquet-go/parquet-go version 0.32.0(build )`), Go 1.26 did not (`github.com/parquet-go/parquet-go`). The same rows then came out 23 bytes longer or shorter per file, which moved the field-metadata perf rows' `s3_bytes` counters between CI runs on different toolchains (by 17 bytes on the `fv_level` compacted `window=whole` cells: the footer tail reads scale with object size). With a fixed string, the bytes of a file depend only on the rows, the writer options and the release.
 
@@ -303,7 +303,7 @@ s3://<bucket>/<AccountID>/<ProjectID>/<signal>/dt=<YYYY-MM-DD>/hour=<HH>/<file>.
 
 Facts about the objects that matter to a reader that does not go through Lakehouse:
 
-- **Tombstoned rows stay visible until the file is rewritten.** A delete through the API writes a tombstone (`_tombstones/`) and Lakehouse hides the rows at query time. The Parquet objects are not touched until the rewrite (`delete.rewrite_delay`, or a compaction that picks the file up), so a direct reader still sees deleted rows until then. If deletes must be honoured, read through Lakehouse or wait for the rewrite.
+- **Tombstoned rows stay visible to a direct reader until the file expires.** A delete through the API writes a tombstone (`_tombstones/`) and Lakehouse hides the rows at query time. A delete does not touch the Parquet objects (physical removal is not enabled in this release, [#627](https://github.com/ReliablyObserve/victoria-lakehouse/issues/627)), so a direct reader still sees deleted rows until the data's retention or lifecycle rule removes the file. If deletes must be honoured, read through Lakehouse.
 - **`ded_s01` to `ded_s08` are operator-configured attribute slots.** When a custom attribute is bound to a slot (`--lakehouse.schema.extra-promoted`), its values are in a generic column `ded_sNN`; the binding is recorded in the footer key-value `lakehouse.dedicated_slots`. A reader that ignores footer key-values sees the slot name, not the attribute name.
 - **A listing taken during a compaction can see a row twice.** Compaction publishes the merged object first and deletes its inputs afterwards. Lakehouse reads through its manifest and never sees both; a reader that lists the prefix between the two steps does. Spans can be de-duplicated on `(trace_id, span_id)`; log records have no unique key, so read data older than the compaction age (`compaction.min_age`) or retry a count that looks high.
 - **Footer key-values are not UTF-8** in the files Lakehouse writes today: `_trace_idx` in every traces file and `_bloom_body_rg_N` in every logs file that has a body bloom, raw or compacted. Readers that decode them as text (Polars, DataFusion) refuse the files ([#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340)).

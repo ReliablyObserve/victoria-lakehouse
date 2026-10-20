@@ -331,8 +331,8 @@
       - lakehouse-traces/internal/storage/parquets3/flush_events_links_e2e_test.go#TestBridge_SpanEventsLinksScopeAttrs_SelectPodMatchesInsertPod
       - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinksScopeAttrs_RowsEqualHot
       - lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go#TestCold_EventsLinks_ColumnsAreOrderedLikeUpstream
+      - internal/delete/events_links_test.go#TestDeleteFilter_Traces_MatchesEventFields
       - internal/compaction/events_links_test.go#TestCompactor_KeepsEventsLinksAndMergesWithOldFiles
-      - internal/delete/events_links_test.go#TestRewriteFile_Traces_KeepsEventsLinksAndMatchesEventFields
   notes: >-
     Layers: the local insert buffer is upstream's own storage (hot by construction); the bridged peer
     buffer (select pod reading an insert pod) is TestBridge_SpanEventsLinksScopeAttrs_*; a freshly flushed
@@ -565,7 +565,7 @@
     written by a newer version, which only the unit tests construct.
 
 - id: lh.delete.fence_unknown_columns_logs
-  title: "LH delete rewrite defers a logs object with a column it does not model: the object and the tombstone stay"
+  title: "LH compaction defers a logs object with a column it does not model: the object stays, and a tombstone over it keeps hiding its rows"
   surface: lh
   kind: admin
   origin: lh-addition
@@ -578,24 +578,25 @@
   pending: true
   refs:
     tests:
-      - internal/delete/column_fence_test.go#TestRewriter_Fence_UnknownColumnsAreNotRewritten
-      - internal/delete/column_fence_test.go#TestRewriter_Fence_KnownSchemaRewritesAsBefore
-      - internal/delete/column_fence_test.go#TestRewriter_Fence_PropertyNoUnknownInputIsRewritten
-      - internal/delete/column_fence_test.go#TestRewriteScheduler_FencedObjectIsDeferredNotAnError
+      - internal/delete/column_fence_test.go#TestTombstones_NeverWriteOutsideTheTombstonePrefix
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_SkipsUnknownColumnObjects
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_NothingToMergeLeavesEverything
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_KnownSchemaMergesAsBefore
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_PropertyNoUnknownInputIsRewritten
+      - internal/compaction/column_fence_callers_test.go#TestFence_FencedObjectsAreNotDownloadedAgain
+      - internal/compaction/column_fence_callers_test.go#TestFence_CounterCountsObjectsOnce
   notes: >-
-    Forward fence (#409 review, logs): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
-    columns the current row struct does not model, without downloading it again after the first refusal. No
-    replacement is written and the source is untouched; the rewrite scheduler counts it as a deferral
-    (lakehouse_delete_rewrite_deferred_total{reason="unknown_columns"}), not a rewrite error, so the rewrite-error
-    alert stays quiet, and keeps the tombstone pending: it stays listed (/delete/logsql/tombstones, /delete/active_tasks),
-    its rows stay hidden by the tombstone and the metadata-only fast paths stay off for that tenant in its range.
-    Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="delete_rewrite"}.
-    The conformance runner does not execute the row yet (pending).
-    Executed lock: the Go tests listed above. The runner request is a smoke (the tombstone list answers); a fenced
-    object needs a column from a newer version, which only the unit tests construct.
+    Forward fence (logs). Deletes no longer rewrite objects (write-once tombstones hide rows; physical removal is not
+    enabled), so compaction is the only code that rewrites an object. It leaves an object whose top-level columns the
+    current row struct does not model untouched: no replacement is written, the source stays in the manifest, and it is not
+    downloaded again after the first refusal. A tombstone over such an object keeps hiding its rows (the hiding is applied on
+    read, not by the object). Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="logs",op="compact"}.
+    The conformance runner does not execute the row yet (pending). Executed lock: the Go tests listed above; the runner
+    request is a smoke (the tombstone list answers), a fenced object needs a column from a newer version, which only the
+    unit tests construct. Re-homed from the delete rewriter's fence when the rewriter was removed.
 
 - id: lh.delete.fence_unknown_columns_traces
-  title: "LH delete rewrite defers a traces object with a column it does not model: the object and the tombstone stay"
+  title: "LH compaction defers a traces object with a column it does not model: the object stays, and a tombstone over it keeps hiding its rows"
   surface: lh
   kind: admin
   origin: lh-addition
@@ -608,21 +609,22 @@
   pending: true
   refs:
     tests:
-      - internal/delete/column_fence_test.go#TestRewriter_Fence_UnknownColumnsAreNotRewritten
-      - internal/delete/column_fence_test.go#TestRewriter_Fence_KnownSchemaRewritesAsBefore
-      - internal/delete/column_fence_test.go#TestRewriter_Fence_PropertyNoUnknownInputIsRewritten
-      - internal/delete/column_fence_test.go#TestRewriteScheduler_FencedObjectIsDeferredNotAnError
+      - internal/delete/column_fence_test.go#TestTombstones_NeverWriteOutsideTheTombstonePrefix
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_SkipsUnknownColumnObjects
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_NothingToMergeLeavesEverything
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_KnownSchemaMergesAsBefore
+      - internal/compaction/column_fence_test.go#TestCompactor_Fence_PropertyNoUnknownInputIsRewritten
+      - internal/compaction/column_fence_callers_test.go#TestFence_FencedObjectsAreNotDownloadedAgain
+      - internal/compaction/column_fence_callers_test.go#TestFence_CounterCountsObjectsOnce
   notes: >-
-    Forward fence (#409 review, traces): Rewriter.Prepare fails with delete.ErrUnknownColumns for an object whose top-level
-    columns the current row struct does not model, without downloading it again after the first refusal. No
-    replacement is written and the source is untouched; the rewrite scheduler counts it as a deferral
-    (lakehouse_delete_rewrite_deferred_total{reason="unknown_columns"}), not a rewrite error, so the rewrite-error
-    alert stays quiet, and keeps the tombstone pending: it stays listed (/delete/tracessql/tombstones, /delete/active_tasks),
-    its rows stay hidden by the tombstone and the metadata-only fast paths stay off for that tenant in its range.
-    Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="delete_rewrite"}.
-    The conformance runner does not execute the row yet (pending).
-    Executed lock: the Go tests listed above. The runner request is a smoke (the tombstone list answers); a fenced
-    object needs a column from a newer version, which only the unit tests construct.
+    Forward fence (traces). Deletes no longer rewrite objects (write-once tombstones hide rows; physical removal is not
+    enabled), so compaction is the only code that rewrites an object. It leaves an object whose top-level columns the
+    current row struct does not model untouched: no replacement is written, the source stays in the manifest, and it is not
+    downloaded again after the first refusal. A tombstone over such an object keeps hiding its rows (the hiding is applied on
+    read, not by the object). Counted once per object in lakehouse_compaction_skipped_unknown_columns_total{signal="traces",op="compact"}.
+    The conformance runner does not execute the row yet (pending). Executed lock: the Go tests listed above; the runner
+    request is a smoke (the tombstone list answers), a fenced object needs a column from a newer version, which only the
+    unit tests construct. Re-homed from the delete rewriter's fence when the rewriter was removed.
 
 - id: lh.cold.trace_events_layers_match_hot_traces
   title: "Span events, links and scope attributes of spans written by the test match hot on every layer and tenant form — LogsQL, Jaeger, Tempo v1/v2"

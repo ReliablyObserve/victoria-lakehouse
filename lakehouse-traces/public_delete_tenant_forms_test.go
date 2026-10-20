@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete/deletetest/memstore"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 )
@@ -23,7 +23,7 @@ import (
 // then — with a stand-in for the select path behind the same middleware.
 func publicDeleteServer(t *testing.T, aliases bool) (*delete.TombstoneStore, http.Handler) {
 	t.Helper()
-	store := delete.NewTombstoneStore()
+	store := memstore.New(t)
 	internalvlstorage.SetStorage(nopStorage{}, store)
 	mux := http.NewServeMux()
 	mountPublicDelete(mux, true, testGlobalRead)
@@ -56,13 +56,11 @@ func TestMountPublicDelete_StringTenants(t *testing.T) {
 	if ts, ok := store.Get(resp.TaskID); !ok || !ts.ScopedExactlyTo(2002, 0) {
 		t.Fatalf("task = %+v, want scoped to the alias's tenant 2002:0", ts)
 	}
-	for name, h := range map[string]map[string]string{"alias": acme, "int": {"AccountID": "2002"}} {
-		if got := publicDeleteRequest(srv, http.MethodGet, "/delete/active_tasks", url.Values{}, h).Body.String(); !strings.Contains(got, resp.TaskID) {
-			t.Errorf("active_tasks as %s = %s, want the task", name, got)
+	// The task is finished at registration: nobody lists it.
+	for name, h := range map[string]map[string]string{"alias": acme, "int": {"AccountID": "2002"}, "other tenant": {"AccountID": "1001"}} {
+		if got := publicDeleteRequest(srv, http.MethodGet, "/delete/active_tasks", url.Values{}, h).Body.String(); got != "[]" {
+			t.Errorf("active_tasks as %s = %s, want []", name, got)
 		}
-	}
-	if got := publicDeleteRequest(srv, http.MethodGet, "/delete/active_tasks", url.Values{}, map[string]string{"AccountID": "1001"}).Body.String(); got != "[]" {
-		t.Errorf("another tenant lists %s, want []", got)
 	}
 
 	unknown := map[string]string{"X-Scope-OrgID": "nobody"}
@@ -75,8 +73,8 @@ func TestMountPublicDelete_StringTenants(t *testing.T) {
 	}
 
 	rec = publicDeleteRequest(srv, http.MethodPost, "/delete/stop_task", url.Values{"task_id": {resp.TaskID}}, acme)
-	if rec.Code != http.StatusOK || store.Count() != 0 {
-		t.Fatalf("stop_task via alias: %d %q, %d tasks left", rec.Code, rec.Body.String(), store.Count())
+	if rec.Code != http.StatusOK || store.Count() != 1 {
+		t.Fatalf("stop_task via alias: %d %q, %d tasks left, want ok and the delete still in force", rec.Code, rec.Body.String(), store.Count())
 	}
 }
 
@@ -86,8 +84,8 @@ func TestMountPublicDelete_IntTenantAnswerIndependentOfAliases(t *testing.T) {
 	enablePublicDelete(t)
 	answers := func(aliases bool) []string {
 		store, srv := publicDeleteServer(t, aliases)
-		store.Add(delete.Tombstone{ID: "own", Query: "*", EndNs: 1, FilterAt: 1, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 2002}}})
-		store.Add(delete.Tombstone{ID: "foreign", Query: "*", EndNs: 1, FilterAt: 1, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 1001}}})
+		memstore.Create(t, store, delete.Tombstone{ID: "own", Query: "*", EndNs: 1, FilterAt: 1, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 2002}}})
+		memstore.Create(t, store, delete.Tombstone{ID: "foreign", Query: "*", EndNs: 1, FilterAt: 1, Mode: "hide", Tenants: []delete.TenantRef{{AccountID: 1001}}})
 		h := map[string]string{"AccountID": "2002"}
 		var out []string
 		for _, r := range []struct {

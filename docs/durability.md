@@ -267,8 +267,7 @@ and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 | **Pod restarts while a segment drains** | The segment is found again; groups already stored are recognised (§3) and not sent again. |
 | **Pod loses its disk before a segment drained** | The rows of undrained segments are lost (§2.4). |
 | **Already-written data** | Immutable Parquet on S3; survives everything. |
-| **A delete (tombstone)** | Written through to local disk and to S3 before the API returns; survives `kill -9`. See §3.1. |
-| **An in-progress delete rewrite** | Two-phase with a conditional publish: a crash or a concurrent compaction leaves exactly one manifested copy of every kept row. See §3.1. |
+| **A delete (tombstone)** | The definition object is created in S3 before the API returns (never overwritten); every pod rebuilds its view from the bucket, so it survives `kill -9`, a lost disk and a pod move. See §3.1. |
 
 ### 2.1 Failed uploads
 
@@ -543,21 +542,19 @@ each group of the drain, committed, late rows, segment removed, restart),
 `TestBufferBridge_NoncesComeWithTheRows`, `TestSegmentsHeader_ListsTheNonces`,
 `TestSegmentsHeader_SentWithAnEmptyAnswer`, `TestParseSegments`.
 
-### 2.4 Compaction and delete rewrites leave live segments alone
+### 2.4 Compaction leaves live segments alone
 
-Compaction merges, and a delete rewrite replaces, objects into objects **without**
+Compaction merges objects into objects **without**
 the segment's nonce. While the segment is live that would serve its rows twice
 (from the segment and from the merged object). So every merge path — the
 compaction scan, a forced recompaction, a Tier A steal by the partition's
-secondary owner — and the delete rewriter consult a **segment guard** (listed
-once per scan, steal run or rewrite pass): an object that carries a nonce is merged or rewritten only after the
+secondary owner — consult a **segment guard** (listed once per scan or steal
+run): an object that carries a nonce is merged only after the
 segment's marker has been in the bucket for twice the grace period (the pod stops
 serving the segment at the grace; the margin covers clock skew and listing lag),
 or once the nonce is older than 7 days (an owner that never committed — it lost
 its disk). A failed marker listing releases nothing
-(`lakehouse_compaction_segment_guard_errors_total`); a deferred rewrite is
-counted (`lakehouse_delete_rewrite_deferred_total{reason="segment_live"}`) and the
-tombstone's query-time filter keeps the rows hidden meanwhile. Markers older than
+(`lakehouse_compaction_segment_guard_errors_total`). Markers older than
 8 days are deleted by the compaction scan.
 
 The grace counts from the real commit, also across a restart. The flusher's state
@@ -621,7 +618,7 @@ un-hides data on "absent from the manifest" alone:
   source), an output was abandoned, or it was removed on another component's
   behalf (a peer's manifest push, retention). The record must be at least
   `OrphanTTL` old, the object at least `OrphanTTL` old (HEAD), the key not
-  named by an unfinished delete rewrite, not pending and not held, and the
+  pending and not held, and the
   manifest and the record are re-read right before the DELETE. An object that is
   absent but has no record is never deleted: since every refresh adopts each
   listed object that is not retired or pending, such an object is one a listing
@@ -630,19 +627,6 @@ un-hides data on "absent from the manifest" alone:
   What Tier B adds over the compaction scheduler's own retry of owed deletes
   (`ReclaimRetired`) is the records whose delete another component owed and
   never completed.
-- **The delete scheduler** marks a key that is absent from the manifest reaped
-  only when the manifest retired it (its rows are in the replacement, which
-  discovery follows) or a HEAD finds no object. A HEAD that finds the object
-  keeps the key pending (`lakehouse_delete_rewrite_deferred_total{reason="absent_but_exists"}`)
-  until a listing adopts it again; a HEAD that fails, or a pool that cannot HEAD,
-  keeps it pending too (`reason="existence_unknown"`). Production wires the S3
-  HEAD of the client pool.
-- **Tombstone completion** (by the scheduler and by compaction alike) needs a
-  complete listing that began after the tombstone was created: a file a peer
-  published between the last complete listing and the tombstone is in no work
-  list until such a listing has run. The rewriter's hand-off of a published
-  rewrite keeps the weaker "a complete listing has run" condition: a replacement
-  that a listing missed still exists, so deleting the source loses nothing.
 - **Snapshots** are written at warm-up and periodically whatever the last
   refresh's outcome: a partial state keeps the skipped tenant's entries and every
   retired key, a rejected one is unchanged, and a loaded snapshot is never
@@ -782,64 +766,56 @@ containers, is `TestChaos_RestartRestoresTheBuffer` and
 
 ### 3.1 Deletes and rewrites
 
-Deletes have two pieces of durable state — the **tombstone** (what is hidden or
-scheduled for removal) and the **manifest** (which Parquet objects exist) — and
-crash safety means never letting them disagree in a direction that loses rows.
+A delete has one piece of durable state: its **tombstone objects** in the bucket
+(`{prefix}_tombstones/`, one shared prefix for every tenant). Every key is
+created once with `If-None-Match` and never overwritten, so there is nothing to
+reconcile after a crash and no record whose progress can go stale. A pod's disk
+is a cache of immutable bytes that is never written back.
 
-**Tombstones.** Every mutation (create, un-delete, retirement of a fully
-rewritten tombstone) is written through before the call returns: the local disk
-copy (`{delete.persist_path}/tombstones.json`, temp file + rename) synchronously,
-and the S3 copy (`{prefix}_tombstones/{id}.json`, one shared prefix for every
-tenant) in the same call, queued and retried if S3 is down. Durability does
-**not** depend on a graceful shutdown. On boot the store restores the **union**
-of both copies, resolving per-record conflicts towards the one with the most
-rewrite progress; a removal leaves a marker in the disk copy so a stale S3 copy
-of an un-deleted or retired tombstone is not restored (its delete is re-issued).
-Then every interrupted rewrite is resolved and a self-check compares the result
-against the manifest and counts any disagreement (see
-[Operations → Tombstone Management](operations.md#tombstone-management)).
+**A delete is durable when the call returns.** The definition `PUT` is the
+commit: the pod answers only after the store accepted the key. A crash before it
+leaves no delete and an error to the caller; a crash after it leaves a delete that
+is enforced and that a retry of the same upstream task meets with identical
+bytes. A failed `PUT` answers `502`; nothing is queued and nothing is owed (there
+is no pending set, no retry queue and no write that must be drained before a
+shutdown).
 
-**Rewrites.** Removing rows from a Parquet object means writing a filtered
-replacement and dropping the original. The manifest is swapped between the two in
-a single atomic step — and only if the original is still registered — and the
-original is never deleted before that swap lands and is recorded. Each step is
-recorded on the tombstone before the step that depends on it (`prepared` before
-the upload, `published` after the swap, cleared after the original's delete;
-`discarded` when a publish is refused), because the tombstone store is durable on
-every change while the manifest is durable only as of its last snapshot.
+**Every pod rebuilds its view from the bucket.** At start a pod lists the prefix,
+reads the objects (from `delete.cache_dir` when it has them) and enforces what it
+finds. It answers reads only after that first complete sync, and fails reads closed
+when it cannot refresh for three minutes; ingest, the durable buffer and
+flush never wait for it. A pod that is down for hours, or that loses its disk,
+restarts into the same view as any other pod. A silent short listing delays
+learning a new delete; it never makes a pod forget one, and no pod ever deletes a
+tombstone key because of anything it holds locally.
 
-**Recorded is not the same as durable.** Writing the record into the store is
-what the next step reads, but a restart reads the *durable copies*, so no object
-is deleted until the record authorising it has been **acknowledged by the target
-a restore would read** — S3 when it is configured, the local disk otherwise. The
-prepared record must be durable before the replacement is uploaded; the published
-record before peers are told and before the original is deleted; the discarded
-record before the abandoned replacement is deleted. When the write cannot be
-confirmed the rewrite is deferred with everything left exactly as it is
-(`lakehouse_delete_rewrite_deferred_total{reason="not_durable"}`), the
-replacement stays **held** so no compaction can merge it while an undo is still
-possible, and the next pass retries. A record restored at boot is a *merge* of
-what the copies held, so it counts as durable nowhere until it has been written
-back — otherwise a disk copy that outran S3 would authorise a delete S3 knows
-nothing about.
+**Un-delete (hide mode) is one write-once key.** The `.undo` key is created with
+`If-None-Match`; a crash before it leaves the delete in force and the next call
+writes it. A `permanent` or `auto` delete has no undo and answers `409`.
 
-**Nothing is inferred from an empty manifest.** "This key is not in the manifest"
-means "the object is gone" only once this process has applied a bucket listing:
-before the first refresh the manifest is a snapshot that may be older than the
-object — or empty, on a node that lost its disk — so no tombstone retires and no
-key is recorded as reaped until then
-(`..._deferred_total{reason="unlisted"}`). The same holds for one key after a
-listing: an undone rewrite's source is the live copy of its rows again, but its
-entry only returns with the next refresh, so it is exempt until a listing that
-*began after the undo* has been applied (`reason="awaiting_listing"`). And a node
-whose S3 restore failed holds records that may be older than what S3 has, so it
-resolves, finishes and retires nothing until the read succeeds
-(`reason="restore_pending"`, `lakehouse_delete_tombstone_restore_pending`).
+| crash point / interleaving | state left behind | how it converges |
+|---|---|---|
+| before the definition `PUT` | nothing | the caller sees an error and retries |
+| after the definition `PUT`, before the answer | the definition exists | enforced everywhere within one poll; a retry of an upstream task finds identical bytes and succeeds |
+| before the `.undo` key (hide mode) | nothing | the delete stays in force; a repeat call writes the key |
+| a pod restarts with an old cache | cache holds a tombstone that was un-deleted | the first listing reads the `.undo` key; the tombstone is not enforced, and nothing is written back |
+| a listing is short without an error | some keys not listed | nothing is dropped or deleted; the next listing completes the view |
+| the object store is unreachable | views age | creates answer `502`; reads fail closed after three minutes; ingest is unaffected |
+| a maintenance pod crashes during the retention GC | definition still present | the `.undo` key goes first and the definition last, so the next full listing finishes the job |
+
+Physical removal (rewriting objects) is not enabled, so there are no rewrite
+records, no manifest hand-off for deletes and no interrupted rewrite to resolve.
+Compaction carries rows forward unchanged and they stay hidden, because the
+tombstone stays in force until the data is past retention. The rows are tests:
+`TestShortListing_NeverDropsOrDeletes`,
+`TestRestart_FromStaleCache_DoesNotResurrectAnUndeletedTombstone`,
+`TestUndelete_*`, `TestCreate_*`, `TestGC_*` and the `TestMI_*` multi-instance suite
+in `internal/delete`, and `TestTombstones_MultiInstance_*` in both binaries.
 
 **The manifest refresh.** Every `manifest.refresh_interval` (and at startup) the
 manifest is rebuilt from a bucket listing. A listing cannot tell a live file from
 an object the manifest let go of, so the manifest remembers **retired** keys (a
-publish replaced them, or an output was abandoned) and **pending** keys
+compaction replaced them, or an output was abandoned) and **pending** keys
 (uploaded, not yet published) and the refresh adopts neither. A retired key is
 held until a listing that began after the retirement proves the object gone —
 not until the delete lands, because the listing already in flight was answered
@@ -847,78 +823,8 @@ before it. Pending keys live in memory only. **Known gap
 ([#423](https://github.com/ReliablyObserve/victoria-lakehouse/issues/423)):** a
 compaction output uploaded and not yet published when the process is killed has
 no record after the restart; the refresh adopts it next to its still-live
-sources and their rows are served twice. (A delete rewrite's replacement is
-covered by its durable `prepared` record, see the table below.)
-Without that, every "a retired object is reclaimed" claim below was false
-within one refresh interval: the refresh re-adopted the object first — serving
-its rows twice, bringing deleted rows back once the tombstone retired, and
-hiding it from the reclaim for good. (The orphan sweep reclaims only objects
-the manifest holds a retirement record for, see above.) See
+sources and their rows are served twice. See
 [Manifest System → What the refresh does not adopt](manifest-system.md#what-the-refresh-does-not-adopt).
-
-A crash is followed by a restart in one of three states — the manifest snapshot
-taken at the crash, a snapshot older than the rewrite, or no disk at all
-(tombstones from S3, manifest from the listing) — and the refresh runs before the
-scheduler gets another turn. Every row below holds in all three:
-
-| crash point / interleaving | state left behind | how it converges |
-|---|---|---|
-| after `prepared` is recorded, before the upload | no replacement; source manifested (or adopted by the refresh) | restart undoes the rewrite (the replacement key is retired); the rewrite runs again |
-| after the upload, before the publish | replacement in the bucket, `prepared` | restart retires the replacement, so the refresh does not adopt it next to the source; the next pass deletes it; the rewrite runs again |
-| after the swap, before `published` is recorded | a snapshot may hold the swap; nothing outside the process saw it | restart reverses the swap: the replacement is retired, the source (retired by this swap only) is served again; the rewrite runs again |
-| after `published` is recorded | replacement live; source retired | restart retires the source (a snapshot older than the swap would list it; the refresh would re-adopt it); the next pass deletes it and clears the record |
-| after peers and pmeta are told | as above | as above |
-| after the original is deleted | replacement live; record cleared | nothing to resolve; the refresh drops the original from an old snapshot |
-| the original's delete fails (no crash) | source retired, record `published` | every pass retries the delete; the refresh never re-adopts the source meanwhile; the tombstone retires only after the delete lands |
-| the publish fails or is refused, and the replacement's delete fails | record `discarded`, replacement retired | every pass retries the delete; the refresh never adopts the replacement |
-| the refresh runs between any two steps of a live rewrite or compaction | pending output, or retired source | neither is adopted; a file published while the listing ran is kept |
-| a compaction merged the original between the rewrite's read and its publish | the compacted output is manifested; the rewrite's swap is refused | the rewrite discards its replacement; the tombstone follows the rows into the compacted output and rewrites it if it still holds them |
-| a rewrite replaced a source between a compaction's read and its publish | the replacement is manifested; the compaction's swap is refused | the compaction abandons (retires and deletes) its output and re-selects on the next tick |
-| a compaction's source delete fails | output live; source retired | the compaction scheduler retries the delete every scan; the refresh never re-adopts the source |
-| a compaction published its output, then died before updating the tombstone | the output holds the tombstone's rows; nothing on the tombstone names it | before retiring, the scheduler re-reads every file overlapping the range, finds the output and rewrites it |
-| the record of a step cannot be written durably (S3 rejecting the tombstone writes) | the step before it stands; no object deleted | the rewrite is deferred with the replacement held; every pass retries the write and then the step |
-| the scheduler ticks before this process has listed the bucket (a restart with no disk, or a snapshot older than the delete) | keys missing from the manifest that the bucket still holds | nothing is reaped and no tombstone retires until a listing has been applied; the refresh then adopts the objects and the rewrite runs |
-| the tombstone store's S3 copy cannot be read at boot | the node holds only what its disk had (possibly nothing) | it enforces what it has, resolves and retires nothing, and retries the read every minute until it succeeds |
-| two writers draw the same object key | one of them would overwrite a live file | keys are claimed before anything is written and redrawn on a collision; a publish onto a key the manifest already serves is refused |
-
-Every one of these converges without operator action; none can leave a kept row
-in no readable object, serve it twice, or retire a tombstone while a file still
-holds its rows. Compaction never physically removes rows of a `hide` tombstone
-or of one still inside `rewrite_delay`, and records an output clean for a
-tombstone only if the merge applied it, so an un-delete always restores them.
-The rewriter refuses to run without a manifest to publish into.
-
-The rows are tests: `TestRewriteCrashMatrix_WithManifestRefresh` (every step of
-the publish and discard paths × the three restart modes, refresh first),
-`TestRewriteCrashMatrix_DurableRecordWritesFailing` (the same matrix with every
-tombstone record after `prepared` rejected by S3),
-`TestRewriteCrashMatrix_PassBeforeTheFirstRefresh` (the scheduler ticking before
-this process has listed the bucket),
-`TestRewriteCrashMatrix_TombstoneRestoreListFailing`,
-`TestRewriteDurability_*`, `TestRewrite_ReplacementKeyCollision*`,
-`TestRewriteRefreshAtEveryStep`, `TestRewriteRefresh_*` and
-`TestResumeRewrites_RetriesUntilTheDeleteLands` in `internal/delete`;
-`TestDeleteRace_*`, `TestDeleteRefresh_*` and the property suite
-`TestDeleteLifecycleProperties` (random deletes, un-deletes, compactions, failing
-deletes, refreshes and snapshot restarts) in `internal/compaction`; and the
-refresh merge rules in `internal/manifest/refresh_retired_test.go`.
-
-Two combinations fall outside the table: a node that loses its disk while S3
-writes of the tombstone store are also failing restores an older record from S3;
-and retired keys covering a *compaction's* leftover source are persisted with the
-manifest snapshot, so a crash between that compaction and the next snapshot can
-let the refresh adopt the leftover source again — the compaction crash window
-that predates this change (see
-[Operations → Known bounds](operations.md#where-tombstones-are-applied)).
-
-**Rolling back is one-directional.** This release reads the previous release's
-tombstone files; the previous release cannot read this one's disk envelope and
-drops the rewrite records from the S3 copies it can read, so a rewrite that is
-unfinished at the moment of a rollback is never resolved. Drain
-`lakehouse_delete_rewrites_unfinished` and
-`lakehouse_delete_tombstone_persist_pending` to zero first — the procedure is in
-[Operations → Rolling back](operations.md#rolling-back), and
-`GET {prefix}/leftovers` lists what is still outstanding.
 
 ---
 
@@ -950,9 +856,8 @@ On SIGTERM the insert pod:
    cut off, leave the bundle as it was stored (the next start does not compare a loaded
    bundle with the manifest, so the compacted file has no entry until its partition is
    rebuilt).
-4. Drains any tombstone S3 write a transient failure left owed. This is a
-   backstop, not the durability mechanism — tombstones were already written
-   through on every change.
+4. Has no tombstone write to drain: a delete's key is written, with the call
+   that creates it, before the API answers (§3.1).
 5. Saves the **manifest snapshot a second time**. The first snapshot (step 2)
    cannot contain the objects the flusher wrote while the `Stop()` calls ran; the
    second lets the next boot start with their exact time bounds instead of
@@ -1027,7 +932,7 @@ engine that owns the flushed data.
 | `insert.buffer_dir` | `/data/lakehouse/buffer` | The insert buffer: one directory per segment. **Must be a persistent volume** (a StatefulSet PVC); size it for `buffer_flush_interval` + drain + grace of ingest plus the outage you want to ride out ([Sizing](operations/sizing.md)). |
 | `insert.buffer_flush_interval` | `5m` | The longest a row waits in an open segment: sealed this long after its first row (earlier at `target_file_size`), then written whole and removed after a grace. A segment that sat empty is not sealed the moment rows arrive. |
 | `insert.target_file_size` | `128MB` | The object size target and the early-seal trigger; compaction target. |
-| `delete.persist_path` | `/data/lakehouse/tombstones` | Directory holding the local tombstone copy. **Must be a durable volume** — it is the copy that survives a `kill -9` when S3 is also unreachable. |
+| `delete.cache_dir` | `/data/lakehouse/tombstones` | Optional local copy of the tombstone objects a pod has read. Never the source of truth and never written back to the bucket: it only saves reading the objects again after a restart. |
 
 The settings of earlier releases' staging buffer — `insert.buffer_engine`,
 `buffer_flush_enabled`, `buffer_retention`, `ack_mode`, `flush_interval` (and the
@@ -1044,5 +949,5 @@ file that still sets one is refused at startup with a message naming the key.
 - [Sizing](operations/sizing.md) — the buffer's disk formula and numbers.
 - [Lifecycle & readiness](operations/lifecycle.md) — restart behavior, `/ready` semantics, warmup.
 - [Configuration](configuration.md) — all insert/buffer flags.
-- [Deletion strategy](deletion-strategy.md) — tombstone modes, cost model, rewrite scheduling.
-- [Operations → Deletion Operations](operations.md#deletion-operations) — tombstone durability guarantee, the rewrite steps, and where tombstones are applied.
+- [Deletion strategy](deletion-strategy.md) — the write-once tombstone keys, the poll, modes and cost model.
+- [Operations → Deletion Operations](operations.md#deletion-operations) — what an operator watches, and where tombstones are applied.

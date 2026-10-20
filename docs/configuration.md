@@ -140,10 +140,8 @@ Every override, profile by profile:
 | `compaction.max_concurrent` | `1` | `2` |  |  |  |
 | `compaction.min_files_l0` | `10` | `5` |  |  |  |
 | `cross_signal.enabled` | `false` | `true` |  |  |  |
-| `delete.default_mode` | `auto` |  | `permanent` | `hide` |  |
+| `delete.default_mode` | `hide` |  | `permanent` |  |  |
 | `delete.rewrite_batch_size` (not read) | `50` | `100` |  | `25` | `5` |
-| `delete.rewrite_delay` | `1h` | `30m` |  | `6h` | `10s` |
-| `delete.verify_interval` | `6h` |  | `1h` | `24h` |  |
 | `discovery.peer_refresh_interval` | `30s` | `10s` |  | `1m` |  |
 | `gc.enabled` | `true` |  |  | `false` | `false` |
 | `gc.interval` | `6h` | `3h` | `1h` |  |  |
@@ -202,10 +200,10 @@ Keys whose profile value is not in effect when the profile is selected with
 | Profile | Keys not applied by `--lakehouse.profile` | Count |
 |---|---|---|
 | `balanced` | — | 0 |
-| `max-performance` | `cache.bloom_ttl`, `cache.disk_limit`, `cache.footer_ttl`, `cache.memory_limit`, `cache.page_ttl`, `compaction.interval`, `compaction.max_concurrent`, `compaction.min_files_l0`, `delete.rewrite_batch_size`, `delete.rewrite_delay`, `discovery.peer_refresh_interval`, `gc.interval`, `insert.row_group_size`, `insert.target_file_size`, `manifest.persist_interval`, `manifest.refresh_interval`, `peer.max_connections`, `peer.timeout`, `prefetch.max_concurrent`, `prefetch.max_queue`, `prefetch.read_ahead_depth`, `query.file_workers`, `query.max_concurrent`, `query.max_rows`, `query.slow_threshold`, `query.timeout`, `s3.max_concurrent_downloads`, `s3.max_connections`, `s3.retry_max`, `s3.timeout`, `select.buffer_query_timeout`, `smart_cache.disk_limit_max`, `smart_cache.hot_access_threshold`, `smart_cache.hot_window`, `smart_cache.max_age`, `smart_cache.snapshot_interval`, `smart_cache.target_hours`, `startup.max_warmup_time`, `startup.warmup_window`, `stats.push_interval` | 40 |
-| `max-durability` | `delete.default_mode`, `delete.verify_interval`, `gc.interval`, `insert.compression_level`, `manifest.persist_interval`, `s3.retry_base_delay`, `s3.retry_max`, `smart_cache.snapshot_interval`, `stats.snapshot_interval` | 9 |
-| `max-cost-savings` | `cache.bloom_ttl`, `cache.disk_limit`, `cache.footer_ttl`, `cache.memory_limit`, `cache.page_ttl`, `compaction.enabled`, `delete.default_mode`, `delete.rewrite_batch_size`, `delete.rewrite_delay`, `delete.verify_interval`, `discovery.peer_refresh_interval`, `gc.enabled`, `insert.compression_level`, `insert.row_group_size`, `insert.target_file_size`, `manifest.persist_interval`, `manifest.refresh_interval`, `peer.max_connections`, `peer.timeout`, `prefetch.correlated`, `prefetch.max_concurrent`, `prefetch.max_queue`, `prefetch.read_ahead_depth`, `query.file_workers`, `query.max_concurrent`, `query.max_rows`, `query.slow_threshold`, `query.timeout`, `s3.max_concurrent_downloads`, `s3.max_connections`, `s3.timeout`, `select.buffer_query_enabled`, `smart_cache.disk_limit_max`, `smart_cache.hot_access_threshold`, `smart_cache.hot_window`, `smart_cache.max_age`, `smart_cache.query_grace_period`, `smart_cache.snapshot_interval`, `smart_cache.target_hours`, `startup.max_warmup_time`, `startup.warmup_window`, `stats.enabled`, `stats.push_interval`, `stats.snapshot_interval`, `ui.enabled` | 45 |
-| `dev` | `cache.bloom_ttl`, `cache.disk_limit`, `cache.footer_ttl`, `cache.memory_limit`, `cache.page_ttl`, `compaction.enabled`, `delete.rewrite_batch_size`, `delete.rewrite_delay`, `gc.enabled`, `insert.buffer_flush_interval`, `insert.compression_level`, `insert.row_group_size`, `insert.target_file_size`, `manifest.persist_interval`, `manifest.refresh_interval`, `peer.az_aware`, `peer.max_connections`, `prefetch.correlated`, `prefetch.max_concurrent`, `prefetch.max_queue`, `prefetch.read_ahead_depth`, `query.file_workers`, `query.max_concurrent`, `query.max_rows`, `query.slow_threshold`, `s3.max_concurrent_downloads`, `s3.max_connections`, `s3.retry_max`, `smart_cache.disk_limit_max`, `smart_cache.max_age`, `smart_cache.target_hours`, `startup.max_warmup_time`, `startup.warmup_window`, `stats.enabled` | 34 |
+| `max-performance` | `cache.bloom_ttl`, `cache.disk_limit`, `cache.footer_ttl`, `cache.memory_limit`, `cache.page_ttl`, `compaction.interval`, `compaction.max_concurrent`, `compaction.min_files_l0`, `delete.rewrite_batch_size`, `discovery.peer_refresh_interval`, `gc.interval`, `insert.row_group_size`, `insert.target_file_size`, `manifest.persist_interval`, `manifest.refresh_interval`, `peer.max_connections`, `peer.timeout`, `prefetch.max_concurrent`, `prefetch.max_queue`, `prefetch.read_ahead_depth`, `query.file_workers`, `query.max_concurrent`, `query.max_rows`, `query.slow_threshold`, `query.timeout`, `s3.max_concurrent_downloads`, `s3.max_connections`, `s3.retry_max`, `s3.timeout`, `select.buffer_query_timeout`, `smart_cache.disk_limit_max`, `smart_cache.hot_access_threshold`, `smart_cache.hot_window`, `smart_cache.max_age`, `smart_cache.snapshot_interval`, `smart_cache.target_hours`, `startup.max_warmup_time`, `startup.warmup_window`, `stats.push_interval` | 39 |
+| `max-durability` | `delete.default_mode`, `gc.interval`, `insert.compression_level`, `manifest.persist_interval`, `s3.retry_base_delay`, `s3.retry_max`, `smart_cache.snapshot_interval`, `stats.snapshot_interval` | 8 |
+| `max-cost-savings` | `cache.bloom_ttl`, `cache.disk_limit`, `cache.footer_ttl`, `cache.memory_limit`, `cache.page_ttl`, `compaction.enabled`, `delete.rewrite_batch_size`, `discovery.peer_refresh_interval`, `gc.enabled`, `insert.compression_level`, `insert.row_group_size`, `insert.target_file_size`, `manifest.persist_interval`, `manifest.refresh_interval`, `peer.max_connections`, `peer.timeout`, `prefetch.correlated`, `prefetch.max_concurrent`, `prefetch.max_queue`, `prefetch.read_ahead_depth`, `query.file_workers`, `query.max_concurrent`, `query.max_rows`, `query.slow_threshold`, `query.timeout`, `s3.max_concurrent_downloads`, `s3.max_connections`, `s3.timeout`, `select.buffer_query_enabled`, `smart_cache.disk_limit_max`, `smart_cache.hot_access_threshold`, `smart_cache.hot_window`, `smart_cache.max_age`, `smart_cache.query_grace_period`, `smart_cache.snapshot_interval`, `smart_cache.target_hours`, `startup.max_warmup_time`, `startup.warmup_window`, `stats.enabled`, `stats.push_interval`, `stats.snapshot_interval`, `ui.enabled` | 42 |
+| `dev` | `cache.bloom_ttl`, `cache.disk_limit`, `cache.footer_ttl`, `cache.memory_limit`, `cache.page_ttl`, `compaction.enabled`, `delete.rewrite_batch_size`, `gc.enabled`, `insert.buffer_flush_interval`, `insert.compression_level`, `insert.row_group_size`, `insert.target_file_size`, `manifest.persist_interval`, `manifest.refresh_interval`, `peer.az_aware`, `peer.max_connections`, `prefetch.correlated`, `prefetch.max_concurrent`, `prefetch.max_queue`, `prefetch.read_ahead_depth`, `query.file_workers`, `query.max_concurrent`, `query.max_rows`, `query.slow_threshold`, `s3.max_concurrent_downloads`, `s3.max_connections`, `s3.retry_max`, `smart_cache.disk_limit_max`, `smart_cache.max_age`, `smart_cache.target_hours`, `startup.max_warmup_time`, `startup.warmup_window`, `stats.enabled` | 33 |
 
 <!-- END GENERATED: config-profile-flag-gaps -->
 
@@ -471,21 +469,17 @@ Controls prefetch and eviction hints between the logs and traces lakehouses.
 
 ### `delete`
 
-Controls the delete API, tombstones and file rewrites.
+Controls the delete API and the tombstones.
 
 | Key | Type | Default | Config file | Flags | Profile overrides | Description |
 |---|---|---|---|---|---|---|
-| `delete.auto_rewrite_classes` | []string | `[STANDARD]` | set |  |  | The S3 storage classes whose files auto mode rewrites. |
+| `delete.cache_dir` | string | `/data/lakehouse/tombstones` | set |  |  | The directory holding a local copy of the tombstone objects this pod has read. |
 | `delete.cost_warning_threshold` | float | `10` | set |  |  | **Not read.** The estimated rewrite cost, in dollars, above which a delete warns. |
-| `delete.default_mode` | string | `auto` | set |  | max-durability: `permanent`; max-cost-savings: `hide` | The delete mode of a request that names none: hide, permanent or auto. |
-| `delete.enabled` | bool | `true` | enable-only |  |  | Serves the delete API. |
+| `delete.default_mode` | string | `hide` | set |  | max-durability: `permanent` | The delete mode of a request that names none (and of an upstream run_task): hide, permanent or auto. |
+| `delete.enabled` | bool | `true` | enable-only |  |  | Serves the delete API and creates tombstones, and turns the read gate on: while it is true a pod that cannot refresh its list of deletes answers reads with 503, and a select pod is ready only after its first read of it. |
 | `delete.force_glacier_header` | string | `X-Force-Glacier-Delete` | set |  |  | **Not read.** The header that forces rewriting files in Glacier storage classes. |
 | `delete.lifecycle_rules` | []object | `[]` | set |  |  | The bucket lifecycle rules used to predict storage classes for delete cost estimates. |
-| `delete.persist_path` | string | `/data/lakehouse/tombstones` | set |  |  | The directory tombstones persist to. |
 | `delete.rewrite_batch_size` | int | `50` | set |  | max-performance: `100`; max-cost-savings: `25`; dev: `5` | **Not read.** The number of files per rewrite batch. |
-| `delete.rewrite_delay` | duration | `1h` | set |  | max-performance: `30m`; max-cost-savings: `6h`; dev: `10s` | The wait after a tombstone before files are rewritten, so tombstones batch. |
-| `delete.rewrite_max_concurrent` | int | `2` | set |  |  | The number of concurrent rewrite workers. |
-| `delete.verify_interval` | duration | `6h` | set |  | max-durability: `1h`; max-cost-savings: `24h` | How often completed deletes are verified again. |
 
 ### `discovery`
 

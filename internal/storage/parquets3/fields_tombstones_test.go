@@ -13,7 +13,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/delete"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -401,58 +400,6 @@ func TestFieldNames_EmptyHitsFallsThroughUnderATombstone(t *testing.T) {
 // These cover the two helpers the tombstone branch of GetFieldNames leans on.
 // Both are pure, and both decide what a caller SEES in a field picker, so they
 // are worth pinning independently of the endpoint that calls them.
-
-// --- pmeta catalog rebuild after rows are removed ------------------------------
-
-func TestPmetaRebuildCatalogValues_NoCatalogOrNoKeysIsANoOp(t *testing.T) {
-	s := testStorage()
-	s.PmetaRebuildCatalogValues([]string{"logs/dt=2026-01-01/hour=00/a.parquet"})
-	s.PmetaOnRewritten(nil, []string{"logs/dt=2026-01-01/hour=00/a.parquet"}, nil)
-
-	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
-	s.PmetaRebuildCatalogValues(nil)
-}
-
-// TestPmetaRebuildCatalogValues_SkipsPartitionsWithUnlabeledFiles pins the
-// safety valve. A manifest built from an S3 listing carries no labels; replaying
-// such a file contributes nothing, so a rebuild would silently shrink the
-// catalog to a PARTIAL list that field_values then serves as authoritative —
-// worse than the stale superset it would replace.
-func TestPmetaRebuildCatalogValues_SkipsPartitionsWithUnlabeledFiles(t *testing.T) {
-	s := testStorage()
-	s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "logs/")
-
-	labeled := "logs/dt=2026-09-05/hour=01/labeled.parquet"
-	unlabeled := "logs/dt=2026-09-05/hour=01/unlabeled.parquet"
-	part := manifest.ExtractTenantPartition(labeled)
-
-	s.catalog.OnFileFlush(pmeta.FileContribution{Partition: part, FileKey: labeled,
-		Labels: map[string][]string{"service.name": {"api", "worker"}}})
-	s.manifest.AddFile("dt=2026-09-05/hour=01", manifest.FileInfo{Key: labeled, RowCount: 2,
-		Labels: map[string][]string{"service.name": {"api"}}})
-	s.manifest.AddFile("dt=2026-09-05/hour=01", manifest.FileInfo{Key: unlabeled, RowCount: 5})
-
-	before := metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file")
-	s.PmetaRebuildCatalogValues([]string{labeled})
-	if metrics.DeleteCatalogRebuilds.Get("skipped_unlabeled_file") <= before {
-		t.Error("a skipped rebuild must be counted")
-	}
-	got := s.catalog.FieldValues(part, "service.name", "", 0)
-	if !reflect.DeepEqual(got, []string{"api", "worker"}) {
-		t.Fatalf("a skipped rebuild must leave the catalog untouched, got %v", got)
-	}
-
-	// Once every file is labeled the rebuild runs and is exact.
-	s.manifest.RemoveFile("dt=2026-09-05/hour=01", unlabeled)
-	beforeRebuilt := metrics.DeleteCatalogRebuilds.Get("rebuilt")
-	s.PmetaRebuildCatalogValues([]string{labeled})
-	if metrics.DeleteCatalogRebuilds.Get("rebuilt") <= beforeRebuilt {
-		t.Error("a completed rebuild must be counted")
-	}
-	if got := s.catalog.FieldValues(part, "service.name", "", 0); !reflect.DeepEqual(got, []string{"api"}) {
-		t.Fatalf("catalog after an exact rebuild = %v, want [api]", got)
-	}
-}
 
 // TestFieldValues_TombstoneOutsideTheFileKeepsItsAggregate covers the
 // granularity of the metadata path: a file is answered from its exact label
