@@ -276,9 +276,10 @@ func tenantFiles(t *testing.T, account, project string) int64 {
 
 // recompactPartition merges the tenant files of the partition holding at with
 // POST /lakehouse/compaction/recompact until every tenant of this case has one
-// object, and requires at least one 200 answer on the way. The partition is in
-// the open hour with two files per tenant, below the level thresholds and inside
-// min_age, so the compaction schedule never merges it and only this call does.
+// object, and requires at least one 200 answer on the way. The partition holds
+// two L0 files per tenant, below the level thresholds and younger than the
+// closed-hour rollup age, so the compaction schedule never merges it and only
+// this call does.
 // The call merges whatever the segment guard has released (other tenants' files
 // of the hour may go first, and it answers 400 when nothing is released yet), so
 // it is repeated; it fails if the tenants never end with one object each.
@@ -320,33 +321,41 @@ func recompactPartition(t *testing.T, at time.Time) {
 		extrasTenants[1].account, tenantFiles(t, extrasTenants[1].account, extrasTenants[1].project), last)
 }
 
-// openHourSpanTime returns the current time, which puts the spans in the open
-// hour and in front of the flush watermark. Both matter: spans older than the
-// watermark are late rows and go straight to Parquet without passing the insert
-// buffer, so only a fresh span is in the buffer layer; and the partition of the
-// open hour is younger than min_age and holds two files per tenant below the
-// level thresholds, so no schedule merges it and only the explicit recompact
-// does. Queries pass disable_latency_offset so hot VictoriaTraces does not hide
-// the fresh spans. Late in the hour it waits for the next one: the case runs
-// for minutes and must not cross an hour boundary.
+// openHourSpanTime returns the span time of a case: the current time, so the
+// spans are fresh (queries pass disable_latency_offset so hot VictoriaTraces
+// does not hide them), moved by at most 2 s so that every timestamp of the case
+// is in one hour partition (openHourSpanTimeAt). It never waits.
+//
+// The clock may pass the end of that hour while the case runs; nothing depends
+// on it. The insert buffer is cut by ingest time, not by a row's timestamp, so
+// the buffer layer holds the spans whatever their hour. Every later step
+// (buffer reads, the recompact, the layer proofs) uses the partition of at, not
+// the clock. The schedule does not merge the partition either way: two L0
+// files per tenant are below the level thresholds, and the closed-hour rollup
+// starts only at 24 h; the parquet layer and recompactPartition still fail if
+// anything but the recompact merged them.
 func openHourSpanTime(t *testing.T) time.Time {
 	t.Helper()
-	at := openHourSpanTimeAt(time.Now())
-	if d := time.Until(at); d > 0 {
-		t.Logf("waiting %s for the next hour", d.Round(time.Second))
-		time.Sleep(d)
-	}
-	return at
+	return openHourSpanTimeAt(time.Now())
 }
 
-// openHourSpanTimeAt is the span time openHourSpanTime picks when the clock
-// reads now: now before minute 48, else the start of the next hour.
+// spanTimeMargin keeps the case's timestamps, at-1s to at+1s (span starts,
+// trace index rows, batch 1's end), inside the hour of at.
+const spanTimeMargin = 2 * time.Second
+
+// openHourSpanTimeAt is the span time for a clock reading now: now itself,
+// unless now is within spanTimeMargin of an hour boundary, in which case the
+// time spanTimeMargin inside the hour (at most 2 s before or after now).
 func openHourSpanTimeAt(now time.Time) time.Time {
 	now = now.UTC()
-	if now.Minute() < 48 {
-		return now
+	start := now.Truncate(time.Hour)
+	switch end := start.Add(time.Hour); {
+	case now.Sub(start) < spanTimeMargin:
+		return start.Add(spanTimeMargin)
+	case end.Sub(now) < spanTimeMargin:
+		return end.Add(-spanTimeMargin)
 	}
-	return now.Truncate(time.Hour).Add(time.Hour)
+	return now
 }
 
 // The span time of the two cases above is chosen at once, near the clock, and
@@ -358,7 +367,7 @@ func TestOpenHourSpanTimeAt_NoWaitOneHour(t *testing.T) {
 	h := time.Date(2026, 10, 20, 13, 0, 0, 0, time.UTC)
 	part := func(x time.Time) string { return x.UTC().Format("dt=2006-01-02/hour=15") }
 	for _, off := range []time.Duration{
-		300 * time.Millisecond, time.Second, 2 * time.Second, 30 * time.Minute, 47*time.Minute + 59*time.Second,
+		0, 300 * time.Millisecond, time.Second, 2 * time.Second, 30 * time.Minute, 47*time.Minute + 59*time.Second,
 		48 * time.Minute, 50 * time.Minute, 59*time.Minute + 58*time.Second, 59*time.Minute + 59*time.Second + 500*time.Millisecond,
 	} {
 		now := h.Add(off)
