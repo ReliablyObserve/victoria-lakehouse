@@ -160,14 +160,30 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
 						requireFlushedOnly(t, c.cold, c.mode, f.account, c.at, c.from, c.to)
 					}},
-				// A second batch of tied rows on new streams is flushed to a second
-				// object, then the two are merged by the manual recompaction trigger.
+				// A second batch of tied rows on new streams is written in two
+				// halves, the first out of the buffer before the second goes in:
+				// two more segments, so each tenant holds three objects committed
+				// tens of seconds apart (a batch a segment seal cuts in two does the
+				// same, #636). The manual recompaction trigger then merges all three,
+				// once the segment guard releases every one of them.
 				{"compacted",
 					func(t *testing.T, c *allColumnSortCase) int {
-						c.write(t, c, 7, 6)
-						buffered(t, c, 6)
-						leftBuffer(t, c)
-						recompactHourPartition(t, c.cold, c.at, 2*len(c.forms))
+						for _, first := range []int{7, 10} {
+							c.write(t, c, first, 3)
+							buffered(t, c, 3)
+							leftBuffer(t, c)
+						}
+						var accounts []string
+						for _, f := range c.forms {
+							accounts = append(accounts, f.account)
+						}
+						n := waitSegmentObjectsReleased(t, c.mode, accounts, c.at)
+						// The case is the three objects per tenant; with fewer the
+						// layer no longer proves the wait for a later segment.
+						if n < 3*len(c.forms) {
+							t.Fatalf("the case tenants hold %d objects in the partition before the trigger, want at least %d (three per tenant)", n, 3*len(c.forms))
+						}
+						recompactHourPartition(t, c.cold, c.at, n)
 						return 12
 					},
 					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {

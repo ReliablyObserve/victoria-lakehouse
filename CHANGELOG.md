@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The mutable tombstone protocol and everything built on it:** the per-tombstone record, its disk and S3 write-through, the delete rewriter and scheduler, the leftovers API (`GET /delete/logsql/leftovers`, `/delete/tracessql/leftovers`), their metrics and alerts, and the unread knobs `delete.auto_rewrite_classes`, `delete.rewrite_delay`, `delete.rewrite_max_concurrent`, `delete.verify_interval`. **Upgrade note: tombstones written by an earlier release (`_tombstones/<id>.json`) no longer hide rows and are not migrated; they are rejected without error and counted each hour in `lakehouse_delete_tombstone_keys_rejected_total`. Re-issue those deletes, and remove the old objects by hand.**
 
+### Fixed
+
+- **The compacted layer of the all-column sort parity case no longer leaves an object unmerged (tests only, no behaviour change, #636).** The forced compaction merges only the objects the segment guard releases when it runs, and the case triggered it as soon as two objects per tenant were released; a batch that a segment seal cut into two segments left its later object at L0, which failed the layer proof and the restart layer after it. The case now waits until the guard releases every object of its tenants and requires the trigger to merge them all, and it writes its second batch in two segments on every run, for both binaries.
+
 ## [0.157.1] - 2026-10-19
 
 ### Changed
