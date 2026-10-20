@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The compacted layer of the all-column sort parity case no longer leaves an object unmerged (tests only, no behaviour change, #636).** The forced compaction merges only the objects the segment guard releases when it runs, and the case triggered it as soon as two objects per tenant were released; a batch that a segment seal cut into two segments left its later object at L0, which failed the layer proof and the restart layer after it. The case now waits until the guard releases every object of its tenants and requires the trigger to merge them all, and it writes its second batch in two segments on every run, for both binaries.
 
+- **The span events and links parity cases no longer wait up to 12 minutes for the next hour (tests only, no behaviour change).** From minute 48 of an hour, `TestParity_Traces_EventsLinksLayers` and `TestParity_Traces_EventsLinksInvalidUTF8` slept until the next hour before writing their spans, so that a run never crossed an hour boundary. The span time is now the current time, moved by at most 2 s so that every timestamp of a case (span starts and ends, trace index rows, the second batch) falls in one hour partition; this also closes a first-second-of-the-hour window in which the old rule split a case over two partitions. The rest of the case already derives its partition from the span time, and its layer proofs are unchanged.
+
 ## [0.157.1] - 2026-10-19
 
 ### Changed
