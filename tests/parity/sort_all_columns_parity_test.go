@@ -164,7 +164,8 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 				// halves, the first out of the buffer before the second goes in:
 				// two more segments, so each tenant holds three objects committed
 				// tens of seconds apart (a batch a segment seal cuts in two does the
-				// same, #636). The manual recompaction trigger then merges all three.
+				// same, #636). The manual recompaction trigger then merges all three,
+				// once the segment guard releases every one of them.
 				{"compacted",
 					func(t *testing.T, c *allColumnSortCase) int {
 						for _, first := range []int{7, 10} {
@@ -172,7 +173,11 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 							buffered(t, c, 3)
 							leftBuffer(t, c)
 						}
-						recompactHourPartition(t, c.cold, c.at, 2*len(c.forms))
+						var accounts []string
+						for _, f := range c.forms {
+							accounts = append(accounts, f.account)
+						}
+						recompactHourPartition(t, c.cold, c.at, waitSegmentObjectsReleased(t, c.mode, accounts, c.at))
 						return 12
 					},
 					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {

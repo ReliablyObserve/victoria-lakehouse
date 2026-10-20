@@ -59,6 +59,75 @@ func recompactHourPartition(t *testing.T, base string, at time.Time, minInputs i
 	}
 }
 
+// segmentProtect is how long the segment guard holds a buffer segment's objects
+// back from compaction after the segment's committed marker was written: twice
+// the buffer grace (SetSegmentGuard in cmd/lakehouse-logs/main.go and
+// lakehouse-traces/main.go), and the grace is 2 x manifest refresh interval
+// + 30 s, with -lakehouse.manifest.refresh-interval=5s in docker-compose.yml.
+const segmentProtect = 2 * (2*5*time.Second + 30*time.Second)
+
+// waitSegmentObjectsReleased waits until the segment guard releases every
+// object the tenants (ProjectID 0) hold in the hour partition of at, and
+// returns how many objects that is: the number a forced compaction of the
+// partition must merge. The trigger merges only the objects released at the
+// moment it runs, and a later call never merges a held-back L0 object into the
+// L1 output, so a trigger sent while one object is still held (a batch a
+// segment seal cut into two segments committed seconds apart, #636) leaves it
+// L0 for good. An object is released when its name carries no segment nonce,
+// or when its segment's marker <0>/0/<mode>/_segments/<nonce> is at least
+// segmentProtect old (manifest.SegmentGuard; both read the marker's S3
+// LastModified).
+func waitSegmentObjectsReleased(t *testing.T, mode string, accounts []string, at time.Time) int {
+	t.Helper()
+	cli := parityS3()
+	bucket := aws.String(envOrDefault("PARITY_S3_BUCKET", "parity-bucket"))
+	deadline := time.Now().Add(4 * time.Minute)
+	for {
+		n, held := 0, ""
+		for _, a := range accounts {
+			for _, name := range partitionObjects(t, mode, a, at) {
+				n++
+				nonce := segmentNonce(name)
+				if nonce == "" || held != "" {
+					continue
+				}
+				marker := fmt.Sprintf("0/0/%s/_segments/%s", mode, nonce)
+				head, err := cli.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: bucket, Key: aws.String(marker)})
+				switch {
+				case err != nil:
+					held = fmt.Sprintf("%s of tenant %s: no marker %s yet (%v)", name, a, marker, err)
+				case time.Since(aws.ToTime(head.LastModified)) < segmentProtect:
+					held = fmt.Sprintf("%s of tenant %s: segment committed %s, held until %s", name, a,
+						aws.ToTime(head.LastModified).UTC().Format(time.RFC3339), aws.ToTime(head.LastModified).Add(segmentProtect).UTC().Format(time.RFC3339))
+				}
+			}
+		}
+		if held == "" {
+			return n
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the segment guard still holds an object of tenants %v back after 4 minutes: %s", accounts, held)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+// segmentNonce returns the buffer-segment nonce an object name starts with
+// ("<16 lowercase hex>-<slice>.parquet"), or "" (compaction outputs and other
+// objects): manifest.SegmentNonceOfKey.
+func segmentNonce(name string) string {
+	const n = 16
+	if len(name) < n+2 || name[n] != '-' {
+		return ""
+	}
+	for _, c := range name[:n] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return name[:n]
+}
+
 // --- tenant forms ----------------------------------------------------------
 
 // The parity stack gives each Lakehouse binary one static alias
