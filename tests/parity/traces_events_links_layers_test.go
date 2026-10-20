@@ -331,13 +331,44 @@ func recompactPartition(t *testing.T, at time.Time) {
 // for minutes and must not cross an hour boundary.
 func openHourSpanTime(t *testing.T) time.Time {
 	t.Helper()
-	for {
-		now := time.Now().UTC()
-		if now.Minute() < 48 {
-			return now
+	at := openHourSpanTimeAt(time.Now())
+	if d := time.Until(at); d > 0 {
+		t.Logf("waiting %s for the next hour", d.Round(time.Second))
+		time.Sleep(d)
+	}
+	return at
+}
+
+// openHourSpanTimeAt is the span time openHourSpanTime picks when the clock
+// reads now: now before minute 48, else the start of the next hour.
+func openHourSpanTimeAt(now time.Time) time.Time {
+	now = now.UTC()
+	if now.Minute() < 48 {
+		return now
+	}
+	return now.Truncate(time.Hour).Add(time.Hour)
+}
+
+// The span time of the two cases above is chosen at once, near the clock, and
+// every span of a case sits in one hour partition: batch 0 starts at at-1s and
+// batch 1 ends at at+1s, so a window cut by the hour would put a tenant's two
+// files in two partitions and leave the recompact of at's partition one file
+// to merge.
+func TestOpenHourSpanTimeAt_NoWaitOneHour(t *testing.T) {
+	h := time.Date(2026, 10, 20, 13, 0, 0, 0, time.UTC)
+	part := func(x time.Time) string { return x.UTC().Format("dt=2006-01-02/hour=15") }
+	for _, off := range []time.Duration{
+		300 * time.Millisecond, time.Second, 2 * time.Second, 30 * time.Minute, 47*time.Minute + 59*time.Second,
+		48 * time.Minute, 50 * time.Minute, 59*time.Minute + 58*time.Second, 59*time.Minute + 59*time.Second + 500*time.Millisecond,
+	} {
+		now := h.Add(off)
+		at := openHourSpanTimeAt(now)
+		if d := at.Sub(now); d > 2*time.Second || d < -2*time.Second {
+			t.Errorf("now %s: span time %s is %s from the clock, want within 2s (no wait)", now.Format(time.RFC3339Nano), at.Format(time.RFC3339Nano), d)
 		}
-		t.Logf("waiting for the next hour (minute %d)", now.Minute())
-		time.Sleep(20 * time.Second)
+		if p0, p1, p := part(at.Add(-time.Second)), part(at.Add(time.Second)), part(at); p0 != p || p1 != p {
+			t.Errorf("now %s: the spans of the case fall in %s, %s and %s, want one hour partition", now.Format(time.RFC3339Nano), p0, p, p1)
+		}
 	}
 }
 
