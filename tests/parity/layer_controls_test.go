@@ -74,15 +74,17 @@ const segmentProtect = 2 * (2*5*time.Second + 30*time.Second)
 // L1 output, so a trigger sent while one object is still held (a batch a
 // segment seal cut into two segments committed seconds apart, #636) leaves it
 // L0 for good. An object is released when its name carries no segment nonce,
-// or when its segment's marker <0>/0/<mode>/_segments/<nonce> is at least
-// segmentProtect old (manifest.SegmentGuard; both read the marker's S3
-// LastModified).
+// or when its segment's marker 0/0/<mode>/_segments/<nonce> is at least
+// segmentProtect old (manifest.SegmentGuard). The markers are read the way the
+// guard reads them, from a listing: a listing's LastModified keeps the
+// sub-second part, a HEAD's is cut to the second, and the 172 ms that cut
+// dropped once was enough to send the trigger while the guard still held an
+// object.
 func waitSegmentObjectsReleased(t *testing.T, mode string, accounts []string, at time.Time) int {
 	t.Helper()
-	cli := parityS3()
-	bucket := aws.String(envOrDefault("PARITY_S3_BUCKET", "parity-bucket"))
 	deadline := time.Now().Add(4 * time.Minute)
 	for {
+		markers := segmentMarkers(t, mode)
 		n, held := 0, ""
 		for _, a := range accounts {
 			for _, name := range partitionObjects(t, mode, a, at) {
@@ -91,14 +93,13 @@ func waitSegmentObjectsReleased(t *testing.T, mode string, accounts []string, at
 				if nonce == "" || held != "" {
 					continue
 				}
-				marker := fmt.Sprintf("0/0/%s/_segments/%s", mode, nonce)
-				head, err := cli.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: bucket, Key: aws.String(marker)})
+				committed, ok := markers[nonce]
 				switch {
-				case err != nil:
-					held = fmt.Sprintf("%s of tenant %s: no marker %s yet (%v)", name, a, marker, err)
-				case time.Since(aws.ToTime(head.LastModified)) < segmentProtect:
+				case !ok:
+					held = fmt.Sprintf("%s of tenant %s: its segment has no committed marker yet", name, a)
+				case time.Since(committed) < segmentProtect:
 					held = fmt.Sprintf("%s of tenant %s: segment committed %s, held until %s", name, a,
-						aws.ToTime(head.LastModified).UTC().Format(time.RFC3339), aws.ToTime(head.LastModified).Add(segmentProtect).UTC().Format(time.RFC3339))
+						committed.UTC().Format(time.RFC3339Nano), committed.Add(segmentProtect).UTC().Format(time.RFC3339Nano))
 				}
 			}
 		}
@@ -110,6 +111,26 @@ func waitSegmentObjectsReleased(t *testing.T, mode string, accounts []string, at
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// segmentMarkers lists the committed markers of the signal's buffer segments:
+// nonce -> the marker's LastModified, from a listing as the guard reads it.
+func segmentMarkers(t *testing.T, mode string) map[string]time.Time {
+	t.Helper()
+	prefix := fmt.Sprintf("0/0/%s/_segments/", mode)
+	pages := s3.NewListObjectsV2Paginator(parityS3(), &s3.ListObjectsV2Input{
+		Bucket: aws.String(envOrDefault("PARITY_S3_BUCKET", "parity-bucket")), Prefix: aws.String(prefix)})
+	out := map[string]time.Time{}
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(context.Background())
+		if err != nil {
+			t.Fatalf("list %s: %v", prefix, err)
+		}
+		for _, o := range page.Contents {
+			out[strings.TrimPrefix(aws.ToString(o.Key), prefix)] = aws.ToTime(o.LastModified)
+		}
+	}
+	return out
 }
 
 // segmentNonce returns the buffer-segment nonce an object name starts with
