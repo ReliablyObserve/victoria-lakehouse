@@ -25,7 +25,8 @@ import (
 
 // recompactHourPartition merges the objects of the hour partition holding at,
 // through POST /lakehouse/compaction/recompact, and returns once Lakehouse
-// reports it merged at least minInputs objects (two per tenant). A segment's objects are held back
+// reports it merged at least minInputs objects (two per tenant, or the count
+// waitSegmentObjectsReleased returns). A segment's objects are held back
 // from compaction for twice the flush grace after it was committed, so the
 // trigger answers 400 until then; it is retried.
 func recompactHourPartition(t *testing.T, base string, at time.Time, minInputs int) {
@@ -66,6 +67,12 @@ func recompactHourPartition(t *testing.T, base string, at time.Time, minInputs i
 // + 30 s, with -lakehouse.manifest.refresh-interval=5s in docker-compose.yml.
 const segmentProtect = 2 * (2*5*time.Second + 30*time.Second)
 
+// releaseMargin is how much longer than segmentProtect the wait holds on, so
+// the trigger never runs at the very instant the guard releases an object: the
+// test and the pod read the same marker time but each its own clock, and a
+// zero margin leaves the result to the order of two clock reads.
+const releaseMargin = time.Second
+
 // waitSegmentObjectsReleased waits until the segment guard releases every
 // object the tenants (ProjectID 0) hold in the hour partition of at, and
 // returns how many objects that is: the number a forced compaction of the
@@ -75,7 +82,7 @@ const segmentProtect = 2 * (2*5*time.Second + 30*time.Second)
 // segment seal cut into two segments committed seconds apart, #636) leaves it
 // L0 for good. An object is released when its name carries no segment nonce,
 // or when its segment's marker 0/0/<mode>/_segments/<nonce> is at least
-// segmentProtect old (manifest.SegmentGuard). The markers are read the way the
+// segmentProtect old (manifest.SegmentGuard), plus releaseMargin. The markers are read the way the
 // guard reads them, from a listing: a listing's LastModified keeps the
 // sub-second part, a HEAD's is cut to the second, and the 172 ms that cut
 // dropped once was enough to send the trigger while the guard still held an
@@ -97,9 +104,9 @@ func waitSegmentObjectsReleased(t *testing.T, mode string, accounts []string, at
 				switch {
 				case !ok:
 					held = fmt.Sprintf("%s of tenant %s: its segment has no committed marker yet", name, a)
-				case time.Since(committed) < segmentProtect:
+				case time.Since(committed) < segmentProtect+releaseMargin:
 					held = fmt.Sprintf("%s of tenant %s: segment committed %s, held until %s", name, a,
-						committed.UTC().Format(time.RFC3339Nano), committed.Add(segmentProtect).UTC().Format(time.RFC3339Nano))
+						committed.UTC().Format(time.RFC3339Nano), committed.Add(segmentProtect+releaseMargin).UTC().Format(time.RFC3339Nano))
 				}
 			}
 		}
@@ -316,7 +323,7 @@ type objectInfo struct {
 }
 
 // partitionObjectInfo is partitionObjects with each object's S3 LastModified
-// (second granularity).
+// as the listing gives it (the parity store keeps the sub-second part).
 func partitionObjectInfo(t *testing.T, mode, account string, at time.Time) []objectInfo {
 	t.Helper()
 	u := at.UTC()
@@ -401,8 +408,8 @@ func pickQuietHour(t *testing.T, accounts map[string][]string) time.Time {
 // recoveredSegmentFlushed is the restart layer proof: the tenant holds the
 // compacted L1 object plus wantL0 L0 objects (one per restart attempt so far),
 // and exactly one of them, the newest attempt's, was written after the
-// container's new StartedAt (S3 LastModified has second granularity, so both
-// are compared truncated to the second). A flush before the restart (the
+// container's new StartedAt (both are compared truncated to the second, so the
+// proof does not depend on whether the store keeps sub-seconds). A flush before the restart (the
 // periodic flush winning the race, or a drain on shutdown) writes its object
 // earlier: only an object written after the start comes from the segment the
 // restarted pod recovered. It returns the reason the proof does not hold, or "".

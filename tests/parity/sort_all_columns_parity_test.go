@@ -177,7 +177,13 @@ func TestParity_AllColumnSortTieOrder(t *testing.T) {
 						for _, f := range c.forms {
 							accounts = append(accounts, f.account)
 						}
-						recompactHourPartition(t, c.cold, c.at, waitSegmentObjectsReleased(t, c.mode, accounts, c.at))
+						n := waitSegmentObjectsReleased(t, c.mode, accounts, c.at)
+						// The case is the three objects per tenant; with fewer the
+						// layer no longer proves the wait for a later segment.
+						if n < 3*len(c.forms) {
+							t.Fatalf("the case tenants hold %d objects in the partition before the trigger, want at least %d (three per tenant)", n, 3*len(c.forms))
+						}
+						recompactHourPartition(t, c.cold, c.at, n)
 						return 12
 					},
 					func(t *testing.T, c *allColumnSortCase, f tenantForm, rows int) {
