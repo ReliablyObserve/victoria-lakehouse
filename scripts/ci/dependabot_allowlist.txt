@@ -1,0 +1,5 @@
+# Exceptions to scripts/ci/tests/test_dependabot_coverage.py, one per line:
+#   <directory> | <ecosystem> | <one-line reason>
+# The test fails when a manifest directory has no matching entry in .github/dependabot.yml. An entry
+# that is no longer needed fails the test, so remove it as soon as its reason is gone.
+/scripts/ci/tests | docker-compose | the only images are the VictoriaLogs/VictoriaTraces pins of a test fixture, which move together with the pins and never alone

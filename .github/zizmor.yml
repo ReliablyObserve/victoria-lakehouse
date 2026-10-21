@@ -55,9 +55,3 @@ rules:
   cache-poisoning:
     ignore:
       - parquet-readers.yaml:107
-
-  # No cooldown on Dependabot updates. Tuned together with the rest of the Dependabot
-  # configuration in its own change.
-  dependabot-cooldown:
-    ignore:
-      - dependabot.yml
