@@ -7,18 +7,18 @@
 # The images are the versions the repo pins (Makefile: VL_VERSION_LOGS, VT_VERSION).
 services:
   vl-default:
-    image: victoriametrics/victoria-logs:v1.53.0
+    image: victoriametrics/victoria-logs:v1.53.0@sha256:251121fa882af99b95ba0c230a4a2f412ea602d2698c64a96c58dc9842bb755d
     command: ["-storageDataPath=/data", "-httpListenAddr=:9428"]
     ports: ["127.0.0.1:${HOT_VL_DEFAULT_PORT:-49100}:9428"]
   vl-100y:
-    image: victoriametrics/victoria-logs:v1.53.0
+    image: victoriametrics/victoria-logs:v1.53.0@sha256:251121fa882af99b95ba0c230a4a2f412ea602d2698c64a96c58dc9842bb755d
     command: ["-storageDataPath=/data", "-httpListenAddr=:9428", "-retentionPeriod=100y"]
     ports: ["127.0.0.1:${HOT_VL_100Y_PORT:-49101}:9428"]
   vt-default:
-    image: victoriametrics/victoria-traces:v0.12.0
+    image: victoriametrics/victoria-traces:v0.12.0@sha256:80919fcc85cc6dd87f598d20ccf42d0ab1120de8f25d4dcf08c5ea2515a496ba
     command: ["-storageDataPath=/data", "-httpListenAddr=:10428"]
     ports: ["127.0.0.1:${HOT_VT_DEFAULT_PORT:-49102}:10428"]
   vt-100y:
-    image: victoriametrics/victoria-traces:v0.12.0
+    image: victoriametrics/victoria-traces:v0.12.0@sha256:80919fcc85cc6dd87f598d20ccf42d0ab1120de8f25d4dcf08c5ea2515a496ba
     command: ["-storageDataPath=/data", "-httpListenAddr=:10428", "-retentionPeriod=100y"]
     ports: ["127.0.0.1:${HOT_VT_100Y_PORT:-49103}:10428"]

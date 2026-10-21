@@ -26,7 +26,7 @@ services:
       retries: 5
 
   s3-init:
-    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z@sha256:14bff146d9be89b316c591a14c1c69fe18aba06143bcf8fbc77e696d393b9855
     depends_on:
       s3:
         condition: service_healthy
@@ -48,7 +48,7 @@ services:
   # scripts/inject-s3-latency.sh <mean_ms> <jitter_ms> (0 = passthrough).
   # =========================================================================
   s3-latency:
-    image: ghcr.io/shopify/toxiproxy:2.9.0
+    image: ghcr.io/shopify/toxiproxy:2.9.0@sha256:b44c283298cea49e2defaba1b3028783798346f2a926684e3a345fd8441af3b8
     command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/proxies.json"]
     volumes:
       - ./toxiproxy-proxies.json:/etc/toxiproxy/proxies.json:ro
@@ -142,7 +142,7 @@ services:
   # =========================================================================
 
   loki:
-    image: grafana/loki:3.7.1
+    image: grafana/loki:3.7.1@sha256:73e905b51a7f917f7a1075e4be68759df30226e03dcb3cd2213b989cc0dc8eb4
     user: "0"
     ports:
       - "${BENCH_PORT_LOKI:-33100}:3100"
@@ -236,7 +236,7 @@ services:
   # =========================================================================
 
   tempo:
-    image: grafana/tempo:2.7.2
+    image: grafana/tempo:2.7.2@sha256:4b0277a9b572a4b1fa43b01468e58911ec214dd69d033f2cd476596d14de9fe3
     user: "0"
     ports:
       - "${BENCH_PORT_TEMPO:-33200}:3200"
@@ -258,7 +258,7 @@ services:
   # =========================================================================
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.5
+    image: clickhouse/clickhouse-server:26.5@sha256:84d05b9c205e8de9d8e471fc8fbb3aaf0c07a8bec1bd57ac3a4a4ac2399abe38
     ports:
       - "${BENCH_PORT_CH_HTTP:-38123}:8123"
       - "${BENCH_PORT_CH_NATIVE:-39009}:9000"
@@ -387,7 +387,7 @@ services:
   # =========================================================================
 
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.143.0
+    image: victoriametrics/victoria-metrics:v1.143.0@sha256:59b229f9b5ac32bb28c5ad94fc3019e34e82a3137f27f6ede6f73edeeefc2c64
     networks: [bench-net]
     command:
       - "-promscrape.config=/etc/prometheus/prometheus.yml"

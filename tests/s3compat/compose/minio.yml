@@ -2,7 +2,7 @@
 # Run: docker compose -p s3bake-minio -f minio.yml up -d
 services:
   s3:
-    image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
+    image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z@sha256:9da28ae00613e7098d2f8c3eef0a69b7f61dcc262ba110816dd3ccfac4d84123
     command: server /data
     environment:
       MINIO_ROOT_USER: s3bakekey

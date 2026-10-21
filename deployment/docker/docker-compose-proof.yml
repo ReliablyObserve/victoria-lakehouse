@@ -31,7 +31,7 @@ services:
       retries: 10
 
   s3-init:
-    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z@sha256:14bff146d9be89b316c591a14c1c69fe18aba06143bcf8fbc77e696d393b9855
     depends_on:
       s3:
         condition: service_healthy
@@ -229,7 +229,7 @@ services:
           memory: 2g
 
   jaeger-ui-ref:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     networks: [proof-net]
     ports:
       - "127.0.0.1:${PORT_JAEGER_REF:-48440}:80"
@@ -245,7 +245,7 @@ services:
         condition: service_started
 
   jaeger-ui-base:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     networks: [proof-net]
     ports:
       - "127.0.0.1:${PORT_JAEGER_BASE:-48441}:80"
@@ -261,7 +261,7 @@ services:
         condition: service_started
 
   jaeger-ui-pr:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     networks: [proof-net]
     ports:
       - "127.0.0.1:${PORT_JAEGER_PR:-48442}:80"
@@ -361,7 +361,7 @@ services:
       start_period: 5s
 
   jaeger-query:
-    image: jaegertracing/jaeger-query:1.62.0
+    image: jaegertracing/jaeger-query:1.62.0@sha256:f2914dff723b68c4b96daf8ea8d8f308c9684046369f3202f6b0b89e9d937109
     networks: [proof-net]
     environment:
       SPAN_STORAGE_TYPE: memory

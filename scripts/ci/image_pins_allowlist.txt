@@ -1,0 +1,39 @@
+# Exceptions to scripts/ci/tests/test_image_digest_pins.py, one per line:
+#   <path> | <rule> | <substring of the offending line> | <one-line reason>
+# An entry that matches nothing fails the test, so remove an entry as soon as its reason is gone.
+#
+# Go builder image: the toolchain-only classifier (scripts/ci/pr_classify.py golang_image_bump_only and its Go twin) reads golang image lines without a digest; pin these together with that classifier
+Dockerfile.logs | from | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
+Dockerfile.traces | from | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
+Dockerfile.datagen | from | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
+tests/parity/docker-compose.yml | compose-image | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
+#
+# Release Dockerfiles, pinned in the follow-up image change
+Dockerfile.logs | from | gcr.io/distroless/static-debian12:nonroot | pinned in the follow-up image PR
+Dockerfile.traces | from | gcr.io/distroless/static-debian12:nonroot | pinned in the follow-up image PR
+Dockerfile.datagen | from | gcr.io/distroless/static-debian12:nonroot | pinned in the follow-up image PR
+#
+# Hot-tier VictoriaLogs/VictoriaTraces: the image comes from a build arg that compose sets to the pin the upstream sync probe rewrites by tag
+deployment/docker/Dockerfile.bench-shaped | from | ${UPSTREAM} | build arg set by compose to the VictoriaLogs/VictoriaTraces tag that the upstream sync probe rewrites
+deployment/docker/Dockerfile.upstream-probe | from | ${UPSTREAM} | build arg set by compose to the VictoriaLogs/VictoriaTraces tag that the upstream sync probe rewrites
+#
+# Images built from this repository in the same stack, referenced by a local tag
+deployment/docker/docker-compose-benchmark.gp3.yml | compose-image | bench-shaped- | built locally from Dockerfile.bench-shaped
+deployment/docker/docker-compose-benchmark.yml | compose-image | vl-probed: | built locally from Dockerfile.upstream-probe
+deployment/docker/docker-compose-benchmark.yml | compose-image | vt-probed: | built locally from Dockerfile.upstream-probe
+deployment/docker/docker-compose-cluster.override.yml | compose-image | victoria-lakehouse-lakehouse- | built locally by the compose project
+deployment/docker/docker-compose-e2e.yml | compose-image | vl-probed: | built locally from Dockerfile.upstream-probe
+deployment/docker/docker-compose-e2e.yml | compose-image | vt-probed: | built locally from Dockerfile.upstream-probe
+deployment/docker/docker-compose-proof.yml | compose-image | ${PROOF_PREFIX | built locally under the proof project prefix (or an image the proof run passes in)
+tests/parity/docker-compose.yml | compose-image | vl-probed: | built locally from Dockerfile.upstream-probe
+tests/parity/docker-compose.yml | compose-image | vt-probed: | built locally from Dockerfile.upstream-probe
+tests/readers/docker-compose.yml | compose-image | ${LH_LOGS_IMAGE | image built or passed in by the readers run
+tests/readers/docker-compose.yml | compose-image | ${LH_TRACES_IMAGE | image built or passed in by the readers run
+tests/readers/docker-compose.yml | compose-image | ${DATAGEN_IMAGE | image built or passed in by the readers run
+scripts/bench/restart-ab/compose.yml | compose-image | ${LOGS_IMAGE} | image under test, passed in by the harness
+scripts/bench/restart-ab/compose.yml | compose-image | ${TRACES_IMAGE} | image under test, passed in by the harness
+scripts/bench/restart-ab/compose.yml | compose-image | lh-review-grafana:latest | built locally by the review stack
+scripts/bench/ab/docker-compose.ab.yml | compose-image | ${AB_TOXIPROXY_IMAGE} | set by the harness from the digest-pinned image in docker-compose-e2e.yml
+#
+# Workflows
+.github/workflows/auto-release.yaml | workflow-image | docker pull ghcr.io/${REPO}/lakehouse- | pulls the images the same run has just pushed, to smoke-test the published tags

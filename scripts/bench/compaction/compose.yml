@@ -6,7 +6,7 @@
 name: lhfix343
 
 x-lh: &lh
-  image: alpine:3
+  image: alpine:3@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
   depends_on:
     s3-init: {condition: service_completed_successfully}
   cpus: 2
@@ -14,7 +14,7 @@ x-lh: &lh
 
 services:
   s3:
-    image: rustfs/rustfs:1.0.0
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
     ports: ["127.0.0.1:39700:9000"]
     environment:
       RUSTFS_ACCESS_KEY: minioadmin
@@ -27,7 +27,7 @@ services:
     mem_limit: 1g
 
   s3-init:
-    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z@sha256:14bff146d9be89b316c591a14c1c69fe18aba06143bcf8fbc77e696d393b9855
     depends_on: {s3: {condition: service_healthy}}
     entrypoint: >
       /bin/sh -c "mc alias set local http://s3:9000 minioadmin minioadmin &&
