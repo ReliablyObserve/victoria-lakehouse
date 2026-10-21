@@ -1,7 +1,7 @@
 # Test dependencies for scripts/proof (the library itself uses only the standard library).
 # requirements.txt is generated from this file with hashes:
 #   pip-compile --generate-hashes --output-file=scripts/proof/requirements.txt scripts/proof/requirements.in
-pytest==9.0.3
+pytest==9.1.1
 pytest-cov==7.1.0
 pyflakes==4.0.3
 pillow==13.0.0
