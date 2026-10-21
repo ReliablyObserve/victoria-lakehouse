@@ -25,7 +25,7 @@
 # it, take the "Digest:" line of `docker buildx imagetools inspect busybox:<tag>`
 # and change both in one commit.
 ARG UPSTREAM
-FROM busybox:1.37.0-uclibc@sha256:8d7b1636e974e0adfd8d945955fca609304f0a56c18799dfd032d6e661382d84 AS probe
+FROM busybox:1.38.0-uclibc@sha256:b699b0c739b2d039afd8e2488a3ccfc0b9a86301d87633448d4a93c57bee8c76 AS probe
 
 FROM ${UPSTREAM}
 COPY --from=probe /bin/busybox /probe/busybox
