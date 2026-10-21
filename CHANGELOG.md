@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **The unused `scripts/bench/plansim-scratch` module (tooling only, no product change).** It was an offline planner simulation scratch tool that nothing in the repository referenced; its dependencies were no longer kept current.
+
 ## [0.157.3] - 2026-10-21
 
 ## [0.157.2] - 2026-10-21
