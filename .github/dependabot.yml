@@ -1,9 +1,29 @@
+# Dependabot version updates for every dependency manifest in the repository.
+#
+# scripts/ci/tests/test_dependabot_coverage.py fails when a tracked go.mod, requirements file,
+# package.json with a lock file, Dockerfile, Compose file or workflow directory has no entry here
+# (exceptions: scripts/ci/dependabot_allowlist.txt, each with its reason).
+#
+# Every entry waits 7 days before it proposes a new release (`cooldown`); security updates are not
+# delayed. Minor and patch updates of one ecosystem arrive as one grouped pull request.
+#
+# Not covered by Dependabot, updated by hand:
+#   - charts/victoria-lakehouse/values.yaml (image tags of the Helm chart)
+#   - build-arg pins in the Dockerfiles and the Makefile (VictoriaLogs and VictoriaTraces versions
+#     and commits), which move together with the two upstream pins
 version: 2
 updates:
+  # Go modules.
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     labels:
       - "dependencies"
     open-pull-requests-limit: 5
@@ -12,21 +32,178 @@ updates:
     directory: /lakehouse-traces
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     labels:
       - "dependencies"
     open-pull-requests-limit: 5
 
+  # GitHub Actions: every workflow under .github/workflows (the references are pinned to a commit).
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
     labels:
-      - "ci"
+      - "dependencies"
     open-pull-requests-limit: 5
 
+  # Python tools and test environments. Every directory holds a hashed lock (`requirements.txt`);
+  # where a `requirements.in` sits next to it, Dependabot edits the .in file and recompiles the lock
+  # with pip-compile, and `.github/workflow-lint-requirements.txt` keeps the workflow linter current.
+  - package-ecosystem: pip
+    directories:
+      - /.github
+      - /scripts/bench/ab
+      - /scripts/ci
+      - /scripts/ci/config-report
+      - /scripts/ci/parquet-readback
+      - /scripts/proof
+      - /tests/readers
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 3
+
+  # Node: the documentation site (no lock file is committed; CI resolves the ranges) and the
+  # Playwright proof project (locked). A pinned version is raised only when its range does not allow
+  # the new release.
+  - package-ecosystem: npm
+    directories:
+      - /website
+      - /tests/playwright/proof
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    versioning-strategy: increase-if-necessary
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 3
+
+  # Container images. `/` holds the release Dockerfiles. The Go builder image moves together with the
+  # toolchain in go.mod and go.work, so review those pull requests with that in mind.
   - package-ecosystem: docker
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker-images:
+        patterns: ["*"]
     labels:
       - "dependencies"
+    open-pull-requests-limit: 3
+
+  # Dockerfiles and Compose stacks of /deployment/docker (the docker ecosystem reads every YAML file
+  # of its directory, so no separate docker-compose entry is added here: it would open the same
+  # update twice), and the S3 compatibility stacks, whose file names carry no `compose` and so are
+  # read by this ecosystem only.
+  #
+  # Not proposed (ignored):
+  #   - ghcr.io/reliablyobserve/mc and /minio: built by this repository's own workflow, tags are
+  #     RELEASE.* of that build and not upstream releases
+  #   - victoriametrics/victoria-logs and victoria-traces: move together with the two upstream pins
+  #   - rustfs/rustfs: the test backend of the S3 compatibility job; its image is repeated in the
+  #     matrix of .github/workflows/s3-compat.yaml, which Dependabot cannot update, so the tag and
+  #     digest are bumped by hand in every place at once
+  #   - images built by the stacks themselves (vl-probed, vt-probed, bench-shaped-*, victoria-lakehouse-*,
+  #     lh-*): local tags, not registry images
+  - package-ecosystem: docker
+    directories:
+      - /deployment/docker
+      - /tests/s3compat/compose
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker-images:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*reliablyobserve/mc"
+      - dependency-name: "*reliablyobserve/minio"
+      - dependency-name: "victoriametrics/victoria-logs"
+      - dependency-name: "victoriametrics/victoria-traces"
+      - dependency-name: "rustfs/rustfs"
+      - dependency-name: "vl-probed"
+      - dependency-name: "vt-probed"
+      - dependency-name: "bench-shaped-*"
+      - dependency-name: "victoria-lakehouse-*"
+      - dependency-name: "lh-*"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 3
+
+  # The MinIO build Dockerfiles build a fixed upstream release from source: the Go image is the one
+  # that release needs, so it is not bumped here.
+  - package-ecosystem: docker
+    directory: /deployment/docker/minio-src
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker-images:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "golang"
+      - dependency-name: "*reliablyobserve/mc"
+      - dependency-name: "*reliablyobserve/minio"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 3
+
+  # Compose stacks of the benchmarks, the parity suite and the external-reader matrix. Same ignores as
+  # above, plus golang (the parity runner follows the toolchain pin, not an independent version).
+  # scripts/ci/tests holds one Compose fixture that only runs the two upstream pins (see
+  # scripts/ci/dependabot_allowlist.txt).
+  - package-ecosystem: docker-compose
+    directories:
+      - /scripts/bench/ab
+      - /scripts/bench/compaction
+      - /scripts/bench/restart-ab
+      - /tests/parity
+      - /tests/readers
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      docker-images:
+        patterns: ["*"]
+    ignore:
+      - dependency-name: "*reliablyobserve/mc"
+      - dependency-name: "*reliablyobserve/minio"
+      - dependency-name: "victoriametrics/victoria-logs"
+      - dependency-name: "victoriametrics/victoria-traces"
+      - dependency-name: "rustfs/rustfs"
+      - dependency-name: "golang"
+      - dependency-name: "vl-probed"
+      - dependency-name: "vt-probed"
+      - dependency-name: "lh-*"
+      - dependency-name: "lhreaders-*"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 3
