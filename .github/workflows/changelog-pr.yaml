@@ -20,6 +20,10 @@ jobs:
           python-version: "3.12"
 
       - name: Check changelog
+        env:
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_BASE_REPO: ${{ github.repository }}
         run: |
           python scripts/ci/check_changelog_pr.py \
             --base "${{ github.event.pull_request.base.sha }}" \

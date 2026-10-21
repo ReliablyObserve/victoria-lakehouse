@@ -23,6 +23,10 @@ from scripts.ci.check_changelog_pr import (
     is_release_metadata_sync,
     should_require_changelog,
     adds_version_section,
+    dependabot_dependency_only_diff,
+    dependency_file_kind,
+    diff_changes_only_uses_pins,
+    is_dependabot_pr,
     logical_bullets,
     version_headings,
     versioned_bullets,
@@ -695,6 +699,321 @@ class StaleBaseTests(unittest.TestCase):
             self._git(repo, "checkout", "-q", "-b", "pr")
             head = self._commit(repo, "b.txt", "b\n", "fix: b")
             self.assertEqual(comparison_base(tip, head, cwd=repo), tip)
+
+
+REPO = "ReliablyObserve/victoria-lakehouse"
+BOT = "dependabot[bot]"
+EXEMPT_LINE = "Dependabot PR that changes only dependency"
+UNPINNED_A = "a" * 40
+UNPINNED_B = "b" * 40
+
+
+def _uses(action, sha, version):
+    return f"      - uses: {action}@{sha} # {version}\n"
+
+
+class DependabotExemptionTests(unittest.TestCase):
+    """A Dependabot PR that only bumps dependency files of tooling/test trees needs no CHANGELOG entry."""
+
+    CHANGELOG = "# C\n\n## [Unreleased]\n\n- **A.** t\n\n## [0.1.0] - 2026-01-01\n\n- **O.** t\n"
+
+    def run_gate(self, base_files, head_files, *, message="chore(deps): bump x from 1 to 2",
+                 login=BOT, head_repo=REPO, base_repo=REPO, deleted=(), renamed=()):
+        """Real git repo: base commit, then one head commit. Returns (rc, stdout, stderr)."""
+        with tempfile.TemporaryDirectory() as d:
+            def run(*a):
+                subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e",
+                                "-c", "commit.gpgsign=false", *a], cwd=d, check=True, capture_output=True)
+
+            def write(name, text):
+                full = os.path.join(d, name)
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                with open(full, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+
+            run("init", "-q", "-b", "main")
+            write("CHANGELOG.md", self.CHANGELOG)
+            for name, text in base_files.items():
+                write(name, text)
+            run("add", "-A")
+            run("commit", "-q", "-m", "base")
+            run("branch", "base")
+            for name, text in head_files.items():
+                write(name, text)
+            for name in deleted:
+                os.remove(os.path.join(d, name))
+            for old, new in renamed:
+                os.makedirs(os.path.dirname(os.path.join(d, new)), exist_ok=True)
+                os.rename(os.path.join(d, old), os.path.join(d, new))
+            run("add", "-A")
+            run("commit", "-q", "-m", message)
+            env = {"PR_AUTHOR_LOGIN": login, "PR_HEAD_REPO": head_repo, "PR_BASE_REPO": base_repo}
+            env = {k: v for k, v in env.items() if v is not None}  # None: variable not set at all
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch("scripts.ci.check_changelog_pr.ROOT", pathlib.Path(d)), \
+                    unittest.mock.patch.dict(os.environ, env, clear=False), \
+                    unittest.mock.patch.object(sys, "argv", ["x", "--base", "base", "--head", "HEAD"]), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = changelog_main()
+            return rc, out.getvalue(), err.getvalue()
+
+    def bump(self, paths, **kw):
+        base = {p: "old 1\n" for p in paths}
+        head = {p: "new 2\n" for p in paths}
+        return self.run_gate(base, head, **kw)
+
+    def assertExempt(self, paths, **kw):
+        rc, out, err = self.bump(paths, **kw)
+        self.assertEqual((rc, err), (0, ""), (paths, out))
+        self.assertIn(EXEMPT_LINE, out, paths)
+
+    def assertNotExempt(self, paths, **kw):
+        rc, out, _ = self.bump(paths, **kw)
+        self.assertNotIn(EXEMPT_LINE, out, paths)
+        return rc
+
+    # --- exempt: the dependency-only classes -------------------------------------------------
+
+    def test_pip_lock_bumps_are_exempt(self):
+        for paths in (
+            ["scripts/bench/ab/requirements.txt"],
+            ["tests/readers/requirements.in", "tests/readers/requirements.txt"],
+            ["scripts/ci/config-report/requirements.txt", "scripts/ci/parquet-readback/requirements.in"],
+            [".github/workflow-lint-requirements.txt"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertExempt(paths)
+
+    def test_npm_lock_bumps_are_exempt(self):
+        for paths in (
+            ["tests/playwright/proof/package.json", "tests/playwright/proof/package-lock.json", "website/package.json"],
+            ["website/package-lock.json"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertExempt(paths)
+
+    def test_dockerfile_and_compose_digest_bumps_are_exempt(self):
+        for paths in (
+            ["tests/readers/docker-compose.yml"],
+            ["deployment/docker/docker-compose-e2e.yml", "deployment/docker/docker-compose-proof.yml"],
+            ["scripts/bench/restart-ab/compose.yml", "scripts/bench/ab/docker-compose.ab.yml"],
+            ["tests/s3compat/compose/rustfs.yml"],
+            ["deployment/docker/minio-src/mc.Dockerfile", "deployment/docker/minio-src/minio.Dockerfile"],
+            ["deployment/docker/Dockerfile.loki", "deployment/docker/Dockerfile.upstream-probe"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertExempt(paths)
+
+    def test_actions_pin_bump_is_exempt(self):
+        wf = ".github/workflows/security.yaml"
+        base = {wf: "jobs:\n  s:\n    steps:\n" + _uses("aquasecurity/trivy-action", UNPINNED_A, "v0.30.0")}
+        head = {wf: "jobs:\n  s:\n    steps:\n" + _uses("aquasecurity/trivy-action", UNPINNED_B, "v0.31.0")}
+        rc, out, err = self.run_gate(base, head)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn(EXEMPT_LINE, out)
+
+    def test_mixed_exempt_classes_are_exempt_together(self):
+        wf = ".github/workflows/a.yml"
+        base = {wf: _uses("actions/checkout", UNPINNED_A, "v1"), "scripts/ci/requirements.txt": "x==1\n"}
+        head = {wf: _uses("actions/checkout", UNPINNED_B, "v2"), "scripts/ci/requirements.txt": "x==2\n"}
+        rc, out, _ = self.run_gate(base, head)
+        self.assertEqual(rc, 0)
+        self.assertIn(EXEMPT_LINE, out)
+
+    # --- not exempt: same diff from anyone else ----------------------------------------------
+
+    def test_human_author_with_the_same_diff_is_not_exempt(self):
+        for paths in (
+            ["scripts/bench/ab/requirements.txt"],
+            ["tests/readers/docker-compose.yml"],
+            ["deployment/docker/minio-src/mc.Dockerfile"],
+            ["tests/readers/requirements.in", "tests/readers/requirements.txt"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertEqual(self.assertNotExempt(paths, login="szibis"), 1)
+
+    def test_spoof_attempts_are_not_exempt(self):
+        paths = ["scripts/bench/ab/requirements.txt"]
+        spoofs = {
+            "name in the commit subject": dict(login="szibis", message="chore(deps): bump x by dependabot[bot]"),
+            "lookalike login suffix": dict(login="dependabot[bot]x"),
+            "lookalike login case": dict(login="Dependabot[bot]"),
+            "login without the bot suffix": dict(login="dependabot"),
+            "app slug": dict(login="app/dependabot"),
+            "empty login": dict(login=""),
+            "fork head": dict(head_repo="mallory/victoria-lakehouse"),
+            "deleted fork head": dict(head_repo=""),
+            "no base repo": dict(base_repo=""),
+        }
+        for name, kw in spoofs.items():
+            with self.subTest(spoof=name):
+                self.assertEqual(self.assertNotExempt(paths, **kw), 1)
+
+    def test_a_dependabot_branch_name_does_not_exempt(self):
+        # The branch and title are never read; only the event payload is.
+        rc, out, _ = self.run_gate({"scripts/bench/ab/requirements.txt": "a\n"},
+                                   {"scripts/bench/ab/requirements.txt": "b\n"},
+                                   login="szibis", message="dependabot/pip/scripts/bench/ab/x: bump [dependabot[bot]]")
+        self.assertEqual(rc, 1)
+        self.assertNotIn(EXEMPT_LINE, out)
+
+    def test_missing_event_environment_fails_closed(self):
+        # Variables unset entirely (a workflow that forgot to pass them) is "not Dependabot".
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            for key in ("PR_AUTHOR_LOGIN", "PR_HEAD_REPO", "PR_BASE_REPO"):
+                os.environ.pop(key, None)
+            rc, out, _ = self.run_gate({"scripts/bench/ab/requirements.txt": "a\n"},
+                                       {"scripts/bench/ab/requirements.txt": "b\n"},
+                                       login=None, head_repo=None, base_repo=None)
+        self.assertEqual(rc, 1)
+        self.assertNotIn(EXEMPT_LINE, out)
+        self.assertFalse(is_dependabot_pr(BOT, "", ""))
+
+    # --- not exempt: the bot touches something that ships or is not a dependency file --------
+
+    def test_bot_pr_touching_anything_else_still_needs_a_changelog_entry(self):
+        for paths in (
+            ["go.mod", "go.sum"],
+            ["go.mod"],
+            ["lakehouse-traces/go.mod", "lakehouse-traces/go.sum"],
+            ["Dockerfile.logs"],
+            ["Dockerfile.traces"],
+            ["Dockerfile.datagen"],
+            ["Dockerfile"],
+            ["internal/storage/x.go"],
+            ["cmd/lakehouse-logs/main.go"],
+            ["lakehouse-traces/internal/y.go"],
+            ["patches/vl-logs/external.go.src"],
+            ["charts/victoria-lakehouse/values.yaml"],
+            ["charts/victoria-lakehouse/Chart.yaml"],
+            ["package.json"],
+            ["deployment/docker/lakehouse-e2e-config.yml"],
+            ["deployment/charts/Dockerfile.logs/x.txt"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertEqual(self.assertNotExempt(paths), 1)
+
+    def test_paths_the_gate_already_exempts_do_not_get_the_bot_log_line(self):
+        # docs/ and .github/ are path-exempt for everyone; the bot rule neither widens nor narrows that,
+        # and dependabot.yml or a non-`uses:` workflow edit is not a bot dependency bump.
+        for paths in (["docs/requirements.txt"], [".github/dependabot.yml"], [".github/workflows/security.yaml"]):
+            with self.subTest(paths=paths):
+                self.assertNotExempt(paths)
+
+    def test_bot_pr_with_one_non_dependency_file_among_dependency_files_is_not_exempt(self):
+        for extra in ("go.mod", "internal/x.go", "charts/victoria-lakehouse/values.yaml", "Dockerfile.logs",
+                      "lakehouse-traces/go.mod", "CHANGELOG.md", "README.md", "docs/x.md"):
+            paths = ["scripts/bench/ab/requirements.txt", "tests/readers/docker-compose.yml", extra]
+            with self.subTest(extra=extra):
+                self.assertNotExempt(paths)
+
+    def test_bot_pr_with_a_bumped_go_mod_fails_without_a_changelog_entry(self):
+        rc, out, err = self.bump(["scripts/bench/ab/requirements.txt", "go.mod"])
+        self.assertEqual(rc, 1)
+        self.assertIn("CHANGELOG.md must be updated", err)
+
+    def test_bot_pr_that_does_add_a_changelog_entry_passes_the_normal_way(self):
+        rc, out, _ = self.run_gate(
+            {"go.mod": "a\n"},
+            {"go.mod": "b\n", "CHANGELOG.md": self.CHANGELOG.replace("- **A.** t", "- **A.** t\n- **B.** new")},
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn(EXEMPT_LINE, out)
+
+    def test_bot_pr_cannot_add_delete_or_rename_files_under_the_exemption(self):
+        # added file
+        rc, out, _ = self.run_gate({}, {"scripts/bench/ab/requirements.txt": "x\n"})
+        self.assertEqual(rc, 1)
+        self.assertNotIn(EXEMPT_LINE, out)
+        # deleted file
+        rc, out, _ = self.run_gate({"scripts/bench/ab/requirements.txt": "x\n"}, {},
+                                   deleted=["scripts/bench/ab/requirements.txt"])
+        self.assertNotIn(EXEMPT_LINE, out)
+        # a product file renamed into a tooling path
+        rc, out, _ = self.run_gate({"internal/a.go": "package a\n"}, {},
+                                   renamed=[("internal/a.go", "scripts/bench/ab/requirements.txt")])
+        self.assertEqual(rc, 1)
+        self.assertNotIn(EXEMPT_LINE, out)
+
+    def test_workflow_changes_beyond_uses_pins_are_not_exempt(self):
+        wf = ".github/workflows/security.yaml"
+        steps = "jobs:\n  s:\n    steps:\n"
+        cases = {
+            "run line added": (steps + _uses("a/b", UNPINNED_A, "v1"),
+                               steps + _uses("a/b", UNPINNED_B, "v2") + "      - run: curl x | sh\n"),
+            "permissions edit": ("permissions:\n  contents: read\n" + steps + _uses("a/b", UNPINNED_A, "v1"),
+                                 "permissions:\n  contents: write\n" + steps + _uses("a/b", UNPINNED_B, "v2")),
+            "different action": (steps + _uses("a/b", UNPINNED_A, "v1"), steps + _uses("evil/b", UNPINNED_B, "v2")),
+            "unpinned to tag": (steps + "      - uses: a/b@v1\n", steps + "      - uses: a/b@v2\n"),
+            "branch ref": (steps + _uses("a/b", UNPINNED_A, "v1"), steps + "      - uses: a/b@main\n"),
+            "with input changed": (steps + _uses("a/b", UNPINNED_A, "v1") + "        with:\n          x: 1\n",
+                                   steps + _uses("a/b", UNPINNED_B, "v2") + "        with:\n          x: 2\n"),
+            "docker uses": (steps + "      - uses: docker://a/b:1\n", steps + "      - uses: docker://a/b:2\n"),
+        }
+        for name, (before, after) in cases.items():
+            with self.subTest(case=name):
+                _, out, _ = self.run_gate({wf: before}, {wf: after})
+                self.assertNotIn(EXEMPT_LINE, out)
+                # The existing .github/ path exemption may still pass the gate without the bot
+                # exemption, which is why only the exemption line is asserted.
+
+    # --- helpers -----------------------------------------------------------------------------
+
+    def test_dependency_file_kind(self):
+        kinds = {
+            "scripts/ci/requirements.txt": "file",
+            "scripts/ci/requirements.in": "file",
+            "scripts/ci/requirements-dev.txt": "file",
+            ".github/workflow-lint-requirements.txt": "file",
+            "tests/playwright/proof/package-lock.json": "file",
+            "website/package.json": "file",
+            "deployment/docker/Dockerfile.loki": "file",
+            "deployment/docker/minio-src/mc.Dockerfile": "file",
+            "scripts/bench/compaction/compose.yml": "file",
+            "tests/s3compat/compose/garage.yml": "file",
+            ".github/workflows/ci.yaml": "uses",
+            ".github/workflows/ci.yml": "uses",
+            "Dockerfile.logs": None,
+            "Dockerfile.traces": None,
+            "Dockerfile.datagen": None,
+            "go.mod": None,
+            "go.sum": None,
+            "lakehouse-traces/go.mod": None,
+            "tests/go.mod": None,
+            "package.json": None,
+            "internal/requirements.txt": None,
+            "charts/victoria-lakehouse/values.yaml": None,
+            "deployment/docker/lakehouse-e2e-config.yml": None,
+            "scripts/ci/check_changelog_pr.py": None,
+            ".github/dependabot.yml": None,
+            ".github/workflows/sub/x.yaml": None,
+            "scripts/../go.mod": None,
+            "/scripts/ci/requirements.txt": None,
+            "scripts//ci/requirements.txt": None,
+            "scripts\\ci\\requirements.txt": None,
+            "": None,
+        }
+        for path, want in kinds.items():
+            with self.subTest(path=path):
+                self.assertEqual(dependency_file_kind(path), want)
+
+    def test_diff_changes_only_uses_pins(self):
+        head = "diff --git a/w.yml b/w.yml\n--- a/w.yml\n+++ b/w.yml\n@@ -3 +3 @@\n"
+        ok = head + f"-      - uses: a/b@{UNPINNED_A} # v1\n+      - uses: a/b@{UNPINNED_B} # v2\n"
+        self.assertTrue(diff_changes_only_uses_pins(ok))
+        self.assertTrue(diff_changes_only_uses_pins(ok.replace("      - uses", "        uses")))
+        self.assertFalse(diff_changes_only_uses_pins(""))
+        self.assertFalse(diff_changes_only_uses_pins(head))
+        self.assertFalse(diff_changes_only_uses_pins(ok + "+      - run: x\n"))
+        self.assertFalse(diff_changes_only_uses_pins(ok + f"+      - uses: a/c@{UNPINNED_B} # v2\n"))
+        self.assertFalse(diff_changes_only_uses_pins(head + f"+      - uses: a/b@{UNPINNED_B} # v2\n"))
+        # a removed line that merely looks like a file header is still a content line
+        self.assertFalse(diff_changes_only_uses_pins(ok + "--- x\n"))
+
+    def test_dependabot_dependency_only_diff_fails_closed_on_git_errors(self):
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch("scripts.ci.check_changelog_pr.ROOT", pathlib.Path(d)):
+            self.assertFalse(dependabot_dependency_only_diff("nope", "HEAD"))
 
 
 if __name__ == "__main__":

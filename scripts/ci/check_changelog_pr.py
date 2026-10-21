@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import os
 import pathlib
 import re
 import subprocess
@@ -332,6 +333,135 @@ def is_dependency_only_pr(commits: Iterable[str], files: Iterable[str]) -> bool:
     )
 
 
+DEPENDABOT_LOGIN = "dependabot[bot]"
+
+# Tooling and test trees where a dependency manifest, lock or pin file can be bumped by
+# Dependabot without any change to what ships. Product Go modules (go.mod, go.sum), the
+# release Dockerfiles at the repository root, charts/ and every source tree are not listed
+# on purpose: a bump there changes the shipped binary or image and still needs an entry.
+DEPENDENCY_TOOLING_PREFIXES = (
+    ".github/",
+    "deployment/",
+    "scripts/",
+    "tests/",
+    "website/",
+)
+DEPENDENCY_NPM_PREFIXES = ("tests/", "website/")
+DEPENDENCY_DOCKER_PREFIXES = ("deployment/", "scripts/", "tests/")
+
+_REQUIREMENTS_NAME = re.compile(r"^(?:[A-Za-z0-9_.]+-)*requirements[A-Za-z0-9_.-]*\.(?:txt|in)$")
+_COMPOSE_NAME = re.compile(r"^[A-Za-z0-9_.-]*compose[A-Za-z0-9_.-]*\.ya?ml$")
+_DOCKERFILE_NAME = re.compile(r"^(?:Dockerfile(?:\.[A-Za-z0-9_.-]+)?|[A-Za-z0-9_.-]+\.Dockerfile)$")
+_WORKFLOW_PATH = re.compile(r"^\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml$")
+# `uses: owner/repo[/path]@<40 hex> # vX.Y.Z`, as a diff line. Nothing else counts as a pin line.
+_USES_DIFF_LINE = re.compile(
+    r"^[+-]\s*(?:-\s+)?uses:\s*(?P<name>[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)"
+    r"@(?P<sha>[0-9a-f]{40})(?:\s+#.*)?$"
+)
+
+
+def is_dependabot_pr(author_login: str, head_repo: str, base_repo: str) -> bool:
+    """The PR was opened by Dependabot from a branch of this repository.
+
+    The inputs are the pull_request event's ``user.login``, ``head.repo.full_name`` and the
+    workflow's ``github.repository``. Branch names, titles and commit authors are free text
+    that anyone can set to look like Dependabot's, so none of them is consulted. A fork has a
+    different head repository and a deleted fork has none: neither qualifies.
+    """
+    return bool(
+        author_login == DEPENDABOT_LOGIN
+        and head_repo
+        and base_repo
+        and head_repo == base_repo
+    )
+
+
+def dependency_file_kind(path: str) -> str | None:
+    """``"file"`` for a dependency manifest/lock/pin file of a tooling or test tree, ``"uses"``
+    for a workflow (only its ``uses:`` pin lines may change), ``None`` for anything else."""
+    parts = path.split("/")
+    if not path or path.startswith("/") or "\\" in path or ".." in parts or "" in parts:
+        return None
+    name = parts[-1]
+    if _WORKFLOW_PATH.match(path):
+        return "uses"
+    if not path.startswith(DEPENDENCY_TOOLING_PREFIXES) or len(parts) < 2:
+        return None
+    if _REQUIREMENTS_NAME.match(name):
+        return "file"
+    if name in ("package.json", "package-lock.json") and path.startswith(DEPENDENCY_NPM_PREFIXES):
+        return "file"
+    if path.startswith(DEPENDENCY_DOCKER_PREFIXES):
+        if _DOCKERFILE_NAME.match(name):
+            return "file"
+        if _COMPOSE_NAME.match(name):
+            return "file"
+        # The S3 compatibility stacks are Compose files whose names carry no "compose".
+        if len(parts) == 4 and path.startswith("tests/s3compat/compose/") and re.search(r"\.ya?ml$", name):
+            return "file"
+    return None
+
+
+def diff_changes_only_uses_pins(diff_text: str) -> bool:
+    """True when a ``git diff -U0`` of one workflow changes nothing but SHA-pinned ``uses:``
+    lines, and every removed pin has an added pin of the same action."""
+    removed: Counter = Counter()
+    added: Counter = Counter()
+    in_hunk = False
+    for line in diff_text.split("\n"):
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+        if not in_hunk or not line or line.startswith("\\"):
+            continue
+        if line[0] not in "+-":
+            return False
+        m = _USES_DIFF_LINE.match(line)
+        if not m:
+            return False
+        (added if line[0] == "+" else removed)[m.group("name")] += 1
+    return bool(added) and added == removed
+
+
+def dependabot_dependency_only_diff(base: str, head: str) -> bool:
+    """Every file the PR changes is a modified dependency file of a tooling or test tree.
+
+    Fails closed: an added, deleted, renamed, retyped or mode-changed file, a path outside the
+    allowed classes, a workflow change beyond ``uses:`` pins, or a git error is "not exempt".
+    """
+    try:
+        raw = run_git("diff", "--no-renames", "--raw", "-z", f"{base}..{head}").split("\0")
+        entries: list[tuple[str, str]] = []
+        i = 0
+        while i < len(raw):
+            meta = raw[i]
+            if not meta:
+                i += 1
+                continue
+            fields = meta.split()
+            if not meta.startswith(":") or len(fields) != 5 or i + 1 >= len(raw):
+                return False
+            src_mode, dst_mode, _, _, status = fields
+            src_mode = src_mode.lstrip(":")
+            if status != "M" or src_mode != "100644" or dst_mode != "100644":
+                return False
+            entries.append((status, raw[i + 1]))
+            i += 2
+        if not entries:
+            return False
+        for _, path in entries:
+            kind = dependency_file_kind(path)
+            if kind is None:
+                return False
+            if kind == "uses" and not diff_changes_only_uses_pins(
+                run_git("diff", "--no-renames", "-U0", f"{base}..{head}", "--", path)
+            ):
+                return False
+        return True
+    except (subprocess.CalledProcessError, ValueError):
+        return False
+
+
 # Generated files whose only release-time change is the NAME of the version a
 # feature shipped in (`since: the release after v0.146.3` becomes
 # `since: v0.146.4` or `the release after v0.146.4`). A release that leaves a
@@ -503,6 +633,19 @@ def main() -> int:
     head_text = run_git("show", f"{args.head}:CHANGELOG.md")
     base_unreleased = extract_unreleased_section(base_text)
     head_unreleased = extract_unreleased_section(head_text)
+
+    # Author identity comes from the pull_request event (PR_AUTHOR_LOGIN, PR_HEAD_REPO, PR_BASE_REPO),
+    # never from the branch name, the title or a commit: those are free text.
+    if is_dependabot_pr(
+        os.environ.get("PR_AUTHOR_LOGIN", ""),
+        os.environ.get("PR_HEAD_REPO", ""),
+        os.environ.get("PR_BASE_REPO", ""),
+    ) and dependabot_dependency_only_diff(base, args.head):
+        print(
+            "changelog gate: skipped (Dependabot PR that changes only dependency manifest, lock "
+            "or pin files of tooling and test trees)"
+        )
+        return 0
 
     if is_dependency_only_pr(commits, files):
         print("changelog gate: skipped (dependency-only update)")
