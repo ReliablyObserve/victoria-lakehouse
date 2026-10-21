@@ -2,5 +2,5 @@
 # conformance registry); the tests add pytest. scripts/proof's metrics library, which the harness imports, is standard library only.
 pyyaml==6.0.3
 pytest==9.1.1
-pytest-cov==6.0.0
+pytest-cov==7.1.0
 pyflakes==4.0.3
