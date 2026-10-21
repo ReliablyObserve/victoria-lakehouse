@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The span events and links parity cases no longer wait up to 12 minutes for the next hour (tests only, no behaviour change).** From minute 48 of an hour, `TestParity_Traces_EventsLinksLayers` and `TestParity_Traces_EventsLinksInvalidUTF8` slept until the next hour before writing their spans, so that a run never crossed an hour boundary. The span time is now the current time, moved by at most 2 s so that every timestamp of a case (span starts and ends, trace index rows, the second batch) falls in one hour partition; this also closes a first-second-of-the-hour window in which the old rule split a case over two partitions. The rest of the case already derives its partition from the span time, and its layer proofs are unchanged.
 
+### Security
+
+- **Go 1.27.3, which fixes GO-2026-6809 (`crypto/x509`) that govulncheck reports.** Go 1.27.2 ships a `crypto/x509` that trusts compromised intermediate certificates, and govulncheck finds it reachable from the S3 client paths (for example `manifest.Manifest.LoadFrom`). Both go.mod files, `go.work`, the three Dockerfiles and the parity runner image now use Go 1.27.3. `govulncheck` reports no vulnerabilities in either module. No source change; Parquet data is unchanged.
+
 ## [0.157.1] - 2026-10-19
 
 ### Changed

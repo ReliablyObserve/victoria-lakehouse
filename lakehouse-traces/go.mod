@@ -1,6 +1,6 @@
 module github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces
 
-go 1.27.2
+go 1.27.3
 
 // VictoriaLogs at commit c945d2949e98 (= VL v1.52.0) — the commit VictoriaTraces
 // v0.12.0 pins in its own go.mod. Derived from VT, never chosen independently;
