@@ -125,7 +125,7 @@ services:
       lakehouse-traces: {condition: service_healthy}
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.8.33.6@sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77
+    image: clickhouse/clickhouse-server:26.9.18.11@sha256:e5bc0bf2c7770f35c7e43f06a4ecb497a01f552afe14cc34526a183f8e30b0fd
     profiles: ["clickhouse"]
     networks: [net]
     ports: ["127.0.0.1:39410:8123", "127.0.0.1:39411:9000"]
@@ -140,7 +140,7 @@ services:
       retries: 30
 
   trino:
-    image: trinodb/trino:476@sha256:00125e40d063bc4816d165482f6044872b18b56026fb959d3b28ce1f96ffbbee
+    image: trinodb/trino:483@sha256:db58cc93e593a2706553745f276bb119c9810e69918be56ecde088ba7ccb0534
     profiles: ["trino"]
     networks: [net]
     ports: ["127.0.0.1:39420:8080"]
