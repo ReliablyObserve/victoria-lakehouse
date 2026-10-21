@@ -317,7 +317,7 @@ def test_committed_coverage_table_is_the_generated_one():
 
 
 def test_manifest_versions_are_the_pinned_ones():
-    pins = dict(re.findall(r"^([A-Za-z0-9_.-]+)==([\w.]+)$", lib.read_text(os.path.join(HERE, "requirements.txt")), re.M))
+    pins = dict(re.findall(r"^([A-Za-z0-9_.-]+)==([\w.]+)(?:\s*;[^\\\n]*)?\s*\\?$", lib.read_text(os.path.join(HERE, "requirements.txt")), re.M))
     by_id = {e["id"]: e["version"] for e in MANIFEST["engines"]}
     for eid, dist in (("duckdb", "duckdb"), ("pyarrow", "pyarrow"), ("pandas", "pandas"), ("polars", "polars"),
                       ("datafusion", "datafusion"), ("parquet-tools", "parquet-tools")):

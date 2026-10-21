@@ -1,0 +1,4 @@
+# PyYAML for the CI scripts that read YAML (changelog and gate self-tests, parity ratchet, market data, config report).
+# requirements.txt is generated from this file with hashes:
+#   pip-compile --generate-hashes --output-file=scripts/ci/requirements.txt scripts/ci/requirements.in
+pyyaml==6.0.2

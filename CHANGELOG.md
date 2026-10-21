@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Every GitHub Actions workflow pins its actions to a full commit SHA, and a new `workflow-lint` check lints the workflow files (CI only, no runtime change).** All 171 action references that used a tag or branch now name a 40-character commit with the version as a trailing comment, expressions that were interpolated into `run:` scripts in the fuzz, load-test, badges and MinIO image workflows are passed through `env:`, and `.github/workflows/workflow-lint.yaml` runs actionlint and zizmor (pinned, checksum-verified) on every pull request and push to `main`, with the findings that exist today listed in `.github/zizmor.yml`. CodeQL also analyses the workflow files now (`Analyze (actions)`), and `scripts/ci/tests/test_workflow_action_pins.py` fails if an action reference is added without a SHA pin and version comment.
 
+- **Tools installed in CI are pinned to exact versions and their downloads are verified (CI only, no runtime change).** `govulncheck`, `gosec` (and the `x/tools` it is built with) are installed at exact versions instead of `@latest`, the `gitleaks` archive is checked against a pinned SHA-256 before it is unpacked, and every `pip install` in the workflows reads a hashed lock file (`--require-hashes`, generated from a `requirements.in` next to it with `pip-compile --generate-hashes`) in place of unpinned or version-only requirements. `scripts/ci/tests/test_ci_tool_pins.py` fails if a moving tool ref, an unverified download, a pipe into a shell, an unhashed `pip install` or an `npm install` is added; the few exceptions are listed, each with its reason, in `scripts/ci/tool_pins_allowlist.txt`.
+
 ## [0.157.3] - 2026-10-21
 
 ## [0.157.2] - 2026-10-21
