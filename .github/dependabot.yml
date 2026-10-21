@@ -128,6 +128,7 @@ updates:
   #   - rustfs/rustfs: the test backend of the S3 compatibility job; its image is repeated in the
   #     matrix of .github/workflows/s3-compat.yaml, which Dependabot cannot update, so the tag and
   #     digest are bumped by hand in every place at once
+  #   - busybox: the base of the upstream probe image, pinned together with the check that reads it
   #   - images built by the stacks themselves (vl-probed, vt-probed, bench-shaped-*, victoria-lakehouse-*,
   #     lh-*): local tags, not registry images
   - package-ecosystem: docker
@@ -147,6 +148,7 @@ updates:
       - dependency-name: "victoriametrics/victoria-logs"
       - dependency-name: "victoriametrics/victoria-traces"
       - dependency-name: "rustfs/rustfs"
+      - dependency-name: "busybox"
       - dependency-name: "vl-probed"
       - dependency-name: "vt-probed"
       - dependency-name: "bench-shaped-*"
@@ -200,6 +202,8 @@ updates:
       - dependency-name: "victoriametrics/victoria-traces"
       - dependency-name: "rustfs/rustfs"
       - dependency-name: "golang"
+      - dependency-name: "clickhouse/clickhouse-server"
+      - dependency-name: "trinodb/trino"
       - dependency-name: "vl-probed"
       - dependency-name: "vt-probed"
       - dependency-name: "lh-*"
