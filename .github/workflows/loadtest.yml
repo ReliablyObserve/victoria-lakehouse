@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       # cmd/loadtest builds inside the logs module, whose go.mod replaces
@@ -54,15 +54,16 @@ jobs:
           # peer.auth_key of the e2e stack (deployment/docker/lakehouse-e2e-config.yml):
           # the cold runs clear the cache through /internal/cache/clear, which needs it.
           LH_PEER_AUTH_KEY: e2e-peer-key
+          MODE_INPUT: ${{ github.event.inputs.mode || 'all' }}
         run: |
-          MODE="${{ github.event.inputs.mode || 'all' }}"
+          MODE="$MODE_INPUT"
           go run ./cmd/loadtest --target=http://localhost:29428 --mode="$MODE" --duration=120s --output=loadtest-results.json
       - name: Run compression/file-size matrix
         if: always()
         run: go run ./cmd/loadtest --mode=benchmark --output=benchmark-results.json
       - name: Upload results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: loadtest-results
           path: |

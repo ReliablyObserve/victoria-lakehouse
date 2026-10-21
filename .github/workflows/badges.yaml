@@ -21,9 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
@@ -73,20 +73,24 @@ jobs:
           echo "Metrics: Prod=$PROD_DISPLAY, Test=$TEST_DISPLAY, Tests=$TOTAL_TESTS"
 
       - name: Write badge JSON
+        env:
+          PROD_LOC: ${{ steps.metrics.outputs.prod_loc }}
+          TEST_LOC: ${{ steps.metrics.outputs.test_loc }}
+          TESTS: ${{ steps.metrics.outputs.tests }}
         run: |
           mkdir -p .badges
           jq -n \
-            --arg msg "${{ steps.metrics.outputs.prod_loc }}" \
+            --arg msg "$PROD_LOC" \
             '{schemaVersion: 1, label: "prod code", message: $msg, color: "blue"}' \
             > .badges/prod-loc.json
 
           jq -n \
-            --arg msg "${{ steps.metrics.outputs.test_loc }}" \
+            --arg msg "$TEST_LOC" \
             '{schemaVersion: 1, label: "test code", message: $msg, color: "orange"}' \
             > .badges/test-loc.json
 
           jq -n \
-            --arg msg "${{ steps.metrics.outputs.tests }} passed" \
+            --arg msg "$TESTS passed" \
             '{schemaVersion: 1, label: "tests", message: $msg, color: "brightgreen"}' \
             > .badges/tests.json
 

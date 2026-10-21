@@ -74,8 +74,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -92,8 +92,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -103,8 +103,8 @@ jobs:
       # The three images are built here with the GitHub Actions layer cache (the dependency layers do not
       # change between runs) and loaded under the names the compose file uses; run.sh then finds them and
       # does not build again.
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.logs
@@ -112,7 +112,7 @@ jobs:
           tags: lhreaders-lakehouse-logs:dev
           cache-from: type=gha,scope=readers-logs
           cache-to: type=gha,mode=max,scope=readers-logs
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.traces
@@ -120,7 +120,7 @@ jobs:
           tags: lhreaders-lakehouse-traces:dev
           cache-from: type=gha,scope=readers-traces
           cache-to: type=gha,mode=max,scope=readers-traces
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile.datagen
@@ -139,7 +139,7 @@ jobs:
       - name: Tear down
         if: always()
         run: tests/readers/run.sh down || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: readers-fixture
           path: ${{ env.OUT }}
@@ -152,14 +152,14 @@ jobs:
     env:
       ENGINES: duckdb,pyarrow,pandas,polars,datafusion,parquet-tools
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: tests/readers/requirements.txt
       - run: pip install -r tests/readers/requirements.txt
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: readers-fixture
           path: ${{ env.OUT }}
@@ -172,7 +172,7 @@ jobs:
         run: python -m pytest -q -m results -k "duckdb or pyarrow or pandas or polars or datafusion or parquet_tools"
       - if: always()
         run: tests/readers/run.sh down || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: readers-result-inprocess
@@ -183,14 +183,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: tests/readers/requirements.txt
       - run: pip install -r tests/readers/requirements.txt
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: readers-fixture
           path: ${{ env.OUT }}
@@ -203,7 +203,7 @@ jobs:
         run: python -m pytest -q -m results -k clickhouse
       - if: always()
         run: tests/readers/run.sh down || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: readers-result-clickhouse
@@ -214,14 +214,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: tests/readers/requirements.txt
       - run: pip install -r tests/readers/requirements.txt
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: readers-fixture
           path: ${{ env.OUT }}
@@ -234,7 +234,7 @@ jobs:
         run: python -m pytest -q -m results -k trino
       - if: always()
         run: tests/readers/run.sh down || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: readers-result-trino
@@ -245,19 +245,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: tests/readers/requirements.txt
       - run: pip install -r tests/readers/requirements.txt
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: readers-fixture
           path: ${{ env.OUT }}
       # hadoop-aws pulls the AWS SDK v2 bundle (~600 MB); keep it between runs.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/lhreaders-ivy
           key: lhreaders-ivy-spark-4.0.0-hadoop-aws-3.4.1
@@ -270,7 +270,7 @@ jobs:
         run: python -m pytest -q -m results -k spark
       - if: always()
         run: tests/readers/run.sh down || true
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: readers-result-spark
@@ -282,18 +282,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: tests/readers/requirements.txt
       - run: pip install -r tests/readers/requirements.txt
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: readers-fixture
           path: ${{ env.OUT }}
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: readers-result-*
           path: ${{ env.OUT }}

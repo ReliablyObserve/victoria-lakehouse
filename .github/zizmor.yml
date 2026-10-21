@@ -1,0 +1,63 @@
+# Reviewed baseline for the workflow linter (.github/workflows/workflow-lint.yaml).
+#
+# Every entry below is a finding that exists today and is tracked for a later change.
+# The gate fails on any finding that is NOT listed here, so new workflow code must be
+# clean. Entries only ever get removed: when a listed finding is fixed, delete its line.
+
+rules:
+  # Checkout steps keep the default token in the local git config. Setting
+  # `persist-credentials: false` per job is a behaviour change for the jobs that push
+  # (release, badges, bots), so it is handled together with their permission split.
+  # Listed per file, so a new workflow file is still checked.
+  artipacked:
+    ignore:
+      - auto-release.yaml
+      - badges.yaml
+      - changelog-pr.yaml
+      - ci.yaml
+      - codeql.yaml
+      - conformance.yaml
+      - docs-site.yaml
+      - e2e.yaml
+      - fuzz-stress-memleak.yaml
+      - gate-selftest.yaml
+      - loadtest.yml
+      - market-data.yaml
+      - minio-images.yaml
+      - parity.yaml
+      - parquet-readers.yaml
+      - pr-labeler.yaml
+      - proof-metrics.yaml
+      - s3-compat.yaml
+      - security.yaml
+      - verification-matrix-check.yaml
+
+  # Expressions inside the release job's `run:` scripts. The release workflow is
+  # restructured as its own change (build / publish / metadata split); these go with it.
+  template-injection:
+    ignore:
+      - auto-release.yaml:234
+      - auto-release.yaml:272
+      - auto-release.yaml:332
+      - auto-release.yaml:341
+      - auto-release.yaml:399
+      - auto-release.yaml:406
+
+  # Intentional triggers. `badges.yaml` follows the CI run on main and only reads the
+  # checked-out main branch; `registry-gate-base.yaml` checks the pull request out as
+  # data and never runs its code (see the header comment of that file).
+  dangerous-triggers:
+    ignore:
+      - badges.yaml:3
+      - registry-gate-base.yaml:20
+
+  # Image build cache of the external-reader matrix; no release artifact is built from it.
+  cache-poisoning:
+    ignore:
+      - parquet-readers.yaml:107
+
+  # No cooldown on Dependabot updates. Tuned together with the rest of the Dependabot
+  # configuration in its own change.
+  dependabot-cooldown:
+    ignore:
+      - dependabot.yml

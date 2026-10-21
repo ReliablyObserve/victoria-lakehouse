@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
+### Security
 
-- **The unused `scripts/bench/plansim-scratch` module (tooling only, no product change).** It was an offline planner simulation scratch tool that nothing in the repository referenced; its dependencies were no longer kept current.
+- **Every GitHub Actions workflow pins its actions to a full commit SHA, and a new `workflow-lint` check lints the workflow files (CI only, no runtime change).** All 171 action references that used a tag or branch now name a 40-character commit with the version as a trailing comment, expressions that were interpolated into `run:` scripts in the fuzz, load-test, badges and MinIO image workflows are passed through `env:`, and `.github/workflows/workflow-lint.yaml` runs actionlint and zizmor (pinned, checksum-verified) on every pull request and push to `main`, with the findings that exist today listed in `.github/zizmor.yml`. CodeQL also analyses the workflow files now (`Analyze (actions)`), and `scripts/ci/tests/test_workflow_action_pins.py` fails if an action reference is added without a SHA pin and version comment.
 
 ## [0.157.3] - 2026-10-21
 
