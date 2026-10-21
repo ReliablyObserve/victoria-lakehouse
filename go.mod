@@ -1,6 +1,6 @@
 module github.com/ReliablyObserve/victoria-lakehouse
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/VictoriaMetrics/VictoriaLogs v1.53.0
