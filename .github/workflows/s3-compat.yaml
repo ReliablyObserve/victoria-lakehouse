@@ -52,7 +52,7 @@ jobs:
           # CopyObject rejects a ":" in the source key, If-Match on a missing
           # key succeeds, and dot-segment keys are rejected.
           - backend: minio-reference
-            image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z
+            image: ghcr.io/reliablyobserve/minio:RELEASE.2025-04-22T22-12-26Z@sha256:9da28ae00613e7098d2f8c3eef0a69b7f61dcc262ba110816dd3ccfac4d84123
             cmd: server /data
             skip: "TestProd_CopyObject/col:on|TestExtra_ConditionalPut/if-match-missing-key-404|TestExtra_DotSegmentKeys"
     steps:

@@ -1,18 +1,18 @@
 services:
   s3:
-    image: rustfs/rustfs:1.0.0
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
     environment: {RUSTFS_ACCESS_KEY: minioadmin, RUSTFS_SECRET_KEY: minioadmin}
     healthcheck: {test: ["CMD","curl","-sf","http://127.0.0.1:9000/health"], interval: 3s, retries: 20}
   s3-init:
-    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z@sha256:14bff146d9be89b316c591a14c1c69fe18aba06143bcf8fbc77e696d393b9855
     depends_on: {s3: {condition: service_healthy}}
     entrypoint: ["/bin/sh","-c","for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do mc alias set l http://s3:9000 minioadmin minioadmin && mc mb l/obs-archive --ignore-existing && exit 0; sleep 2; done; exit 1"]
   hot-vl:
-    image: victoriametrics/victoria-logs:v1.53.0
+    image: victoriametrics/victoria-logs:v1.53.0@sha256:251121fa882af99b95ba0c230a4a2f412ea602d2698c64a96c58dc9842bb755d
     command: ["-storageDataPath=/data","-retentionPeriod=1d"]
     ports: ["127.0.0.1:${PORT_BASE}4:9428"]
   hot-vt:
-    image: victoriametrics/victoria-traces:v0.12.0
+    image: victoriametrics/victoria-traces:v0.12.0@sha256:80919fcc85cc6dd87f598d20ccf42d0ab1120de8f25d4dcf08c5ea2515a496ba
     command: ["-storageDataPath=/data","-retentionPeriod=1d"]
     ports: ["127.0.0.1:${PORT_BASE}5:10428"]
   lakehouse-logs:

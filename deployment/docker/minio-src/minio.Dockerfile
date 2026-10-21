@@ -16,7 +16,7 @@
 #     --build-arg MC_COMMIT=1e78af443bf0443eb177f26421fe081f08d83dc5 .
 
 # Go version = the `toolchain` line in upstream go.mod at the tag (go1.24.2).
-FROM golang:1.24.2-alpine3.21 AS build
+FROM golang:1.24.2-alpine3.21@sha256:7772cb5322baa875edd74705556d08f0eeca7b9c4b5367754ce3f2f00041ccee AS build
 
 ARG TAG
 ARG COMMIT
@@ -47,7 +47,7 @@ RUN test -n "${MC_TAG}" && test -n "${MC_COMMIT}" \
 RUN LDFLAGS="$(MC_RELEASE=RELEASE go run buildscripts/gen-ldflags.go)" \
  && go build -trimpath -tags kqueue -ldflags "${LDFLAGS}" -o /out/mc .
 
-FROM alpine:3.21
+FROM alpine:3.21@sha256:ce64758a109eb420d874a118f87920e625e12d3634e03b4a5573fd9f6e5d3507
 
 ARG TAG
 ARG COMMIT

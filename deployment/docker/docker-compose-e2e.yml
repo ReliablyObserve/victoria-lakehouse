@@ -23,7 +23,7 @@ services:
       retries: 5
 
   s3-init:
-    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z
+    image: ghcr.io/reliablyobserve/mc:RELEASE.2025-04-16T18-13-26Z@sha256:14bff146d9be89b316c591a14c1c69fe18aba06143bcf8fbc77e696d393b9855
     depends_on:
       s3:
         condition: service_healthy
@@ -50,7 +50,7 @@ services:
   # =========================================================================
 
   s3-latency:
-    image: ghcr.io/shopify/toxiproxy:2.9.0
+    image: ghcr.io/shopify/toxiproxy:2.9.0@sha256:b44c283298cea49e2defaba1b3028783798346f2a926684e3a345fd8441af3b8
     command: ["-host=0.0.0.0", "-config=/etc/toxiproxy/proxies.json"]
     volumes:
       - ./toxiproxy-proxies.json:/etc/toxiproxy/proxies.json:ro
@@ -567,7 +567,7 @@ services:
   # =========================================================================
 
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
+    image: clickhouse/clickhouse-server:latest@sha256:bdb5c911a23d92fd364e246ab20b5a0a485f00112f3663fa626b083fb46c146b
     depends_on:
       s3-init:
         condition: service_completed_successfully
@@ -593,7 +593,7 @@ services:
   # =========================================================================
 
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.143.0
+    image: victoriametrics/victoria-metrics:v1.143.0@sha256:59b229f9b5ac32bb28c5ad94fc3019e34e82a3137f27f6ede6f73edeeefc2c64
     networks: [lakehouse-net]
     command:
       - "-promscrape.config=/etc/prometheus/prometheus.yml"
@@ -654,13 +654,13 @@ services:
   # =========================================================================
 
   jaeger-query-hot:
-    image: jaegertracing/jaeger-query:1.62.0
+    image: jaegertracing/jaeger-query:1.62.0@sha256:f2914dff723b68c4b96daf8ea8d8f308c9684046369f3202f6b0b89e9d937109
     environment:
       SPAN_STORAGE_TYPE: memory
     networks: [lakehouse-net]
 
   jaeger-proxy-hot:
-    image: nginx:alpine
+    image: nginx:alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
     ports:
       - "16686:80"
     environment:
@@ -678,13 +678,13 @@ services:
         condition: service_started
 
   jaeger-query-cold:
-    image: jaegertracing/jaeger-query:1.62.0
+    image: jaegertracing/jaeger-query:1.62.0@sha256:f2914dff723b68c4b96daf8ea8d8f308c9684046369f3202f6b0b89e9d937109
     environment:
       SPAN_STORAGE_TYPE: memory
     networks: [lakehouse-net]
 
   jaeger-proxy-cold:
-    image: nginx:alpine
+    image: nginx:alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
     ports:
       - "16687:80"
     environment:
