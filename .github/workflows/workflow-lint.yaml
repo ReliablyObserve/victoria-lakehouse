@@ -1,0 +1,60 @@
+name: Workflow Lint
+
+# Lints the workflow files themselves: actionlint (syntax, expressions, types) and zizmor
+# (security audits: unpinned actions, template expansion, permissions, triggers).
+#
+# Both tools are pinned to a release and verified by checksum or by `--require-hashes`.
+# Findings that already existed when the gate was added are listed in .github/zizmor.yml;
+# anything not listed fails the job. No path filter on purpose: a required job that does
+# not report would block unrelated pull requests.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-lint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+jobs:
+  workflow-lint:
+    name: workflow-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/actionlint"
+          mkdir -p "$tool_dir"
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 -fsSL -o "$tool_dir/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          echo "${ACTIONLINT_SHA256}  $tool_dir/$archive" | sha256sum -c -
+          tar -xzf "$tool_dir/$archive" -C "$tool_dir" actionlint
+          # shellcheck and pyflakes of the embedded scripts are not part of this gate.
+          "$tool_dir/actionlint" -color -shellcheck= -pyflakes=
+
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/zizmor-venv"
+          python3 -m venv "$venv"
+          "$venv/bin/pip" install --quiet --require-hashes --only-binary=:all: \
+            -r .github/workflow-lint-requirements.txt
+          "$venv/bin/zizmor" --no-progress --config .github/zizmor.yml .github

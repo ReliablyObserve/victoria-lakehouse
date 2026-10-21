@@ -58,8 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -79,8 +79,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           # lakehouse-traces is its own Go module; the go.mod there
           # pins the toolchain the traces tests must compile against.
@@ -109,8 +109,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
@@ -126,8 +126,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: lakehouse-traces/go.mod
       - name: Build VL deps (traces side)
@@ -238,19 +238,22 @@ jobs:
           - internal/vlstorage:FuzzAdmittedRows
           - internal/storage:FuzzTenantStreamMap
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - name: Build VL deps (logs)
         run: make deps-logs
       - name: Pick fuzz budget
         id: budget
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FUZZ_SECONDS_INPUT: ${{ github.event.inputs.fuzz_seconds || 30 }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "$EVENT_NAME" = "schedule" ]; then
             echo "seconds=600" >> $GITHUB_OUTPUT
           else
-            echo "seconds=${{ github.event.inputs.fuzz_seconds || 30 }}" >> $GITHUB_OUTPUT
+            echo "seconds=$FUZZ_SECONDS_INPUT" >> $GITHUB_OUTPUT
           fi
       - name: Fuzz ${{ matrix.target }}
         env:
@@ -312,7 +315,7 @@ jobs:
 
       - name: Preserve failed fuzz inputs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-logs-${{ strategy.job-index }}
           path: |
@@ -363,8 +366,8 @@ jobs:
           - internal/vtstorage_adapter:FuzzTraceIndexLookupTraceID
           - internal/vtstorage_adapter:FuzzRewriteTraceIndexQuery
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: lakehouse-traces/go.mod
       - name: Build VL deps (traces side)
@@ -373,11 +376,14 @@ jobs:
         run: make deps-vt
       - name: Pick fuzz budget
         id: budget
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          FUZZ_SECONDS_INPUT: ${{ github.event.inputs.fuzz_seconds || 30 }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "$EVENT_NAME" = "schedule" ]; then
             echo "seconds=600" >> $GITHUB_OUTPUT
           else
-            echo "seconds=${{ github.event.inputs.fuzz_seconds || 30 }}" >> $GITHUB_OUTPUT
+            echo "seconds=$FUZZ_SECONDS_INPUT" >> $GITHUB_OUTPUT
           fi
       - name: Fuzz ${{ matrix.target }}
         working-directory: lakehouse-traces
@@ -439,7 +445,7 @@ jobs:
 
       - name: Preserve failed fuzz inputs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fuzz-traces-${{ strategy.job-index }}
           path: |
@@ -458,7 +464,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Verify every Fuzz* target is in CI matrix
         run: |
           # Collect declared fuzz targets in source.

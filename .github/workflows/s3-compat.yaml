@@ -56,15 +56,15 @@ jobs:
             cmd: server /data
             skip: "TestProd_CopyObject/col:on|TestExtra_ConditionalPut/if-match-missing-key-404|TestExtra_DotSegmentKeys"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
 
       # internal/s3reader links the config package, which needs the patched
       # VictoriaLogs checkout (make deps-logs is a no-op when the cache hits).
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: deps/VictoriaLogs
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
