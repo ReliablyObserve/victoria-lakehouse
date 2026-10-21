@@ -1,6 +1,6 @@
 # Dependencies of scripts/bench/ab (the PR perf smoke): the harness itself uses the standard library and PyYAML (it reads the
 # conformance registry); the tests add pytest. scripts/proof's metrics library, which the harness imports, is standard library only.
-pyyaml==6.0.2
-pytest==9.0.3
+pyyaml==6.0.3
+pytest==9.1.1
 pytest-cov==6.0.0
 pyflakes==3.2.0
