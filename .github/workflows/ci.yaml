@@ -87,7 +87,7 @@ jobs:
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Install report dependencies
-        run: pip install pyyaml
+        run: pip install --require-hashes -r scripts/ci/config-report/requirements.txt
 
       - name: Config surface golden files (logs, field docs, documented examples)
         run: |
@@ -212,7 +212,7 @@ jobs:
           key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
 
       - name: Install readers
-        run: pip install pyarrow duckdb
+        run: pip install --require-hashes -r scripts/ci/parquet-readback/requirements.txt
 
       # The truth verify.py holds both engines to must itself match the
       # files written: read back with parquet-go and recomputed.
@@ -782,7 +782,7 @@ jobs:
 
       - name: Run govulncheck (logs)
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./internal/... ./cmd/...
 
   security-traces:
@@ -806,7 +806,7 @@ jobs:
       - name: Run govulncheck (traces)
         working-directory: lakehouse-traces
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
           govulncheck ./...
 
   helm:

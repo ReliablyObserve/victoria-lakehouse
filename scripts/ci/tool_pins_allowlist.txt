@@ -1,0 +1,5 @@
+# Exceptions to scripts/ci/tests/test_ci_tool_pins.py, one per line:
+#   <path> | <rule> | <substring of the offending line> | <one-line reason>
+# An entry that matches nothing fails the test, so remove an entry as soon as its reason is gone.
+.github/workflows/docs-site.yaml | npm-install | npm install | website/ has no package-lock.json yet; switch to npm ci once one is committed
+scripts/ci/upstream_sync_probe.sh | download | api.github.com/repos/$slug/releases/latest | reads release metadata (JSON) only, downloads no executable

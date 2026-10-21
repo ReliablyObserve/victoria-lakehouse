@@ -1,0 +1,5 @@
+# Readers of the parquet-readback check (verify.py).
+# requirements.txt is generated from this file with hashes:
+#   pip-compile --generate-hashes --output-file=scripts/ci/parquet-readback/requirements.txt scripts/ci/parquet-readback/requirements.in
+pyarrow==26.0.0
+duckdb==1.5.6

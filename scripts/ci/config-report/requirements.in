@@ -1,0 +1,4 @@
+# PyYAML for the config surface report of the helm job (scripts/ci/config_drift_report.py).
+# requirements.txt is generated from this file with hashes (pip-tools):
+#   pip-compile --generate-hashes --output-file=scripts/ci/config-report/requirements.txt scripts/ci/config-report/requirements.in
+pyyaml==6.0.3
