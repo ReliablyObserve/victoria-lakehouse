@@ -9,7 +9,7 @@
 duckdb==1.5.6
 pyarrow==25.0.1
 pandas==2.3.3
-polars==1.44.2
+polars==2.0.0
 datafusion==54.0.0
 s3fs==2026.9.0
 trino==0.340.0
