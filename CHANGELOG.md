@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.0] - 2026-10-22
+
 ### Added
 
 - **Optional peer authentication of the pods' internal endpoints, off by default (no change with the default settings).** `peer.auth_enabled` (`-lakehouse.peer.auth-enabled`; the chart's `peerAuth.enabled`) makes a pod refuse a request without the shared peer key (`peer.auth_key`) with 401 on `/internal/manifest/update`, `/internal/cache/clear`, `/internal/stats/sync`, `/internal/tenant/sync` (logs), the alias admin writes, and on the read-only `/internal/cache/fetch`, `/internal/cache/has` and `/internal/cache/stats` and `/internal/buffer/query`, in both binaries. The key and its enforcement are separate settings: a pod sends its key on every peer call whenever it has one, so a rolling restart sets the key first and enables enforcement second without refusing any pod, and a pod that holds the key without enforcing it already serves `all_tenants=true` buffer reads to a caller presenting it. Enabled without a key does not start; with Helm the key must come from a Secret (`peerAuth.existingSecret`) and `peerAuth.enabled` without one fails the render. A key set on its own no longer enforces it (it did before this setting existed): set `peer.auth_enabled` as well. The state is visible: one startup warning when the endpoints are open and the pod has peers, the gauge `lakehouse_peer_auth_enabled`, the `peer_auth` field of `/lakehouse/info`, and the chart's values comments and install notes. The peer zone probe now presents the key in both header forms, so zone-aware routing works on a cluster that enforces it. See [Security](docs/security.md#peer-authentication-opt-in-off-by-default).
