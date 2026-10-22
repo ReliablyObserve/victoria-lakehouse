@@ -19,9 +19,9 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
 | Ops | 14 | 0 | 2 | 0 | 16 |
-| Deploy | 7 | 0 | 0 | 0 | 7 |
+| Deploy | 8 | 0 | 0 | 0 | 8 |
 | Security | 6 | 0 | 0 | 0 | 6 |
-| **Total** | **153** | **1** | **3** | **9** | **166** |
+| **Total** | **154** | **1** | **3** | **9** | **167** |
 
 ## Coverage gaps
 
@@ -1819,7 +1819,7 @@ The matrix is the operational counterpart of the registry: it records what has a
 - Docs: `tests/verification/matrix.md`, `docs/parity-and-gaps.md`
 - Changelog: `0.37.1`
 
-## Deploy (7)
+## Deploy (8)
 
 ### ✅ AZ detection and AZ-aware routing
 
@@ -1866,6 +1866,17 @@ The chart encodes the operational rules that keep a stateful cold tier safe unde
 - Docs: `docs/kubernetes-deployment.md`
 - Changelog: `0.10.0`, `0.37.1`
 - Note: CI runs the linked chart template and exact image-reference tests, strict `helm lint`, and the Helm drift check (`scripts/ci/helmdrift`).
+
+### ✅ Released images apply every patch the tests ran with
+
+`lh.feature.deploy.release_image_patches` · status: shipped · surfaces: cli
+
+**Released images carry the tested patches**: `Dockerfile.logs` and `Dockerfile.traces` apply exactly the patches `make deps` applies, in the same order, so a published image is the binary the unit, parity and benchmark runs used.
+
+Both binaries embed VictoriaLogs (and the traces binary VictoriaTraces) with the patches under patches/. The Makefile applies them for local builds and CI; each Dockerfile applies its own list. vl-const-timestamps-parse.patch was in the Makefile but in neither Dockerfile, so every image was built without it while every test ran with it. A conformance test now compares the two lists per patch directory and fails on a missing patch, an extra one or another order; its own test proves that failure on the shape of that defect.
+
+- Verification: tests: `tests/conformance/pins_test.go#TestDockerfilePatchesMatchMakefile`, `tests/conformance/pins_test.go#TestPatchListProblems`, `tests/conformance/pins_test.go#TestDockerfilePatchRefsExist`
+- Docs: `docs/upstream-sync.md`, `patches/README.md`
 
 ### ✅ A pod finds itself in the discovered ring
 
