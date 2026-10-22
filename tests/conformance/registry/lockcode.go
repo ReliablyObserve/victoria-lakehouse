@@ -1539,11 +1539,6 @@ func parseFloor(src []byte, name string) (n uint64, present bool, err error) {
 	return n, present, nil
 }
 
-// parseMinPass reads the combined `# min-pass: N` directive.
-func parseMinPass(src []byte) (n uint64, present bool, err error) {
-	return parseFloor(src, minPassDirective)
-}
-
 // MinPassProblems is the ratchet of the expected number of passing parity tests: the value of
 // `# min-pass: N` in the allowlist, and of the per-signal `# min-pass-logs: N` and
 // `# min-pass-traces: N`, may grow, never shrink, and a directive may not disappear or become
