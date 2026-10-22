@@ -77,6 +77,16 @@ updates:
       python-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    # The reader-matrix engines are curated: the manifest (tests/readers/engines.json) and the
+    # pins must change together, and the matrix is the proof, so they are moved deliberately and not
+    # by routine bumps.
+    ignore:
+      - dependency-name: "duckdb"
+      - dependency-name: "pyarrow"
+      - dependency-name: "pandas"
+      - dependency-name: "polars"
+      - dependency-name: "datafusion"
+      - dependency-name: "parquet-tools"
     labels:
       - "dependencies"
     open-pull-requests-limit: 3
