@@ -160,7 +160,7 @@ func New(cfg *config.Config) (*Storage, error) {
 			cfg.Peer.Timeout,
 			cfg.Peer.MaxConnections,
 		)
-		ph = peercache.NewHandler(cfg.Peer.AuthKey, "")
+		ph = peercache.NewHandler(cfg.Peer.EnforcedKey(), "")
 	}
 
 	// K8s-style request/limit bounds for all 5 resource surfaces.
@@ -1249,6 +1249,10 @@ func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
 	}
 	if s.cfg.Peer.AuthKey != "" {
 		req.Header.Set("X-Peer-Auth-Key", s.cfg.Peer.AuthKey)
+		// /internal/cache/stats is served by HandleCacheStats, which reads the
+		// key from Authorization: Bearer; the peer cache handler's own stats
+		// branch reads X-Peer-Auth-Key. Present it in both forms.
+		req.Header.Set("Authorization", "Bearer "+s.cfg.Peer.AuthKey)
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}

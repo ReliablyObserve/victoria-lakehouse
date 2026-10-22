@@ -198,6 +198,12 @@ graph LR
 | `lakehouse_manifest_push_peers` | Gauge | | Number of peers currently notified |
 | `lakehouse_manifest_update_received_total` | Counter | | Manifest update notifications received from peers |
 
+### Peer Authentication
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `lakehouse_peer_auth_enabled` | Gauge | | 1 when this pod requires the peer key on its internal endpoints (`peer.auth_enabled`), 0 when it serves them without a credential (the default). Set once at startup; also reported by `/lakehouse/info` (`peer_auth`) |
+
 ### Tenant Metrics
 
 Per-tenant metrics subject to cardinality cap (`stats.metrics_cardinality_limit`, default 100).

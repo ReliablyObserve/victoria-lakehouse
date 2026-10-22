@@ -79,3 +79,4 @@ lakehouse:
     peer_headless_service: lakehouse-logs-cluster
   peer:
     auth_key: cluster-gossip-secret
+    auth_enabled: true

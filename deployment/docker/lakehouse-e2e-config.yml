@@ -25,6 +25,7 @@ lakehouse:
   # (.github/workflows/e2e.yaml), so the stack runs with peer auth on.
   peer:
     auth_key: e2e-peer-key
+    auth_enabled: true
 
   retention:
     enabled: true

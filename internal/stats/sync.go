@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/encoding/zstd"
 )
 
@@ -41,18 +42,16 @@ func (sh *SyncHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Auth check.
-	if sh.authKey != "" {
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+sh.authKey {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if !peerauth.Bearer(r, sh.authKey) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
 
-	// 3. Read body.
+	// 3. Read body, capped at peer.max_request_body_bytes.
+	peerauth.LimitBody(w, r)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		peerauth.ReadError(w, err)
 		return
 	}
 
@@ -248,5 +247,7 @@ func compressZSTD(data []byte) []byte {
 
 // decompressZSTD decompresses ZSTD-encoded data.
 func decompressZSTD(data []byte) ([]byte, error) {
-	return zstd.Decompress(nil, data)
+	// The decompressed size is capped at the same limit as the body, so a
+	// small compressed body cannot expand without bound.
+	return zstd.DecompressLimited(nil, data, int(peerauth.MaxBodyBytes()))
 }

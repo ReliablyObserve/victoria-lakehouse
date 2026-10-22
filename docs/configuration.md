@@ -314,7 +314,9 @@ The **Effect** column says what a flag does to the config key it writes:
 | `-lakehouse.logs.bloom-columns` | logs | `logs.bloom_columns` | set | ` ` | Comma-separated bloom filter columns for logs (default: service.name,trace_id) |
 | `-lakehouse.logs.delete-prefix` | logs | `logs.delete_prefix` | set | ` ` | Delete API prefix (default: /delete/logsql) |
 | `-lakehouse.manifest.refresh-interval` | both | `manifest.refresh_interval` | set | `0s` | Manifest refresh interval (e.g., 30s) |
-| `-lakehouse.peer.auth-key` | both | `peer.auth_key` | set | ` ` | The key the pods present to each other's internal endpoints and require on their own: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: those endpoints take no credential and /internal/buffer/query refuses all_tenants=true. See docs/security.md |
+| `-lakehouse.peer.auth-enabled` | both | `peer.auth_enabled` | enable-only | `false` | Require the peer key (-lakehouse.peer.auth-key) on this pod's internal endpoints: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync and the tenant alias admin writes. Off (default): they take requests without a credential, as before, and /internal/buffer/query still refuses all_tenants=true to a caller that does not present the key. Needs -lakehouse.peer.auth-key; the process refuses to start without it. Overrides peer.auth_enabled only to true. See docs/security.md |
+| `-lakehouse.peer.auth-key` | both | `peer.auth_key` | set | ` ` | The key the pods present to each other's internal endpoints (/internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync) whenever it is set, and require on their own with -lakehouse.peer.auth-enabled. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: nothing is sent and /internal/buffer/query refuses all_tenants=true. See docs/security.md |
+| `-lakehouse.peer.max-request-body-bytes` | both | `peer.max_request_body_bytes` | set | `0` | Cap on the request body of the internal endpoints that read one (/internal/manifest/update, /internal/stats/sync, /internal/tenant/sync), and on the size a compressed stats sync body expands to; a larger one is refused with 413. 0 uses peer.max_request_body_bytes (default 64 MiB). Always on, whatever -lakehouse.peer.auth-enabled says |
 | `-lakehouse.pmeta.always-sketch-fields` | both | `pmeta.always_sketch_fields` | set | ` ` | Comma-separated id columns to sketch instead of enumerate (e.g. trace_id,span_id) |
 | `-lakehouse.pmeta.cardinality-threshold` | both | `pmeta.cardinality_threshold` | set | `0` | Per-field distinct-value cap before a field is high-card (0 = default 50000) |
 | `-lakehouse.pmeta.enabled` | both | `pmeta.enabled` | authoritative | `true` | Unified partition-metadata layer (catalog + file-meta + bloom facets). Disabling is a degraded mode: no metadata for new files |
@@ -553,6 +555,7 @@ Controls the distributed peer cache.
 
 | Key | Type | Default | Config file | Flags | Profile overrides | Description |
 |---|---|---|---|---|---|---|
+| `peer.auth_enabled` | bool | `false` | enable-only | `-lakehouse.peer.auth-enabled` (enable-only) |  | Makes the pods require AuthKey on their internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); false (the default) serves them without a credential. |
 | `peer.auth_key` | string | `""` | set | `-lakehouse.peer.auth-key` |  | The bearer key of the pods' internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); empty serves them without a credential. |
 | `peer.az_aware` | bool | `true` | enable-only |  | dev: `false` | Prefers peers in the pod's own availability zone. |
 | `peer.az_env_var` | string | `LAKEHOUSE_AZ` | set |  |  | Names the environment variable that overrides the detected availability zone. |
@@ -560,6 +563,7 @@ Controls the distributed peer cache.
 | `peer.az_mode` | string | `preferred` | set |  |  | Preferred (fall back to other zones) or strict (require az_min_peers_per_az peers in the same zone). |
 | `peer.cross_az_fallback` | bool | `true` | enable-only |  |  | **Not read.** Allows fetching from another zone when no same-zone peer is available. |
 | `peer.max_connections` | int | `32` | set |  | max-performance: `64`; max-cost-savings: `16`; dev: `8` | Caps HTTP connections per peer. |
+| `peer.max_request_body_bytes` | int | `67108864` | set | `-lakehouse.peer.max-request-body-bytes` |  | Caps the request body of every internal endpoint that reads one (manifest update, stats sync, tenant sync), and the size a compressed stats sync body expands to. |
 | `peer.timeout` | duration | `5s` | set |  | max-performance: `2s`; max-cost-savings: `10s` | Bounds a single peer cache fetch. |
 
 ### `pmeta`

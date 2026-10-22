@@ -13,6 +13,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 )
 
 type AliasDelta struct {
@@ -35,17 +36,15 @@ func (sh *SyncHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if sh.authKey != "" {
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+sh.authKey {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if !peerauth.Bearer(r, sh.authKey) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
 
+	peerauth.LimitBody(w, r)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		peerauth.ReadError(w, err)
 		return
 	}
 

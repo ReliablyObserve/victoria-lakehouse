@@ -661,6 +661,14 @@ var (
 	BufferBridgeErrors = NewCounterVec("lakehouse_buffer_bridge_errors_total", "reason")
 )
 
+// Peer authentication of the internal endpoints (peer.auth_enabled).
+var (
+	// PeerAuthEnabled is 1 when this pod refuses requests without the peer key
+	// on its internal endpoints (peer.auth_enabled), 0 when it serves them
+	// without a credential (the default).
+	PeerAuthEnabled = NewGauge("lakehouse_peer_auth_enabled")
+)
+
 // Bloom index metrics
 var (
 	BloomBuildTotal      = NewCounterVec("lakehouse_bloom_build_total", "trigger")

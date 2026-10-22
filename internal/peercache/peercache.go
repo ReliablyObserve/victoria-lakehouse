@@ -12,6 +12,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/selfaddr"
 )
 
@@ -272,11 +273,9 @@ func (h *Handler) Get(key string) ([]byte, bool) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.authKey != "" {
-		if r.Header.Get("X-Peer-Auth-Key") != h.authKey {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if !peerauth.Header(r, peerauth.PeerHeader, h.authKey) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
 
 	if r.URL.Path == "/internal/cache/stats" {

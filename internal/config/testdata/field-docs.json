@@ -292,6 +292,10 @@
       "name": "Mode",
       "doc": "Mode is the signal this binary serves: logs or traces. Each binary sets its own mode, so a value in the config file is ignored."
     },
+    "peer.auth_enabled": {
+      "name": "AuthEnabled",
+      "doc": "AuthEnabled makes the pods require AuthKey on their internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); false (the default) serves them without a credential. A pod sends AuthKey on its own peer calls whenever one is set, whatever this says, so the key can be rolled out before enforcement is switched on. true needs AuthKey; the process refuses to start without it."
+    },
     "peer.auth_key": {
       "name": "AuthKey",
       "doc": "AuthKey is the bearer key of the pods' internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); empty serves them without a credential."
@@ -319,6 +323,10 @@
     "peer.max_connections": {
       "name": "MaxConnections",
       "doc": "MaxConnections caps HTTP connections per peer."
+    },
+    "peer.max_request_body_bytes": {
+      "name": "MaxRequestBodyBytes",
+      "doc": "MaxRequestBodyBytes caps the request body of every internal endpoint that reads one (manifest update, stats sync, tenant sync), and the size a compressed stats sync body expands to."
     },
     "peer.timeout": {
       "name": "Timeout",

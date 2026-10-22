@@ -12,3 +12,4 @@ lakehouse:
   # PARITY_PEER_AUTH_KEY in .github/workflows/parity.yaml carry the same value.
   peer:
     auth_key: parity-peer-key
+    auth_enabled: true
