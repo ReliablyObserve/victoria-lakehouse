@@ -84,18 +84,22 @@
     - tests/verification/probe_fips_active.sh
     - tests/verification/probe_image_size.sh
     - charts/victoria-lakehouse/test_templates.sh
+    - scripts/ci/tests/test_fips_build_arg.py
   docs:
     - docs/security.md
     - docs/kubernetes-deployment.md
   notes: >-
-    CI runs the linked chart template test. The linked probes check built images and a deployed
-    stack, and are run by hand.
+    CI runs the linked chart template test and the Dockerfile FIPS test, and the trivy-image jobs
+    check the build settings of the built binary of each variant. The linked probes check built
+    images and a deployed stack, and are run by hand.
   highlight: >-
     **Hardened images and pods**: minimal non-root images with a read-only root filesystem and dropped capabilities, and chart defaults that set the matching pod security context rather than leaving it to the deployer.
   description: >-
     The default deployment should be the safe one. The images carry no shell-level extras, the
     chart's security context is restrictive out of the box, and probes verify the shipped image
-    actually has the properties claimed.
+    actually has the properties claimed. The default image is built with Go's standard crypto and
+    only the `-fips` variant (build argument `FIPS=1`, exact match) is built with the FIPS 140
+    module; a static test and a check of the built binaries keep the two apart.
 
 - id: lh.feature.security.ci_pipeline
   title: CI security pipeline

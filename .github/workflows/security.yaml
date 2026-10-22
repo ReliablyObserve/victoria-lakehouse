@@ -185,6 +185,28 @@ jobs:
             sleep $((attempt*20))
           done
           exit 1
+      # Only FIPS=1 builds with the FIPS 140 module (an "is it set" expansion once put it into the
+      # default image too). The binary of each built image must carry the settings of its
+      # variant, and the image must start and report its FIPS state.
+      - name: Check the FIPS build settings
+        env:
+          MODULE: ${{ matrix.module }}
+          FIPS_ARG: ${{ matrix.fips }}
+          IMAGE: lakehouse-${{ matrix.target }}:scan
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          cid="$(docker create "${IMAGE}")"
+          docker cp "${cid}:/usr/local/bin/lakehouse-${MODULE}" "${dir}/lakehouse-${MODULE}"
+          docker rm "${cid}" > /dev/null
+          bash scripts/ci/check_fips_variant.sh "${dir}/lakehouse-${MODULE}" "${FIPS_ARG}"
+          rm -rf "${dir}"
+          if [ "${FIPS_ARG}" = "1" ]; then
+            docker run --rm "${IMAGE}" fips-status
+          elif docker run --rm "${IMAGE}" fips-status; then
+            echo "the default image reports FIPS mode" >&2
+            exit 1
+          fi
       - name: Set up Trivy
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
         with:
