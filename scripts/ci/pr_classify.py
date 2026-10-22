@@ -12,6 +12,10 @@ Prints `key=value` lines:
   detail=<what was verified, for the report>
   gate_file=<path>        (repeated: the changed files that make up the gate itself)
 
+With --ci-scope (and --event, see ci_scope_decide) it appends seven more keys that say which CI groups
+the change needs (ci_class, skip_go, skip_image, skip_parity, force, ci_reason, ci_detail); the five above
+are printed exactly as without the flag. See the "CI scope" section below.
+
 There is no exemption by label or by PR text: every kind is decided from the content
 of the diff. `toolchain-only` is a Go toolchain / dependency-version bump whose every
 changed line is verified (see toolchain_only): it waives Rule 1 only.
@@ -651,6 +655,298 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
     return not tags or f"v{new}" in tags
 
 
+# ------------------------------------------------------------- CI scope --
+#
+# `--ci-scope` answers a second question, next to the registry gate's "is this a product change?":
+# which CI groups does this change need? The answer is only an input for the workflows; nothing in this
+# file skips a job. It is decided from the changed paths and, where a path alone cannot tell, from the
+# content of the diff (never from a title, a label, a branch name or a commit subject).
+#
+# The rules, in order, for every changed path (the first match wins):
+#   * a path that is not clean text, or a classifier or fixture path of this very scope logic -> everything;
+#   * any Go file, go.mod or go.sum anywhere -> everything;
+#   * the product trees, patches (all of them), charts (not their prose), the Makefile, go.work, the linter config, alerts, dashboards,
+#     the shipped Dockerfiles (unless only the digests of their FROM images changed) and every test tree not
+#     listed below -> everything;
+#   * a documented infra path (docs, CI scripts, workflows, deployment, the non-Go test tooling) -> infra;
+#   * any path not named in this table -> everything (fail open).
+# A union of infra paths asks for the union of what they ask for; one product path asks for everything.
+# Any error, an unreadable diff, an event other than `pull_request` -> everything (see ci_scope_full).
+#
+# Output (appended after the five registry-gate keys, which are unchanged):
+#   ci_class=product|release-image-pin|stack|ci|deps|docs|release-metadata|mixed-infra
+#   skip_go=true|false      the Go group (Go tests, lint, build, fuzz, vulnerability scans, ...) is not needed
+#   skip_image=true|false   the release-image build and scan is not needed
+#   skip_parity=true|false  the parity suite is not needed
+#   force=<workflow>:<job>,...   jobs that run although their group is skipped (consumer map, workflow edits)
+#   ci_reason=<first path that made it a full run>     (empty for a scoped run)
+#   ci_detail=<what was verified>
+# skip_go=false implies skip_image=false and skip_parity=false: a product change runs everything.
+
+CI_EVENT_SCOPED = "pull_request"
+CI_SCOPE_KEYS = ("ci_class", "skip_go", "skip_image", "skip_parity", "force", "ci_reason", "ci_detail")
+# The heavy workflows whose jobs are gated by group: an edit to one is judged per job (workflow_jobs_touched).
+CI_HEAVY_WORKFLOWS = ("ci.yaml", "fuzz-stress-memleak.yaml", "security.yaml", "codeql.yaml", "parity.yaml")
+# The classifier, its wiring and its fixtures: a change to them never scopes itself.
+CI_SCOPE_SELF = (
+    "scripts/ci/pr_classify.py",
+    "scripts/ci/check_changelog_pr.py",
+    "scripts/ci/tests/ci_scope_replay_check.py",
+    "scripts/ci/tests/testdata/ci_scope_replay.json",
+)
+CI_SCOPE_SELF_PREFIXES = (".github/actions/ci-scope/",)
+# Paths of the parity group that are not product code.
+CI_PARITY_TOOLS = (
+    "Dockerfile.datagen",
+    "tests/parity/docker-compose.yml",
+    "deployment/docker/Dockerfile.upstream-probe",
+    "scripts/ci/parity_ratchet.py",
+    "scripts/ci/requirements.txt",
+)
+# Scripts that a gated job runs: a change forces those jobs (a static test checks the paths exist).
+CI_CONSUMERS: "tuple[tuple[str, tuple[str, ...]], ...]" = (
+    ("scripts/ci/sharded_go_test.sh", ("ci.yaml:test-logs", "ci.yaml:test-traces", "ci.yaml:test-parquets3-heavy")),
+    ("scripts/ci/shard_tests.py", ("ci.yaml:test-logs", "ci.yaml:test-traces", "ci.yaml:test-parquets3-heavy")),
+    ("scripts/ci/short_gated_tests.sh", ("ci.yaml:test-parquets3-heavy",)),
+    ("scripts/ci/gotest_report.py", ("ci.yaml:test-logs", "ci.yaml:test-traces", "ci.yaml:benchmarks-logs", "ci.yaml:benchmarks-traces")),
+    ("scripts/bench/field_metadata/*", ("ci.yaml:field-metadata-perf",)),
+    ("scripts/bench/compaction/ab.py", ("ci.yaml:storage-health-compaction",)),
+    ("scripts/bench/compaction/test_ab.py", ("ci.yaml:storage-health-compaction",)),
+    ("scripts/ci/parquet-readback/*", ("ci.yaml:parquet-readback",)),
+    ("scripts/ci/trivy_fetch_db.sh", ("security.yaml:trivy-image",)),
+)
+
+# `uses: owner/repo[/path]@<ref>` with any ref (a tag, a branch or a SHA) and an optional trailing comment.
+# Local actions (`./...`) and `docker://` references carry no `@ref` and never match.
+_USES_REF = re.compile(
+    r"^(?:-[ \t]+)?uses:[ \t]*(?P<name>[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@(?P<ref>[A-Za-z0-9_./-]+)(?:[ \t]+#.*)?[ \t]*$"
+)
+_JOBS_KEY = re.compile(r"^jobs:[ \t]*(?:#.*)?$")
+_JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*(?:#.*)?$")
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def workflow_job_owners(text: str) -> "tuple[list[str | None], list[str]] | None":
+    """(owner, job keys). owner[n] is the job key line n (1-based; index 0 unused) belongs to, None
+    outside `jobs:`. The scan is stdlib only: a two-space key under a top-level `jobs:` starts a job, a
+    top-level key ends the block, comment and blank lines stay with the job above. None when the file has
+    no `jobs:` block or no job."""
+    owner: "list[str | None]" = [None]
+    keys: list[str] = []
+    in_jobs, cur = False, None
+    for line in text.split("\n"):
+        if not in_jobs:
+            if _JOBS_KEY.match(line):
+                in_jobs = True
+            owner.append(None)
+            continue
+        if line and not line[0].isspace() and not line.startswith("#"):
+            in_jobs, cur = False, None
+            owner.append(None)
+            continue
+        m = _JOB_KEY.match(line)
+        if m:
+            cur = m.group(1)
+            keys.append(cur)
+        owner.append(cur)
+    return (owner, keys) if keys else None
+
+
+def workflow_jobs_touched(base_text: str, head_text: str, diff_text: str) -> "tuple[tuple[str, ...], str] | None":
+    """The jobs of one workflow that a change to it forces, as (job keys, what was verified); None when it
+    cannot be judged (the caller then runs everything).
+
+    A changed line is judged by the job it lies in (old numbering for a removed line, new numbering for an
+    added one). The `uses:` lines are a special case: when every removed `uses: <action>@<ref>` line has an
+    added line naming the same action (and the other way round), the change is a ref bump and forces
+    nothing. A line outside every job (`on:`, `env:`, `permissions:`, `concurrency:` ...) runs the whole
+    workflow, i.e. every job of it."""
+    base_map, head_map = workflow_job_owners(base_text), workflow_job_owners(head_text)
+    if base_map is None or head_map is None:
+        return None
+    base_owner, _ = base_map
+    head_owner, head_keys = head_map
+    uses: "list[tuple[str, str, str | None]]" = []  # (sign, action name, owning job)
+    forced: set[str] = set()
+    whole = False
+    old = new = 0
+    changed = False
+    for line in diff_text.split("\n"):
+        m = _HUNK.match(line)
+        if m:
+            old, new = int(m.group(1)), int(m.group(3))
+            continue
+        # the file headers come before the first hunk (old and new are still 0 there)
+        if not line or line[0] not in "+-" or not (old or new):
+            continue
+        sign = line[0]
+        lineno = old if sign == "-" else new
+        owners = base_owner if sign == "-" else head_owner
+        job = owners[lineno] if 0 < lineno < len(owners) else None
+        if sign == "-":
+            old += 1
+        else:
+            new += 1
+        changed = True
+        u = _USES_REF.match(line[1:].lstrip(" \t"))
+        if u:
+            uses.append((sign, u.group("name"), job))
+        elif job is None:
+            whole = True
+        else:
+            forced.add(job)
+    if not changed:
+        return None
+    # the removed and the added pins must name the same actions in the same jobs: a pin that moved to
+    # another job is an added or removed step
+    added = sorted((j or "", n) for s, n, j in uses if s == "+")
+    removed = sorted((j or "", n) for s, n, j in uses if s == "-")
+    if added != removed:  # a different action, an added or a removed step: judged like any other line
+        for _, _, job in uses:
+            if job is None:
+                whole = True
+            else:
+                forced.add(job)
+    if whole:
+        return tuple(sorted(set(head_keys) | forced)), "a line outside every job changed: the whole workflow runs"
+    if not forced:
+        return (), f"only the ref of {len(added)} uses: pin(s) changed"
+    return tuple(sorted(forced)), "lines changed inside the jobs " + ", ".join(sorted(forced))
+
+
+class GitEvidence:
+    """What the scope rules read from the diff of one change (git-backed)."""
+
+    def __init__(self, base: str, head: str) -> None:
+        self.base, self.head = base, head
+
+    def image_pins_only(self, path: str) -> bool:
+        return dockerfile_pins_only(self.base, self.head, path)
+
+    def workflow_jobs(self, path: str) -> "tuple[tuple[str, ...], str] | None":
+        b, h = show_text(self.base, path), show_text(self.head, path)
+        if not b or not h:
+            return None
+        return workflow_jobs_touched(b, h, git("diff", "--no-renames", "--text", "--no-textconv", "--no-ext-diff", "--no-color", "-U0", self.base, self.head, "--", path))
+
+
+def ci_scope_full(reason: str, detail: str = "") -> "dict[str, str]":
+    """The fail-open answer: every group runs."""
+    return {
+        "ci_class": "product", "skip_go": "false", "skip_image": "false", "skip_parity": "false",
+        "force": "", "ci_reason": reason, "ci_detail": detail,
+    }
+
+
+def _ci_label(path: str) -> str:
+    """The class an infra path belongs to (for the report only; it decides nothing)."""
+    name = os.path.basename(path)
+    if path.endswith(".md") or path.startswith(("docs/", "website/")):
+        return "docs"
+    if path.startswith(".github/workflows/"):
+        return "ci"
+    if path.startswith("deployment/") or path.startswith(("tests/s3compat/compose/", "tests/readers/", "tests/parity/")):
+        return "deps" if cc.dependency_file_kind(path) == "file" and cc._REQUIREMENTS_NAME.match(name) else "stack"
+    if cc.dependency_file_kind(path) == "file":
+        return "deps" if cc._REQUIREMENTS_NAME.match(name) or name in ("package.json", "package-lock.json") else "stack"
+    return "ci"
+
+
+def _ci_path(path: str, ev: "GitEvidence") -> "str | tuple[str, bool, bool, tuple[str, ...], str]":
+    """For an infra path: (label, needs image, needs parity, forced jobs, note). For a path that needs
+    everything: the reason, as a str."""
+    name = os.path.basename(path)
+    if clean_text(path.encode("utf-8", "surrogateescape")) is None or "\n" in path or path.startswith("/") or ".." in path.split("/"):
+        return "path is not clean text: " + path
+    if path in CI_SCOPE_SELF or path.startswith(CI_SCOPE_SELF_PREFIXES):
+        return "the classifier or its wiring: " + path
+    if path.endswith(".go") or name in ("go.mod", "go.sum", "go.work", "Makefile") or name.startswith(".golangci"):
+        return "Go source, module or build file: " + path
+    if path.startswith(("alerts/", "dashboards/")):
+        return "shipped alert or dashboard: " + path
+    # root build files: a digest-only change of the FROM images keeps the image build and its scan
+    if path == "Dockerfile.datagen":
+        return ("stack", False, True, (), "")
+    if "/" not in path and name.startswith("Dockerfile"):
+        if ev.image_pins_only(path):
+            return ("release-image-pin", True, True, (), "only the digest pins of FROM images changed in " + path)
+        return "shipped build file: " + path
+    # product trees, patches, charts: only their prose is documentation
+    if path.startswith(PRODUCT_TREES):
+        return ("docs", False, False, (), "") if name in PRODUCT_DOC_NAMES else "product code: " + path
+    if path.startswith("patches/"):  # its .md and .txt files are read by the build and by tests: no prose exception
+        return "patched: " + path
+    if path.startswith("charts/"):
+        if path.endswith((".md", ".txt")) and "/templates/" not in path:
+            return ("docs", False, False, (), "")
+        return "packaged: " + path
+    floor = product_reason(path)
+    if floor:
+        return floor
+    if path in CI_PARITY_TOOLS:
+        return (_ci_label(path), False, True, (), "")
+    if path.startswith("tests/"):
+        if path.endswith(".md"):
+            return ("docs", False, False, (), "")
+        if path.startswith(("tests/readers/", "tests/s3compat/compose/", "tests/playwright/", "tests/verification/")):
+            return (_ci_label(path), False, False, (), "")
+        return "test tree outside the infra allowlist: " + path
+    if path.startswith(".github/workflows/") and name in CI_HEAVY_WORKFLOWS:
+        verdict = ev.workflow_jobs(path)
+        if verdict is None:
+            return "workflow edit that cannot be judged per job: " + path
+        jobs, note = verdict
+        return (
+            "deps" if not jobs else "ci", False, name == "parity.yaml" and bool(jobs),
+            tuple(f"{name}:{j}" for j in jobs), f"{path}: {note}",
+        )
+    if path.startswith(".github/"):
+        return ("ci", False, False, (), "")
+    if path.startswith(("scripts/", "deployment/")):
+        for pattern, jobs in CI_CONSUMERS:
+            if fnmatch.fnmatchcase(path, pattern):
+                return ("ci", False, False, jobs, "")
+        return (_ci_label(path), False, False, (), "")
+    if path.startswith(("docs/", "website/")) or ("/" not in path and path.endswith(".md")):
+        return ("docs", False, False, (), "")
+    return "path outside the infra allowlist: " + path
+
+
+def ci_scope_decide(files: "list[str]", ev: "GitEvidence", release_meta: bool) -> "dict[str, str]":
+    """The scope of one change. `ev` supplies the two content checks (image_pins_only, workflow_jobs);
+    release_meta is the registry gate's exact release-metadata verdict."""
+    if not files:
+        return ci_scope_full("empty diff")
+    if release_meta:
+        return {
+            "ci_class": "release-metadata", "skip_go": "true", "skip_image": "true", "skip_parity": "true",
+            "force": "", "ci_reason": "", "ci_detail": "exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)",
+        }
+    labels: set[str] = set()
+    image = parity = False
+    force: set[str] = set()
+    notes: list[str] = []
+    for f in files:
+        res = _ci_path(f, ev)
+        if isinstance(res, str):
+            return ci_scope_full(res)
+        label, need_image, need_parity, jobs, note = res
+        labels.add(label)
+        image, parity = image or need_image, parity or need_parity
+        force.update(jobs)
+        if note:
+            notes.append(note)
+    cls = next(iter(labels)) if len(labels) == 1 else "mixed-infra"
+    detail = f"{len(files)} path(s), all on the infra allowlist"
+    if notes:
+        detail += "; " + "; ".join(notes)
+    return {
+        "ci_class": cls, "skip_go": "true", "skip_image": "false" if image else "true",
+        "skip_parity": "false" if parity else "true", "force": ",".join(sorted(force)),
+        "ci_reason": "", "ci_detail": detail,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True, help="merge base")
@@ -658,6 +954,8 @@ def main() -> int:
     ap.add_argument("--title", default="", help="ignored: no kind is decided from a title or a commit subject")
     ap.add_argument("--author", default="", help="PR author login (release-metadata exemption)")
     ap.add_argument("--approvers", default="", help="file with approver logins, read from the merge base")
+    ap.add_argument("--ci-scope", action="store_true", help="after the registry-gate keys, print which CI groups the change needs")
+    ap.add_argument("--event", default="", help="with --ci-scope: the workflow event; only pull_request is scoped, anything else is a full run")
     a = ap.parse_args()
 
     # NUL-separated: a path with a newline, a CR or a Unicode separator stays one path
@@ -711,6 +1009,17 @@ def main() -> int:
     for f in files:
         if GATE_FILES_RE.match(f):
             print(f"gate_file={printable(f)}")
+    if a.ci_scope:
+        # fail open: every error and every event but a pull request means "everything runs"
+        try:
+            if a.event != CI_EVENT_SCOPED:
+                scope = ci_scope_full("event " + (printable(a.event) or "unset") + ": always a full run")
+            else:
+                scope = ci_scope_decide(files, GitEvidence(a.base, a.head), exempt == "release-metadata")
+        except Exception as e:  # noqa: BLE001 - any failure of the scope logic must widen, never narrow, the run
+            scope = ci_scope_full("classifier error: " + type(e).__name__)
+        for key in CI_SCOPE_KEYS:
+            print(f"{key}={printable(scope[key])}")
     return 0
 
 

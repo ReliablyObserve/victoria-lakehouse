@@ -70,7 +70,7 @@ jobs:
       - name: Prepare deps (no-op when cache hit)
         run: make deps-logs deps-traces deps-vt
       - name: Classifier and workflow tests (python)
-        run: python -m unittest discover -s scripts/ci/tests -p 'test_pr_classify*.py' -v && python -m unittest scripts/ci/tests/test_gate_workflows_static.py -v
+        run: python -m unittest discover -s scripts/ci/tests -p 'test_pr_classify*.py' -v && python -m unittest scripts/ci/tests/test_gate_workflows_static.py -v && python scripts/ci/tests/ci_scope_replay_check.py
       - name: Replay harness and make registry-gate self-tests (stub gate, seconds)
         run: bash scripts/ci/tests/gate_replay_test.sh && bash scripts/ci/tests/gate_local_test.sh
       - name: Gate engine tests (go)
