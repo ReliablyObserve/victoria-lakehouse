@@ -315,23 +315,12 @@ jobs:
 
       - name: Coverage check (logs)
         run: |
-          THRESHOLD=90
-          FAILED=0
-          while IFS= read -r line; do
-            pkg=$(echo "$line" | grep -oP '/internal/\K[^/\s]+' | head -1)
-            [ -z "$pkg" ] && continue
-            case "$pkg" in testutil|storage) continue ;; esac
-            pct=$(echo "$line" | grep -oP '([0-9.]+)%' | head -1 | tr -d '%')
-            [ -z "$pct" ] && continue
-            below=$(awk "BEGIN{print ($pct < $THRESHOLD)}")
-            if [ "$below" -eq 1 ]; then
-              echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
-              FAILED=1
-            fi
-          done < <({ go test $(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$') -cover -count=1 -timeout=10m
+          # Every package is held to 90%, identified by its full path below internal/ (parquets3
+          # is internal/storage/parquets3). Excluded: testutil and below (test helpers).
+          # Required: parquets3 must be measured, so the gate cannot silently stop seeing it.
+          scripts/ci/check_coverage.sh -t 90 -x testutil -x 'testutil/*' -r storage/parquets3 < <({ go test $(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$') -cover -count=1 -timeout=10m
                      SHARD_SHORT=0 scripts/ci/sharded_go_test.sh cover ./internal/compaction/ 5 600
                      scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
-          [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 
       - name: Vet logs module
         run: go vet ./internal/... ./cmd/...
@@ -381,22 +370,11 @@ jobs:
       - name: Coverage check (traces)
         working-directory: lakehouse-traces
         run: |
-          THRESHOLD=90
-          FAILED=0
-          while IFS= read -r line; do
-            pkg=$(echo "$line" | grep -oP '/internal/\K[^/\s]+' | head -1)
-            [ -z "$pkg" ] && continue
-            case "$pkg" in testutil|storage|vtstorage_adapter|selectapi) continue ;; esac
-            pct=$(echo "$line" | grep -oP '([0-9.]+)%' | head -1 | tr -d '%')
-            [ -z "$pct" ] && continue
-            below=$(awk "BEGIN{print ($pct < $THRESHOLD)}")
-            if [ "$below" -eq 1 ]; then
-              echo "::error::Coverage for $pkg is ${pct}% (minimum: ${THRESHOLD}%)"
-              FAILED=1
-            fi
-          done < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
+          # Every package is held to 90%, identified by its full path below internal/ (parquets3
+          # is internal/storage/parquets3). Excluded: testutil and below (test helpers),
+          # vtstorage_adapter and selectapi (unchanged exclusions). Required: parquets3 must be measured.
+          ../scripts/ci/check_coverage.sh -t 90 -x testutil -x 'testutil/*' -x vtstorage_adapter -x selectapi -r storage/parquets3 < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
                      ../scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
-          [ "$FAILED" -eq 1 ] && exit 1 || echo "All packages above ${THRESHOLD}% coverage"
 
       - name: Vet traces module
         working-directory: lakehouse-traces
@@ -590,6 +568,12 @@ jobs:
         env:
           LOGS_PIN_TREE: ${{ runner.temp }}/vl-logs-pin
         run: scripts/ci/check_patches_equal.sh
+
+      # How the coverage gate of test-logs / test-traces reads `go test -cover` lines:
+      # the full package path (internal/storage/parquets3 is not "storage"), the named
+      # exclusions, a required package that was not measured.
+      - name: Coverage gate self-test
+        run: scripts/ci/tests/check_coverage_test.sh
 
       # The daily upstream sync probe, against a fake upstream (local git
       # repositories, shimmed gh and go): every verdict and exit code, no
