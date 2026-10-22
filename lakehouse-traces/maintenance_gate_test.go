@@ -17,8 +17,11 @@ import (
 	"go/token"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -586,6 +589,36 @@ func TestCompactionOwnership_RingIsTheWritersOnly(t *testing.T) {
 	}
 }
 
+// vtinsertStopped records that this process already ran vtinsert.Stop().
+// VictoriaTraces' insertutil creates its index-worker stop channel once, at
+// package initialisation, and MustStopIndexWorker closes it; nothing makes a new
+// one, so the upstream insert side can be stopped once per process (a process
+// stops once). A second vtinsert.Stop() in the same process, which is what the
+// second iteration of `go test -count=2` does, panics with "close of closed
+// channel" (#633).
+var vtinsertStopped atomic.Bool
+
+// selectRoleChildEnv marks the child process that runs the insert-role control
+// of TestSelectRole_ShutdownWritesNothing in a process of its own.
+const selectRoleChildEnv = "LH_SELECT_ROLE_SHUTDOWN_CHILD"
+
+// runInsertControlInChild runs the insert-role subtest in a fresh process, whose
+// upstream index worker has not been stopped yet, and fails unless it passed
+// there. The test binary re-runs itself, so -race, -short and the environment
+// carry over.
+func runInsertControlInChild(t *testing.T) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSelectRole_ShutdownWritesNothing$/^insert$", "-test.count=1", "-test.v", "-test.short")
+	cmd.Env = append(os.Environ(), selectRoleChildEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the insert-role control failed in a child process: %v\n%s", err, out)
+	}
+	if !bytes.Contains(out, []byte("--- PASS: TestSelectRole_ShutdownWritesNothing/insert")) {
+		t.Fatalf("the child process did not run the insert-role control to a pass:\n%s", out)
+	}
+}
+
 // The shutdown of a select pod writes nothing either: no stats snapshot, no
 // tombstone object that is not owed, no pmeta bundle.
 func TestSelectRole_ShutdownWritesNothing(t *testing.T) {
@@ -594,6 +627,15 @@ func TestSelectRole_ShutdownWritesNothing(t *testing.T) {
 		wants bool
 	}{{config.RoleSelect, false}, {config.RoleInsert, true}} {
 		t.Run(string(tc.role), func(t *testing.T) {
+			// The insert role is the control (a shutdown that does write the
+			// snapshot) and runs the real vtinsert.Stop(), which can run once per
+			// process: the first iteration runs it here, every later one in a
+			// child process, so no iteration skips it. The select role, which is
+			// the assertion, runs in process on every iteration.
+			if tc.role == config.RoleInsert && os.Getenv(selectRoleChildEnv) == "" && !vtinsertStopped.CompareAndSwap(false, true) {
+				runInsertControlInChild(t)
+				return
+			}
 			s3 := newFakeS3()
 			defer s3.Close()
 			cfg := podConfig(t, tc.role, s3.URL())
