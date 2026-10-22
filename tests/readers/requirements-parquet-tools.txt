@@ -1,0 +1,10 @@
+# parquet-tools for the reader matrix (tests/readers), pinned with hashes and installed on its own:
+#   pip install --require-hashes --no-deps -r tests/readers/requirements-parquet-tools.txt
+# AFTER requirements.txt. Not compiled: parquet-tools 0.2.16 caps thrift below 0.17, so a resolver
+# cannot place it next to the patched thrift in requirements.txt. Its other dependencies (boto3,
+# colorama, halo, pandas, pyarrow, tabulate) are in requirements.txt, so --no-deps still gives a
+# complete environment (`pip check` reports only the thrift cap). Keep the version equal to
+# engines.json (test_harness.py checks it).
+parquet-tools==0.2.16 \
+    --hash=sha256:7bad2ad38f2381afde9d109577199d953946a904b0d74b2f074e47040673f60a \
+    --hash=sha256:a360eec233123c2c66f38867ec6dd5c79d48b8f757af8162bf8825d0190dd3d5
