@@ -346,10 +346,12 @@ jobs:
           git tag "$VERSION"
           git push origin "$VERSION"
 
-          # Extract changelog section for release notes
-          NOTES=$(bash scripts/ci/extract_changelog_section.sh "${VERSION#v}" 2>/dev/null || echo "")
+          # Release notes in the VictoriaLogs style from [Unreleased] (this version's section exists only after the metadata PR)
+          NOTES=$(python3 scripts/ci/release_notes.py --version Unreleased --after-tag "$(git describe --tags --abbrev=0 "$VERSION^" 2>/dev/null)" || echo "Released at $(date -u +%F)")
 
           cat > /tmp/release-notes.md <<EOF
+          ${NOTES}
+
           ## Release Artifacts
 
           ### Binaries
@@ -386,8 +388,6 @@ jobs:
           helm install lakehouse-traces oci://ghcr.io/\${OWNER}/charts/victoria-lakehouse \\
             --set logs.enabled=false --set traces.enabled=true
           \`\`\`
-
-          ${NOTES}
           EOF
 
           gh release create "$VERSION" dist/* \

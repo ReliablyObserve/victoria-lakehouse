@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.157.7] - 2026-10-22
 
+- **Every GitHub release starts with release notes in the style of the VictoriaLogs releases, written from `CHANGELOG.md` (CI only; no change to the Lakehouse binaries or to runtime behaviour).** The release body used to hold only the artifact, Docker image and Helm chart instructions, because the job looked for the new version's section before the release-metadata pull request had created it. It now renders the `[Unreleased]` section with `scripts/ci/release_notes.py`: `Released at <date>`, one `**Update note:**` paragraph for each bullet of an `### Update notes` subsection, then `* SECURITY:`, `* FEATURE:` and `* BUGFIX:` bullets (`### Added`, `### Changed`, `### Removed`, `### Deprecated` and `### Performance` are `FEATURE`; `### Fixed` is `BUGFIX`), with `#123` links to this repository, leaves out the entries that the previous release already carried when its metadata pull request had not merged yet, and puts the artifacts section after it. A subsection the script does not know is rendered under `FEATURE` with a warning, and no text is dropped. Existing releases are not edited. See `docs/release-notes.md`.
+
 ## [0.157.6] - 2026-10-22
 
 ### Fixed

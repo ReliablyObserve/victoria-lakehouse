@@ -169,6 +169,13 @@ verification round and a benchmark. A daily workflow probes the newest releases 
 a pull request with what the bump would cost; the same page explains how to grant the
 token it needs.
 
+## Release Notes
+
+The GitHub release notes are generated from `CHANGELOG.md` in the VictoriaLogs style
+(`SECURITY`, `FEATURE`, `BUGFIX` bullets). Behaviour an operator has to act on when upgrading
+goes in a `### Update notes` subsection of `[Unreleased]`, one bullet per note. The mapping and
+the preview command are in [docs/release-notes.md](docs/release-notes.md).
+
 ## Architecture
 
 Victoria Lakehouse follows a modular architecture:

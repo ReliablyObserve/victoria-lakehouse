@@ -61,6 +61,7 @@ const sidebars: SidebarsConfig = {
         'security',
         'scaling',
         'upstream-sync',
+        'release-notes',
       ],
     },
     {
