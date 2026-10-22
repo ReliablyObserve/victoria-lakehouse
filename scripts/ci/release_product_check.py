@@ -49,12 +49,10 @@ GITHUB_STEP_SUMMARY.
 """
 from __future__ import annotations
 
-import io
 import os
 import re
 import subprocess
 import sys
-import tarfile
 import tempfile
 from typing import Callable, NamedTuple
 
@@ -152,11 +150,7 @@ def run_classifier(repo: str, base: str, head: str, classifier: str | None = Non
         if script is None:
             tar = subprocess.run(["git", "archive", "--format=tar", base, "scripts/ci"], cwd=repo, check=True,
                                  capture_output=True, timeout=60).stdout
-            with tarfile.open(fileobj=io.BytesIO(tar)) as tf:
-                try:
-                    tf.extractall(tmp, filter="data")
-                except TypeError:  # Python < 3.12: no extraction filters; the archive is our own repository
-                    tf.extractall(tmp)
+            subprocess.run(["tar", "-x", "-C", tmp, "-f", "-"], input=tar, check=True, capture_output=True, timeout=60)
             script = os.path.join(tmp, "scripts", "ci", "pr_classify.py")
         out = subprocess.run([sys.executable, "-I", script, "--base", base, "--head", head], cwd=repo, check=True,
                              capture_output=True, text=True, timeout=CLASSIFY_TIMEOUT).stdout
