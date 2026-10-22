@@ -49,6 +49,7 @@ silently benchmarks and parity-tests the previous release.
 | `Makefile` | the three pins | source of truth |
 | `go.mod`, `lakehouse-traces/go.mod` | the requirements — root: `VictoriaLogs <VL_VERSION_LOGS>`; traces: VictoriaTraces' own VictoriaLogs requirement verbatim, and `VictoriaTraces <VT_VERSION>` — plus the versions each binary reports on `/lakehouse/info` (`vlCompat` in `cmd/lakehouse-logs/main.go`, `vtCompat` in `lakehouse-traces/main.go`) | `TestVLCompatMatchesGoMod`, `TestVTCompatMatchesGoMod` |
 | `Dockerfile.logs`, `Dockerfile.traces`, `Dockerfile.datagen` | `ARG VL_VERSION`, `ARG VL_COMMIT`, `ARG VT_VERSION` defaults | `TestDockerfilePinsMatchMakefile`, `TestDockerfilePatchRefsExist` |
+| `Dockerfile.logs`, `Dockerfile.traces` | the `git apply` lines: the patches `make deps` applies, per `patches/` directory and in the same order (`Dockerfile.logs`: `vl-logs`; `Dockerfile.traces`: `vl-logs`, `vl-traces`, `vt-traces`), so a released image is the binary the tests ran against | `TestDockerfilePatchesMatchMakefile` |
 | Compose files: `deployment/docker/docker-compose-e2e.yml`, `docker-compose-benchmark.yml`, `docker-compose-benchmark.gp3.yml`, `tests/parity/docker-compose.yml` | the hot-tier images `victoriametrics/victoria-logs:<tag>` and `victoriametrics/victoria-traces:<tag>` | `TestComposeImagePinsMatchMakefile`, `TestComposeHealthchecksDoNotAssumeAShell` |
 | Workflow `env:` blocks under `.github/workflows/` | the three pins, feeding deps cache keys and release image `--build-arg`s | `TestWorkflowPinsMatchMakefile` |
 

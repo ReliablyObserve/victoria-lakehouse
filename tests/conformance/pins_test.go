@@ -136,6 +136,196 @@ func TestDockerfilePatchRefsExist(t *testing.T) {
 	}
 }
 
+var (
+	// makefilePatchRe matches a `git apply` line of a Makefile deps target and
+	// captures the patch directory (vl-logs, vl-traces, vt-traces) and the patch.
+	makefilePatchRe = regexp.MustCompile(`(?m)^\s*cd\s.*&&\s*git apply (?:\.\./)+patches/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+\.patch)\s*$`)
+
+	// dockerApplyRe matches a `git apply` of a staged patch in a Dockerfile.
+	dockerApplyRe = regexp.MustCompile(`git apply /tmp/patches/([A-Za-z0-9._/-]+\.patch)`)
+)
+
+// makefilePatchLists returns, per patches/ subdirectory, the patches `make deps`
+// applies, in order.
+func makefilePatchLists(makefile string) map[string][]string {
+	out := map[string][]string{}
+	for _, m := range makefilePatchRe.FindAllStringSubmatch(makefile, -1) {
+		out[m[1]] = append(out[m[1]], m[2])
+	}
+	return out
+}
+
+// dockerfilePatchLists returns, per patches/ subdirectory, the patches a
+// Dockerfile applies, in order. A Dockerfile that copies a single directory
+// (`COPY patches/vl-logs/ /tmp/patches/`) refers to its patches without the
+// directory, so the COPY source is put back in front.
+func dockerfilePatchLists(dockerfile string) map[string][]string {
+	prefix := ""
+	if m := dockerPatchCopyRe.FindStringSubmatch(dockerfile); m != nil {
+		prefix = m[1]
+	}
+	out := map[string][]string{}
+	for _, m := range dockerApplyRe.FindAllStringSubmatch(dockerfile, -1) {
+		rel := path.Join(prefix, m[1])
+		dir, name := path.Dir(rel), path.Base(rel)
+		out[dir] = append(out[dir], name)
+	}
+	return out
+}
+
+// patchListProblems compares what a Dockerfile applies with what the Makefile
+// applies for the directories it is expected to build, and returns one line per
+// difference: a patch missing, a patch the Makefile does not apply, or the same
+// patches in another order. want is the Makefile's lists; dirs are the
+// directories the Dockerfile must cover (it must apply nothing outside them).
+func patchListProblems(file string, want, got map[string][]string, dirs []string) []string {
+	var problems []string
+	covered := map[string]bool{}
+	for _, dir := range dirs {
+		covered[dir] = true
+		w, g := want[dir], got[dir]
+		if len(w) == 0 {
+			problems = append(problems, fmt.Sprintf("the Makefile applies no patch from patches/%s: the parse no longer matches its layout, so this gate would pass vacuously", dir))
+			continue
+		}
+		inW, inG := map[string]bool{}, map[string]bool{}
+		for _, n := range w {
+			inW[n] = true
+		}
+		for _, n := range g {
+			inG[n] = true
+		}
+		missing, extra := false, false
+		for _, n := range w {
+			if !inG[n] {
+				missing = true
+				problems = append(problems, fmt.Sprintf("%s does not apply patches/%s/%s, which `make deps` applies: the released image is built without it", file, dir, n))
+			}
+		}
+		for _, n := range g {
+			if !inW[n] {
+				extra = true
+				problems = append(problems, fmt.Sprintf("%s applies patches/%s/%s, which `make deps` does not apply", file, dir, n))
+			}
+		}
+		if !missing && !extra && strings.Join(w, "\n") != strings.Join(g, "\n") {
+			problems = append(problems, fmt.Sprintf("%s applies patches/%s in the order %v but `make deps` applies %v", file, dir, g, w))
+		}
+	}
+	var stray []string
+	for dir := range got {
+		if !covered[dir] {
+			stray = append(stray, dir)
+		}
+	}
+	sort.Strings(stray)
+	for _, dir := range stray {
+		problems = append(problems, fmt.Sprintf("%s applies patches from patches/%s, which it does not build", file, dir))
+	}
+	return problems
+}
+
+// TestDockerfilePatchesMatchMakefile keeps what the release images apply equal
+// to what `make deps` applies, per patch directory and in the same order. The
+// patch exists-check above cannot see a patch a Dockerfile LEAVES OUT: the
+// Dockerfiles listed vl-const-timestamps-parse.patch nowhere, so every image
+// was built without it while every local and CI test ran with it.
+func TestDockerfilePatchesMatchMakefile(t *testing.T) {
+	root, err := inventory.RepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := makefilePatchLists(readRepoFile(t, root, "Makefile"))
+	for _, c := range []struct {
+		file string
+		dirs []string
+	}{
+		{"Dockerfile.logs", []string{"vl-logs"}},
+		{"Dockerfile.traces", []string{"vl-logs", "vl-traces", "vt-traces"}},
+	} {
+		for _, p := range patchListProblems(c.file, want, dockerfilePatchLists(readRepoFile(t, root, c.file)), c.dirs) {
+			t.Error(p)
+		}
+	}
+}
+
+// TestPatchListProblems proves the comparison above: it fails on the defect it
+// exists for (a patch left out of one tree), on an extra patch, a reordered
+// list, a Dockerfile building a directory it should not, and a Makefile it can
+// no longer read.
+func TestPatchListProblems(t *testing.T) {
+	makefile := "deps-logs:\n" +
+		"\tcd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/a.patch\n" +
+		"\tcd $(VL_DIR_LOGS) && git apply ../../patches/vl-logs/b.patch\n" +
+		"deps-traces:\n" +
+		"\tcd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/a.patch\n" +
+		"\tcd $(VL_DIR_TRACES) && git apply ../../../patches/vl-traces/c.patch\n"
+	logsDocker := "COPY patches/vl-logs/ /tmp/patches/\n" +
+		"RUN cd deps/VictoriaLogs && git apply /tmp/patches/a.patch && \\\n    git apply /tmp/patches/b.patch\n"
+	tracesDocker := "COPY patches/ /tmp/patches/\n" +
+		"RUN cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/a.patch && \\\n    git apply /tmp/patches/vl-logs/b.patch\n" +
+		"RUN cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/a.patch && \\\n    git apply /tmp/patches/vl-traces/c.patch\n"
+
+	want := makefilePatchLists(makefile)
+	if got := strings.Join(want["vl-logs"], ","); got != "a.patch,b.patch" {
+		t.Fatalf("Makefile vl-logs list = %q", got)
+	}
+	if got := strings.Join(want["vl-traces"], ","); got != "a.patch,c.patch" {
+		t.Fatalf("Makefile vl-traces list = %q", got)
+	}
+	if got := strings.Join(dockerfilePatchLists(logsDocker)["vl-logs"], ","); got != "a.patch,b.patch" {
+		t.Fatalf("Dockerfile.logs list (single-directory COPY) = %q", got)
+	}
+
+	logsDirs, tracesDirs := []string{"vl-logs"}, []string{"vl-logs", "vl-traces"}
+	cases := []struct {
+		name    string
+		file    string
+		body    string
+		dirs    []string
+		wantSub string // "" = no problem expected
+	}{
+		{"matching logs image", "Dockerfile.logs", logsDocker, logsDirs, ""},
+		{"matching traces image", "Dockerfile.traces", tracesDocker, tracesDirs, ""},
+		{"patch left out of the logs image", "Dockerfile.logs",
+			strings.Replace(logsDocker, " && \\\n    git apply /tmp/patches/b.patch", "", 1), logsDirs,
+			"does not apply patches/vl-logs/b.patch"},
+		{"patch left out of the traces VictoriaLogs tree", "Dockerfile.traces",
+			strings.Replace(tracesDocker, " && \\\n    git apply /tmp/patches/vl-traces/c.patch", "", 1), tracesDirs,
+			"does not apply patches/vl-traces/c.patch"},
+		{"patch only the Dockerfile applies", "Dockerfile.logs",
+			logsDocker + "RUN git apply /tmp/patches/z.patch\n", logsDirs,
+			"applies patches/vl-logs/z.patch, which `make deps` does not apply"},
+		{"patches in another order", "Dockerfile.traces",
+			strings.NewReplacer("vl-logs/a.patch", "vl-logs/b.patch", "vl-logs/b.patch", "vl-logs/a.patch").Replace(tracesDocker), tracesDirs,
+			"in the order"},
+		{"directory the image does not build", "Dockerfile.logs",
+			tracesDocker, logsDirs,
+			"applies patches from patches/vl-traces, which it does not build"},
+		{"nothing applied", "Dockerfile.logs", "FROM scratch\n", logsDirs,
+			"does not apply patches/vl-logs/a.patch"},
+	}
+	for _, c := range cases {
+		problems := patchListProblems(c.file, want, dockerfilePatchLists(c.body), c.dirs)
+		joined := strings.Join(problems, "\n")
+		if c.wantSub == "" {
+			if len(problems) != 0 {
+				t.Errorf("%s: unexpected problems: %s", c.name, joined)
+			}
+			continue
+		}
+		if !strings.Contains(joined, c.wantSub) {
+			t.Errorf("%s: want a problem containing %q, got %q", c.name, c.wantSub, joined)
+		}
+	}
+
+	// A Makefile the parse cannot read must not pass vacuously.
+	if p := patchListProblems("Dockerfile.logs", makefilePatchLists("all:\n\ttrue\n"), dockerfilePatchLists(logsDocker), logsDirs); len(p) == 0 ||
+		!strings.Contains(p[0], "vacuously") {
+		t.Errorf("an unreadable Makefile must be reported, got %v", p)
+	}
+}
+
 // composeFiles are every Compose file that pins an upstream hot-tier image.
 var composeFiles = []string{
 	"deployment/docker/docker-compose-e2e.yml",

@@ -40,12 +40,14 @@ RUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/exte
     cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch && \
     git apply /tmp/patches/vl-logs/vl-export-severity.patch && \
-    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch
+    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch && \
+    git apply /tmp/patches/vl-logs/vl-const-timestamps-parse.patch
 RUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \
     cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \
     cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \
     git apply /tmp/patches/vl-traces/vl-export-severity.patch && \
     git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch && \
+    git apply /tmp/patches/vl-traces/vl-const-timestamps-parse.patch && \
     git apply /tmp/patches/vl-traces/vl-partition-close-order.patch && \
     git apply /tmp/patches/vl-traces/vl-allow-duplicate-stream-tags.patch && \
     git apply /tmp/patches/vl-traces/vl-math-keep-quoted-constants.patch && \

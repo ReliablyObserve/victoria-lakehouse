@@ -224,3 +224,25 @@
     found. Pods in different availability zones hash over the same whole writer list. Known gaps: the orphan sweep's Tier A secondary can still merge a partition the
     primary is merging (issue 602); other places compare the listen address by string
     (issue 603).
+
+- id: lh.feature.deploy.release_image_patches
+  title: Released images apply every patch the tests ran with
+  status: shipped
+  area: deploy
+  surfaces: [cli]
+  tests:
+    - tests/conformance/pins_test.go#TestDockerfilePatchesMatchMakefile
+    - tests/conformance/pins_test.go#TestPatchListProblems
+    - tests/conformance/pins_test.go#TestDockerfilePatchRefsExist
+  docs:
+    - docs/upstream-sync.md
+    - patches/README.md
+  highlight: >-
+    **Released images carry the tested patches**: `Dockerfile.logs` and `Dockerfile.traces` apply exactly the patches `make deps` applies, in the same order, so a published image is the binary the unit, parity and benchmark runs used.
+  description: >-
+    Both binaries embed VictoriaLogs (and the traces binary VictoriaTraces) with the patches under
+    patches/. The Makefile applies them for local builds and CI; each Dockerfile applies its own
+    list. vl-const-timestamps-parse.patch was in the Makefile but in neither Dockerfile, so every
+    image was built without it while every test ran with it. A conformance test now compares the
+    two lists per patch directory and fails on a missing patch, an extra one or another order;
+    its own test proves that failure on the shape of that defect.
