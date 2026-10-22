@@ -1057,7 +1057,7 @@ class SignalDirectiveParseTests(unittest.TestCase):
 
 
 class PerSignalGateTests(unittest.TestCase):
-    """The auditor's scenarios: a whole signal's results skipped or gone while the combined floor holds."""
+    """The scenarios of #646: a whole signal's results skipped or gone while the combined floor holds."""
 
     def verdict(self, run, extra=""):
         return evaluate(run, parse_allowlist(FLOORS + extra))
