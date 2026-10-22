@@ -29,7 +29,8 @@ A path is PRODUCT when it is not a test artifact and is
     SQL, YAML ...) except README.md / RUNBOOK.md;
   - under patches/ or charts/ (docs excluded, templates included);
   - a shipped build file: Dockerfile, Dockerfile.logs, Dockerfile.traces, and
-    go.mod / go.sum at the root.
+    go.mod / go.sum at the root (a Dockerfile whose only change is the digest of its FROM
+    images is not: image_pin_only).
 Test artifacts: *_test.go, anything under testdata/, and test_*.{sh,py} /
 *_test.{sh,py} scripts. There is no "generated file" exclusion: the product
 trees hold no generated files, and a marker comment must not switch the gate off.
@@ -310,10 +311,14 @@ def dependency_only(files: list[str], base: str, head: str) -> bool:
 #                                     required modules and every other line unchanged
 #   go.work                           the `go` and `toolchain` lines
 #   go.sum, lakehouse-traces/go.sum   hash lines, none of a storage-critical module
-#   Dockerfile, Dockerfile.logs,      `FROM [--platform=..] golang:<version>[-alpine[<ver>]] [AS x]`
-#   Dockerfile.traces,                lines where only the versions change
-#   Dockerfile.datagen
-#   tests/parity/docker-compose.yml   `image: golang:<version>[-alpine[<ver>]]` lines, same
+#   Dockerfile, Dockerfile.logs,      `FROM [--platform=..] golang:<version>[-alpine[<ver>]][@sha256:<64 hex>] [AS x]`
+#   Dockerfile.traces,                lines where only the versions change (and the digest, which may be
+#   Dockerfile.datagen                missing on either side)
+#   tests/parity/docker-compose.yml   `image: golang:<version>[-alpine[<ver>]][@sha256:<64 hex>]` lines, same
+#
+# Separately from the toolchain kind, a change of only the `@sha256:` digest of the `FROM` lines of those
+# Dockerfiles (any base image, the image name and tag equal on both sides, see image_pin_only) is not a
+# product change: main() skips the shipped-build-file rule for such a file.
 #
 # plus files that are plainly not product: docs and Markdown, CI workflows and scripts
 # that are not gate files. Tests, registry rows and the parity locks are NOT in that
@@ -331,10 +336,22 @@ TOOLCHAIN_DIRECTIVE = re.compile(r"^toolchain go[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 GO_SUM_LINE = re.compile(r"^([!-~]+) (v[!-~]+?)(?:/go\.mod)? h1:[!-~]+$")
 _VER = r"(?P<ver>[0-9]+\.[0-9]+(?:\.[0-9]+)?)"
 _ALP = r"(?P<alp>-alpine(?P<alpver>[0-9]+\.[0-9]+)?)?"
+# An optional content digest after the tag: exactly 64 lowercase hex characters, sha256 only. Anything else
+# (short, uppercase, another algorithm) leaves the line unmatched, so it is never verified. It is deliberately
+# not captured: the toolchain rule ignores which digest a golang line carries.
+_DIGEST = r"(?:@sha256:[0-9a-f]{64})?"
 FROM_GOLANG = re.compile(
-    r"^(?P<pre>FROM(?:[ \t]+--platform=[!-~]+)?[ \t]+golang:)" + _VER + _ALP + r"(?P<post>(?:[ \t]+AS[ \t]+[!-~]+)?[ \t]*)$"
+    r"^(?P<pre>FROM(?:[ \t]+--platform=[!-~]+)?[ \t]+golang:)" + _VER + _ALP + _DIGEST + r"(?P<post>(?:[ \t]+AS[ \t]+[!-~]+)?[ \t]*)$"
 )
-IMAGE_GOLANG = re.compile(r"^(?P<pre>[ \t]+image:[ \t]+golang:)" + _VER + _ALP + r"(?P<post>[ \t]*)$")
+IMAGE_GOLANG = re.compile(r"^(?P<pre>[ \t]+image:[ \t]+golang:)" + _VER + _ALP + _DIGEST + r"(?P<post>[ \t]*)$")
+# Any base image of a release Dockerfile, tag REQUIRED (`image@sha256:..` without a tag never matches), optional digest.
+# Single spaces only and no trailing blank (every release Dockerfile is written that way), and the name has no
+# colon, so `registry:port/name` and `${VAR}` references are not matched either.
+FROM_IMAGE = re.compile(
+    r"^(?P<pre>FROM(?: --platform=[!-~]+)? )(?P<name>[a-z0-9][a-z0-9._/-]*):(?P<tag>[A-Za-z0-9_][A-Za-z0-9._-]*)"
+    + _DIGEST + r"(?P<post>(?: AS [!-~]+)?)$"
+)
+_DOCKERFILE_ESCAPE = re.compile(r"^#[ \t]*escape[ \t]*=", re.M | re.I)
 
 
 def _image_shape(m: "re.Match[str]") -> tuple[str, str, str]:
@@ -349,8 +366,10 @@ def golang_image_bump_only(base: str, head: str, line_re: "re.Pattern[str]") -> 
     Compared by position: the same number of lines, every differing pair matching
     `line_re` in both with the same prefix (platform, indentation), the same suffix shape
     (`-alpine` stays `-alpine`; its release number may move forward) and the same trailer (AS name);
-    the Go version and the alpine release never go back; every other line byte-identical. The Go twin is registry.GolangImageBumpOnly; both are
-    tested against one fixture.
+    the Go version and the alpine release never go back; every other line byte-identical. Either side of a
+    pair may carry a `@sha256:<64 hex>` digest, and the two digests may differ (or one may be missing). The
+    Go twin is registry.GolangImageBumpOnly (compose lines only); the compose cases of one shared fixture
+    are tested against both.
     """
     bl, hl = base.split("\n"), head.split("\n")
     if len(bl) != len(hl):
@@ -373,6 +392,54 @@ def golang_image_bump_only(base: str, head: str, line_re: "re.Pattern[str]") -> 
             return False
         changed = True
     return changed
+
+
+def _continued(lines: list[str], i: int) -> bool:
+    """True when line i is the continuation of an instruction: the nearest line above it that is neither
+    blank nor a comment (Docker drops those inside a continuation) ends in a backslash."""
+    j = i - 1
+    while j >= 0 and (not lines[j].strip(" \t") or lines[j].lstrip(" \t").startswith("#")):
+        j -= 1
+    return j >= 0 and lines[j].rstrip(" \t").endswith("\\")
+
+
+def image_pin_only(base: str, head: str) -> bool:
+    """True when head differs from base only in the `@sha256:<64 hex>` digest of `FROM` lines.
+
+    Compared by position: the same number of lines, every differing pair a `FROM [--platform=..]
+    <name>:<tag>[@sha256:<64 hex>] [AS stage]` line in both revisions whose platform, image name, TAG
+    and stage clause are byte-equal (the digest may be added, removed or changed; a digest that is not
+    exactly 64 lowercase hex characters leaves the line unmatched), every other line byte-identical.
+    An image reference with a digest but no tag never matches. Fail closed on anything that could make
+    a `FROM`-looking line not an instruction: a `<<` heredoc anywhere, an `escape=` parser directive, or a
+    line continuation in front of a changed line (blank and comment lines in between included). The Go twin has no Dockerfile reader (no Go consumer
+    reads one), so these cases are Python-only in the shared fixture."""
+    for text in (base, head):
+        if "<<" in text or _DOCKERFILE_ESCAPE.search(text):
+            return False
+    bl, hl = base.split("\n"), head.split("\n")
+    if len(bl) != len(hl):
+        return False
+    changed = False
+    for i, (b, h) in enumerate(zip(bl, hl)):
+        if b == h:
+            continue
+        bm, hm = FROM_IMAGE.match(b), FROM_IMAGE.match(h)
+        if not bm or not hm or any(bm.group(g) != hm.group(g) for g in ("pre", "name", "tag", "post")):
+            return False
+        if _continued(bl, i) or _continued(hl, i):
+            return False
+        changed = True
+    return changed
+
+
+def dockerfile_pins_only(base_rev: str, head_rev: str, path: str) -> bool:
+    """The release Dockerfile at path differs between the two revisions only in `FROM` image digests
+    (image_pin_only), and both revisions are clean ASCII-changed text (see clean_text)."""
+    if path not in GOLANG_DOCKERFILES:
+        return False
+    b, h = show_text(base_rev, path), show_text(head_rev, path)
+    return b is not None and h is not None and changed_lines_ascii(b, h) and image_pin_only(b, h)
 
 
 def _is_directive(line: str) -> bool:
@@ -493,7 +560,7 @@ def toolchain_only(files: list[str], base: str, head: str) -> "str | None":
         verified.append(f)
     if not verified:
         return None
-    return "only Go toolchain and dependency versions changed in " + ", ".join(verified)
+    return "only Go toolchain and dependency versions (and golang image digests) changed in " + ", ".join(verified)
 
 
 # ------------------------------------------------------ release metadata --
@@ -616,7 +683,13 @@ def main() -> int:
 
     reason = ""
     if exempt == "none":
+        pins = []
         for f in files:
+            # a release Dockerfile whose only change is the digest of its FROM images is a pin refresh,
+            # not a product change (image_pin_only); any other change to it stays a product change
+            if dockerfile_pins_only(a.base, a.head, f):
+                pins.append(f)
+                continue
             r = product_reason(f)
             if r:
                 reason = r
@@ -629,6 +702,8 @@ def main() -> int:
                 if makefile_pins(b) != makefile_pins(h):
                     reason = "upstream pin changed: " + f
                     break
+        if pins and not reason:
+            detail = "only the digest pins of FROM images changed in " + ", ".join(pins)
     print(f"exempt={exempt}")
     print(f"product={1 if reason else 0}")
     print(f"reason={printable(reason)}")
