@@ -16,10 +16,10 @@ trino==0.340.0
 # parquet-tools 0.2.16 is installed from requirements-parquet-tools.txt with --no-deps: it caps thrift
 # below 0.17, which the resolver cannot satisfy together with the patched thrift below. Its other
 # dependencies are listed here (same ranges as its metadata) so the environment is complete.
-thrift==0.24.0
+thrift==0.25.0
 boto3>=1.34.11,<2
 colorama>=0.4.6,<0.5
 halo>=0.0.31,<0.0.32
-tabulate>=0.9,<0.10
+tabulate>=0.10.0,<0.11
 pytest==9.1.1
 PyYAML>=6
