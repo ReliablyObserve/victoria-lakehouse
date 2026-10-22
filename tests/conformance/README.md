@@ -773,6 +773,68 @@ Self-tests: `bash scripts/ci/tests/test_check_registry_touch.sh`,
 repository: PR code, a planted git hook, an edited gate or bootstrap, and an exported
 `TESTLINKS_BIN` never run) and `python -m unittest discover -s scripts/ci/tests`.
 
+## CI scope: which checks a change needs
+
+`pr_classify.py --ci-scope --event pull_request` lets CI decide, from the changed files, which checks a
+change needs. It prints the five registry-gate keys exactly as before, then seven more:
+
+| key | meaning |
+|---|---|
+| `ci_class` | `product`, `release-image-pin`, `stack`, `ci`, `deps`, `docs`, `release-metadata` or `mixed-infra` (a report label; it decides nothing) |
+| `skip_go` | `true` when no Go-affecting path changed: the Go group (Go tests, lint, build, fuzz, vulnerability scans, Go benchmarks) is not needed |
+| `skip_image` | `true` when the release-image build and scan is not needed |
+| `skip_parity` | `true` when the parity suite is not needed |
+| `force` | jobs, as `<workflow>:<job>,...`, that run although their group is skipped (see below) |
+| `ci_reason` | the first path that made it a full run (empty for a scoped run) |
+| `ci_detail` | what was verified |
+
+`skip_go=false` always comes with `skip_image=false` and `skip_parity=false`: a product change runs everything.
+Nothing skips a job yet; the workflows will read these keys in later changes.
+
+**Fail open.** A path that is not on the explicit infra list is a product path, so a new directory runs
+everything until someone adds it. Any error, an unreadable diff, a path that is not clean text, an empty
+diff, a workflow edit that cannot be read per job, and any event other than `pull_request` (a push to `main`,
+a schedule, a manual dispatch, an empty or unknown value) give the full answer. A union of paths asks for the
+union of what each asks for; one product path asks for everything.
+
+**Classes** (the first matching rule wins, in `_ci_path`):
+
+- Product, everything runs: any `.go` file, `go.mod`, `go.sum`, `go.work` or `Makefile` anywhere;
+  `internal/`, `cmd/`, `lakehouse-traces/` (except their `README.md` and `RUNBOOK.md`), `patches/` (all of it,
+  its `.md` and `.txt` files are read by the build and the tests), `charts/` (except prose outside `templates/`), `alerts/`, `dashboards/`, `.golangci*`; the shipped Dockerfiles; every
+  `tests/` path that is not listed below (Go tests, the registry rows and features, the parity locks, the e2e and
+  ingest-matrix trees); and the classifier itself and its wiring and fixtures (`pr_classify.py`,
+  `check_changelog_pr.py`, `ci_scope_replay_check.py`, `testdata/ci_scope_replay.json`,
+  `.github/actions/ci-scope/`), so a change to the classifier never scopes itself.
+- `release-image-pin`: a release Dockerfile whose only change is the digest of its `FROM` images
+  (`image_pin_only`): the Go group is skipped, the image build and scan and the parity suite run.
+- Parity tooling (`Dockerfile.datagen`, `tests/parity/docker-compose.yml`,
+  `deployment/docker/Dockerfile.upstream-probe`, `scripts/ci/parity_ratchet.py`, `scripts/ci/requirements.txt`):
+  `skip_parity=false`.
+- `stack`, `ci`, `deps`, `docs`: `deployment/`, `scripts/`, the non-Go test tooling (`tests/readers/`,
+  `tests/s3compat/compose/`, `tests/playwright/`, `tests/verification/`), `.github/` and documentation. The
+  stack workflows (e2e, readers, s3-compat, proof, minio images, docs site) keep their own `paths:` filters.
+- `release-metadata`: the exact shape the registry gate checks (`release_metadata()`: CHANGELOG move,
+  `Chart.yaml` versions, generated docs naming, an approved author, the tag). It is decided from the content
+  and the author, never from the title.
+
+**Workflow edits** to `ci.yaml`, `fuzz-stress-memleak.yaml`, `security.yaml`, `codeql.yaml` and `parity.yaml`
+are judged per job from the diff: a change that only moves the ref of `uses:` lines (the same actions removed
+and added, any ref) forces nothing; a changed line inside `jobs.<job>` forces that job; a changed line outside
+every job (`on:`, `env:`, `permissions:`) forces every job of the workflow.
+
+**Scripts that a gated job runs** (`CI_CONSUMERS`) force those jobs when they change.
+
+**Adding a path.** Add it to the rule that fits in `_ci_path` (or `CI_CONSUMERS` when a gated job runs it),
+add a case to `PathTable` in `scripts/ci/tests/test_pr_classify_ci_scope.py` and regenerate the recorded
+merges if the answer for one of them changes.
+
+Tests: `python -m unittest scripts/ci/tests/test_pr_classify_ci_scope.py` (the path table, workflow and
+Dockerfile edits on temporary repositories, the unchanged registry-gate keys, and 70 recorded merges replayed
+from their file lists), and `python scripts/ci/tests/ci_scope_replay_check.py` (the same 70 merges on the real
+git objects; it needs the full history and runs in `gate-selftest.yaml`). `scripts/ci/ci_scope_replay_gen.py`
+regenerates the recorded file; its header explains how.
+
 ## Release skip (`[skip release]`)
 
 `auto-release.yaml` does not release a push whose commit subject, or whose merged pull request's
