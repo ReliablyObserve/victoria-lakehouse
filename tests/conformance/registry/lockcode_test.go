@@ -951,6 +951,9 @@ func TestExpectedSkipProblems(t *testing.T) {
 		{"hidden behind more #", "", "### expected-skip: TestC  # three\n", []string{"expected skip added: TestC"}},
 		{"a sibling path of an existing entry is another skip", "# expected-skip: TestA  # one\n", "# expected-skip: TestA  # one\n# expected-skip: TestA/sub  # two\n", []string{"expected skip added: TestA/sub"}},
 		{"prose and entry lines are no directive", "", "# the expected-skip: list is empty\nTestA  # expected-skip: TestB\n", nil},
+		// the Python ratchet (parse_allowlist) names the same path: a tab before the reason, a '#' inside the path
+		{"a tab-separated reason", "", "# expected-skip: TestA/x\t# why\n", []string{"expected skip added: TestA/x"}},
+		{"a # inside the path stays in the path", "", "# expected-skip: TestA/sub#01  # why\n", []string{"expected skip added: TestA/sub#01"}},
 	}
 	for _, c := range cases {
 		got := ExpectedSkipProblems("tests/parity/known_failures.txt", []byte(c.base), []byte(c.head))

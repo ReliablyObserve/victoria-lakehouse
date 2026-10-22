@@ -1041,6 +1041,16 @@ class SignalDirectiveParseTests(unittest.TestCase):
                 parse_allowlist(bad)
             self.assertIn(fragment, str(ctx.exception))
 
+    def test_the_path_is_what_the_go_gate_reads(self):
+        """registry.ExpectedSkipProblems takes the first white-space separated word after the directive
+        (TestExpectedSkipProblems pins the same inputs): the ratchet must name the same path."""
+        for text, want in (
+            ("# expected-skip: TestA/x\t# why\n", "TestA/x"),
+            ("# expected-skip: TestA/sub#01  # why\n", "TestA/sub#01"),
+        ):
+            with self.subTest(text):
+                self.assertEqual(list(parse_allowlist(text).expected_skips), [want])
+
     def test_a_mention_in_prose_is_not_a_directive(self):
         al = parse_allowlist("# a `# min-pass-logs: 3` mention\n# the expected-skip: list is empty\n")
         self.assertEqual((al.signal_min_pass, al.expected_skips), ({}, {}))
@@ -1165,7 +1175,7 @@ class PerSignalMainTests(unittest.TestCase):
             + [(f"TestHarness_Offline/c{i}", "pass") for i in range(other)]
         )
 
-    def test_exit_codes_and_the_side_by_side_summary(self):
+    def test_a_healthy_run_exits_zero_and_prints_logs_and_traces_side_by_side(self):
         code, out, err = self.run_main(self.pairs())
         self.assertEqual((code, err), (0, ""))
         self.assertIn("| logs | 4 | 0 | 0 | 4 |", out)
@@ -1173,23 +1183,33 @@ class PerSignalMainTests(unittest.TestCase):
         self.assertIn("| unattributed | 3 | 0 | 0 | - |", out)
         self.assertIn("| total | 10 | 0 | 0 | 10 |", out)
 
+    def test_every_logs_result_skipped_exits_one(self):
+        # the combined count stays above min-pass: only the per-signal rules can see it
         code, out, _ = self.run_main(self.pairs(logs_action="skip", other=8))
         self.assertEqual(code, 1)
         self.assertIn("### Per-signal floor", out)
         self.assertIn("### Unexpected skips", out)
         self.assertIn("`TestParity_Filters/c0`", out)
 
+    def test_every_traces_result_skipped_exits_one(self):
         code, out, _ = self.run_main(self.pairs(traces_action="skip", other=8))
         self.assertEqual(code, 1)
         self.assertIn("traces: only 0 traces results passed (3 skipped", out)
 
+    def test_no_logs_result_at_all_exits_one(self):
         code, out, _ = self.run_main(self.pairs(logs=0, other=12))
         self.assertEqual(code, 1)
         self.assertIn("logs: no logs result at all (floor 4)", out)
 
+    def test_no_traces_result_at_all_exits_one(self):
         code, out, _ = self.run_main(self.pairs(traces=0, other=12))
         self.assertEqual(code, 1)
         self.assertIn("traces: no traces result at all (floor 3)", out)
+
+    def test_one_signal_losing_a_pass_exits_one_while_the_total_holds(self):
+        code, out, _ = self.run_main(self.pairs(traces=2, other=4))
+        self.assertEqual(code, 1)
+        self.assertIn("traces: only 2 traces results passed", out)
 
     def test_the_repository_allowlist_declares_both_floors(self):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
