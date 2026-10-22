@@ -835,7 +835,21 @@ from their file lists), and `python scripts/ci/tests/ci_scope_replay_check.py` (
 git objects; it needs the full history and runs in `gate-selftest.yaml`). `scripts/ci/ci_scope_replay_gen.py`
 regenerates the recorded file; its header explains how.
 
-## Release skip (`[skip release]`)
+## Release skip (non-product merges and `[skip release]`)
+
+A merge to `main` that changes nothing that ships is never released, so the marker below is no longer
+needed for it (it is still honoured). `scripts/ci/release_product_check.py` runs in the workflow's
+`skip` step and asks the registry gate's own classifier (`scripts/ci/pr_classify.py`, taken from the
+parent commit) about the pushed commit. Not released: docs, CI workflows, tests, scripts, test-stack
+compose files and Dockerfiles, tooling locks (pip, npm) and Dependabot bumps of them, release metadata.
+Released although the gate waives them, because they rebuild the binaries or images: `go.mod`, `go.sum`,
+`go.work` of the root and `lakehouse-traces` modules (Go toolchain and dependency bumps), a changed
+`FROM` digest or tag in `Dockerfile`, `Dockerfile.logs` or `Dockerfile.traces` (a digest *added* to a
+line that had none pins what the tag already resolves to and is not released; a digest that changes
+or goes away is), and the upstream pins in `auto-release.yaml`. Every doubt releases: a manual run, a
+push that is not exactly one commit on the previous head (a rebase merge), a merge commit, an empty
+diff, a classifier error. Known gap: other edits of the build steps in `auto-release.yaml` (not the
+pins) are treated as CI. Tests: `python -m unittest scripts.ci.tests.test_release_product_check`.
 
 `auto-release.yaml` does not release a push whose commit subject, or whose merged pull request's
 title, contains `[skip release]` (`scripts/ci/release_skip.py`). The PR is looked up from the

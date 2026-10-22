@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A merge to `main` that changes nothing that ships no longer cuts a release, with or without `[skip release]` (CI only; no change to the Lakehouse binaries or to runtime behaviour).** `auto-release.yaml` now runs `scripts/ci/release_product_check.py` in its existing skip step: it classifies the pushed commit against its parent with the registry gate's own classifier (`scripts/ci/pr_classify.py`, the parent's copy) and skips the release when there is no product change, so Dependabot rebases and forgotten titles no longer produce releases (v0.157.4 and v0.157.5 were cut by tooling-only pull requests). What rebuilds the shipped binaries or images still releases: `go.mod`, `go.sum` and `go.work` of the root and `lakehouse-traces` modules (Go toolchain and dependency bumps, which the gate waives), any change of a `FROM` digest or tag in `Dockerfile`, `Dockerfile.logs` or `Dockerfile.traces` except adding a digest to a line that had none (the image bytes are unchanged), the upstream pins in `auto-release.yaml`, and every product change. Anything uncertain releases: a manual run, a push that is not exactly one commit on the previous head, a merge commit, an empty diff, a classifier that fails. The explicit `[skip release]` marker is still honoured. Skipped changes keep their bullets under `[Unreleased]` for the next release.
+
 ## [0.157.6] - 2026-10-22
 
 ### Fixed
