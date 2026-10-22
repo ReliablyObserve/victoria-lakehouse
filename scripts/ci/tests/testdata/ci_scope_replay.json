@@ -1,0 +1,2860 @@
+{
+ "approvers": [
+  "szibis"
+ ],
+ "cases": [
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/security.yaml": {
+      "detail": "lines changed inside the jobs gosec",
+      "jobs": [
+       "gosec"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/security.yaml",
+    "CHANGELOG.md",
+    "Dockerfile.datagen",
+    "Dockerfile.logs",
+    "Dockerfile.traces",
+    "go.mod",
+    "go.sum",
+    "go.work",
+    "lakehouse-traces/go.mod",
+    "lakehouse-traces/go.sum",
+    "tests/parity/docker-compose.yml"
+   ],
+   "legacy": [
+    "exempt=toolchain-only",
+    "product=0",
+    "reason=",
+    "detail=only Go toolchain and dependency versions (and golang image digests) changed in Dockerfile.datagen, Dockerfile.logs, Dockerfile.traces, go.mod, go.sum, go.work, lakehouse-traces/go.mod, lakehouse-traces/go.sum, tests/parity/docker-compose.yml"
+   ],
+   "pr": 491,
+   "sha": "94c9554f54fcb2d4727958fa2b2cf292bb46de2d",
+   "title": "fix(security): Go 1.27.2 and golang.org/x/net v0.60.0 fix 12 govulncheck advisories"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 492,
+   "sha": "7429c8679d7a836261a2a40d251a953ac4596fda",
+   "title": "chore: release metadata for v0.146.10 [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "internal/s3reader/reader_coverage_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 494,
+   "sha": "f10e8f628d342a0e0d59dd9d3d1825d11cbdf235",
+   "title": "test(s3reader): TestRetryS3_CancelDuringBackoff no longer fails 1 run in 400 [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/registry-exempt-approvers",
+    ".github/release-metadata-approvers",
+    ".github/workflows/conformance.yaml",
+    ".github/workflows/gate-selftest.yaml",
+    ".github/workflows/registry-gate-base.yaml",
+    ".github/workflows/registry-gate.yaml",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "Makefile",
+    "docs/features.md",
+    "scripts/ci/check_registry_touch.sh",
+    "scripts/ci/gate_bootstrap.sh",
+    "scripts/ci/gate_local.sh",
+    "scripts/ci/gate_replay.sh",
+    "scripts/ci/pr_classify.py",
+    "scripts/ci/registry_exempt.py",
+    "scripts/ci/tests/gate_local_test.sh",
+    "scripts/ci/tests/gate_replay_expected.txt",
+    "scripts/ci/tests/gate_replay_test.sh",
+    "scripts/ci/tests/test_check_registry_touch.sh",
+    "scripts/ci/tests/test_gate_workflows_static.py",
+    "scripts/ci/tests/test_pr_classify_critical.py",
+    "scripts/ci/tests/test_pr_classify_paths.py",
+    "scripts/ci/tests/test_pr_classify_release.py",
+    "scripts/ci/tests/test_pr_classify_toolchain.py",
+    "scripts/ci/tests/test_registry_exempt.py",
+    "scripts/ci/tests/testdata/golang_image_cases.json",
+    "tests/conformance/README.md",
+    "tests/conformance/cmd/testlinks/main.go",
+    "tests/conformance/registry/escape.go",
+    "tests/conformance/registry/escape_test.go",
+    "tests/conformance/registry/features/ops.yaml",
+    "tests/conformance/registry/lockcode.go",
+    "tests/conformance/registry/lockcode_test.go",
+    "tests/conformance/registry/paritygate.go",
+    "tests/conformance/registry/paritygate_test.go",
+    "tests/parity/lock_cells_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=.github/registry-exempt-approvers",
+    "gate_file=.github/release-metadata-approvers",
+    "gate_file=.github/workflows/conformance.yaml",
+    "gate_file=.github/workflows/gate-selftest.yaml",
+    "gate_file=.github/workflows/registry-gate-base.yaml",
+    "gate_file=.github/workflows/registry-gate.yaml",
+    "gate_file=scripts/ci/check_registry_touch.sh",
+    "gate_file=scripts/ci/gate_bootstrap.sh",
+    "gate_file=scripts/ci/gate_local.sh",
+    "gate_file=scripts/ci/gate_replay.sh",
+    "gate_file=scripts/ci/pr_classify.py",
+    "gate_file=scripts/ci/registry_exempt.py",
+    "gate_file=scripts/ci/tests/gate_local_test.sh",
+    "gate_file=scripts/ci/tests/gate_replay_expected.txt",
+    "gate_file=scripts/ci/tests/gate_replay_test.sh",
+    "gate_file=scripts/ci/tests/test_check_registry_touch.sh",
+    "gate_file=scripts/ci/tests/test_gate_workflows_static.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_critical.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_paths.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_release.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_toolchain.py",
+    "gate_file=scripts/ci/tests/test_registry_exempt.py",
+    "gate_file=scripts/ci/tests/testdata/golang_image_cases.json",
+    "gate_file=tests/conformance/cmd/testlinks/main.go",
+    "gate_file=tests/conformance/registry/escape.go",
+    "gate_file=tests/conformance/registry/lockcode.go",
+    "gate_file=tests/conformance/registry/paritygate.go",
+    "gate_file=tests/parity/lock_cells_test.go"
+   ],
+   "pr": 499,
+   "sha": "d2fdce651108c25b92729ee584ed5c065a151745",
+   "title": "ci(gate): the registry gate decides from verified content, no exemption label [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/parity.yaml": {
+      "detail": "lines changed inside the jobs parity",
+      "jobs": [
+       "parity"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "parity.yaml:parity",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/parity.yaml",
+    "docs/parity-and-gaps.md"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=.github/workflows/parity.yaml"
+   ],
+   "pr": 508,
+   "sha": "7f0bed4ee441ddc76ccbd3d56e909f52c3fe4cef",
+   "title": "ci(parity): the parity go test gets 25 minutes, the job 45; the package had 13.5 s of margin [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 510,
+   "sha": "f5eb25f2859b40082b0d341f0c81a36dc52d55bf",
+   "title": "chore: release metadata for v0.156.0 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 511,
+   "sha": "69ecc72d431ecb00f599a66ef89b58795b207b55",
+   "title": "deps: loki-vl-proxy v2.11.1 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "docs/features.md",
+    "scripts/ci/check_registry_touch.sh",
+    "scripts/ci/gate_replay.sh",
+    "scripts/ci/parity_ratchet.py",
+    "scripts/ci/pr_classify.py",
+    "scripts/ci/tests/gate_replay_expected.txt",
+    "scripts/ci/tests/test_check_registry_touch.sh",
+    "scripts/ci/tests/test_parity_ratchet.py",
+    "scripts/ci/tests/test_pr_classify_critical.py",
+    "scripts/ci/tests/test_pr_classify_paths.py",
+    "scripts/ci/tests/test_pr_classify_toolchain.py",
+    "scripts/ci/tests/testdata/golang_image_cases.json",
+    "scripts/ci/tests/testdata/parity_data_bytes.json",
+    "tests/conformance/README.md",
+    "tests/conformance/cmd/testlinks/blobs.go",
+    "tests/conformance/cmd/testlinks/blobs_test.go",
+    "tests/conformance/cmd/testlinks/main.go",
+    "tests/conformance/cmd/testlinks/main_test.go",
+    "tests/conformance/registry/features/ops.yaml",
+    "tests/conformance/registry/lockcode.go",
+    "tests/conformance/registry/lockcode_test.go",
+    "tests/conformance/registry/paritygate.go",
+    "tests/conformance/registry/paritygate_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/check_registry_touch.sh",
+    "gate_file=scripts/ci/gate_replay.sh",
+    "gate_file=scripts/ci/parity_ratchet.py",
+    "gate_file=scripts/ci/pr_classify.py",
+    "gate_file=scripts/ci/tests/gate_replay_expected.txt",
+    "gate_file=scripts/ci/tests/test_check_registry_touch.sh",
+    "gate_file=scripts/ci/tests/test_parity_ratchet.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_critical.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_paths.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_toolchain.py",
+    "gate_file=scripts/ci/tests/testdata/golang_image_cases.json",
+    "gate_file=scripts/ci/tests/testdata/parity_data_bytes.json",
+    "gate_file=tests/conformance/cmd/testlinks/blobs.go",
+    "gate_file=tests/conformance/cmd/testlinks/blobs_test.go",
+    "gate_file=tests/conformance/cmd/testlinks/main.go",
+    "gate_file=tests/conformance/cmd/testlinks/main_test.go",
+    "gate_file=tests/conformance/registry/lockcode.go",
+    "gate_file=tests/conformance/registry/paritygate.go"
+   ],
+   "pr": 512,
+   "sha": "fa79aa42e9b5195ba11c200085817a928b4ddba4",
+   "title": "ci(gate): list every new lock-package file, one allowlist parser, inverted critical-module list [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "docs",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 517,
+   "sha": "ea8505556fdbc838f4ef709e05d7367a545e428a",
+   "title": "fix(changelog): the registry-gate hardening bullet (#512) belongs under Unreleased, not 0.156.0 [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "docs/features.md",
+    "docs/perf/field-metadata-cells.md",
+    "scripts/ci/check_registry_touch.sh",
+    "scripts/ci/gate_replay.sh",
+    "scripts/ci/pr_classify.py",
+    "scripts/ci/tests/gate_replay_expected.txt",
+    "scripts/ci/tests/test_check_registry_touch.sh",
+    "scripts/ci/tests/test_pr_classify_toolchain.py",
+    "tests/conformance/README.md",
+    "tests/conformance/cmd/testlinks/main.go",
+    "tests/conformance/cmd/testlinks/main_test.go",
+    "tests/conformance/registry/features/ops.yaml",
+    "tests/conformance/registry/paritygate.go",
+    "tests/conformance/registry/perfgate.go",
+    "tests/conformance/registry/perfgate_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/check_registry_touch.sh",
+    "gate_file=scripts/ci/gate_replay.sh",
+    "gate_file=scripts/ci/pr_classify.py",
+    "gate_file=scripts/ci/tests/gate_replay_expected.txt",
+    "gate_file=scripts/ci/tests/test_check_registry_touch.sh",
+    "gate_file=scripts/ci/tests/test_pr_classify_toolchain.py",
+    "gate_file=tests/conformance/cmd/testlinks/main.go",
+    "gate_file=tests/conformance/cmd/testlinks/main_test.go",
+    "gate_file=tests/conformance/registry/paritygate.go",
+    "gate_file=tests/conformance/registry/perfgate.go"
+   ],
+   "pr": 544,
+   "sha": "ea645f8f4f874708f968726191b93493e56a3693",
+   "title": "ci(gate): a perf-counter change within 1.0 % is listed, a real regression still fails [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "docs/features.md",
+    "scripts/ci/gate_replay.sh",
+    "scripts/ci/parity_ratchet.py",
+    "scripts/ci/pr_classify.py",
+    "scripts/ci/tests/gate_replay_expected.txt",
+    "scripts/ci/tests/test_check_registry_touch.sh",
+    "scripts/ci/tests/test_parity_ratchet.py",
+    "scripts/ci/tests/test_pr_classify_critical.py",
+    "scripts/ci/tests/test_pr_classify_paths.py",
+    "scripts/ci/tests/test_pr_classify_toolchain.py",
+    "scripts/ci/tests/testdata/golang_image_cases.json",
+    "scripts/ci/tests/testdata/parity_data_parse.json",
+    "tests/conformance/README.md",
+    "tests/conformance/cmd/testlinks/main.go",
+    "tests/conformance/cmd/testlinks/main_test.go",
+    "tests/conformance/registry/features/ops.yaml",
+    "tests/conformance/registry/lockcode.go",
+    "tests/conformance/registry/lockcode_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/gate_replay.sh",
+    "gate_file=scripts/ci/parity_ratchet.py",
+    "gate_file=scripts/ci/pr_classify.py",
+    "gate_file=scripts/ci/tests/gate_replay_expected.txt",
+    "gate_file=scripts/ci/tests/test_check_registry_touch.sh",
+    "gate_file=scripts/ci/tests/test_parity_ratchet.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_critical.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_paths.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_toolchain.py",
+    "gate_file=scripts/ci/tests/testdata/golang_image_cases.json",
+    "gate_file=scripts/ci/tests/testdata/parity_data_parse.json",
+    "gate_file=tests/conformance/cmd/testlinks/main.go",
+    "gate_file=tests/conformance/cmd/testlinks/main_test.go",
+    "gate_file=tests/conformance/registry/lockcode.go"
+   ],
+   "pr": 547,
+   "sha": "562bd955ff5390df1b3909f299157c1cc6c2ec32",
+   "title": "ci(gate): symlinked sources and alias swaps are hard failures, lock-adjacent packages are listed, x/sync and x/sys are critical [skip release]"
+  },
+  {
+   "author": "reliablyobserve-bot",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "scripts/ci/gate_replay.sh",
+    "scripts/ci/tests/gate_replay_expected.txt",
+    "scripts/ci/tests/test_check_registry_touch.sh",
+    "tests/conformance/README.md",
+    "tests/conformance/registry/lockcode.go",
+    "tests/conformance/registry/lockcode_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/gate_replay.sh",
+    "gate_file=scripts/ci/tests/gate_replay_expected.txt",
+    "gate_file=scripts/ci/tests/test_check_registry_touch.sh",
+    "gate_file=tests/conformance/registry/lockcode.go"
+   ],
+   "pr": 548,
+   "sha": "84901a6583a984040d402870ff4a7a65a9696525",
+   "title": "ci(gate): replay rows for cgo, native sources and a removed min-pass; clearer wording for a replaced file [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 549,
+   "sha": "573954354c03a94988b6dfee32cee46d1c8e3eff",
+   "title": "chore: release metadata for v0.156.1 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/fuzz-stress-memleak.yaml": {
+      "detail": "lines changed inside the jobs fuzz-logs, fuzz-traces",
+      "jobs": [
+       "fuzz-logs",
+       "fuzz-traces"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/fuzz-stress-memleak.yaml",
+    "CHANGELOG.md",
+    "UPSTREAM_COVERAGE.md",
+    "alerts/alerts-lakehouse.yml",
+    "dashboards/victoria-lakehouse.json",
+    "docs/durability.md",
+    "docs/features.md",
+    "docs/multi-tenancy.md",
+    "docs/observability.md",
+    "docs/parity-and-gaps.md",
+    "docs/write-path.md",
+    "internal/metrics/buffer_stalled_test.go",
+    "internal/metrics/lakehouse.go",
+    "internal/metrics/must_stay_zero_test.go",
+    "internal/storage/epoch.go",
+    "internal/storage/epoch_test.go",
+    "internal/storage/parquets3/acked_rows_cardinality_test.go",
+    "internal/storage/parquets3/acked_rows_pre1970_test.go",
+    "internal/storage/parquets3/acked_rows_support_test.go",
+    "internal/storage/parquets3/buffer_flusher.go",
+    "internal/storage/parquets3/drain_cancel_test.go",
+    "internal/storage/parquets3/drain_collect_once_test.go",
+    "internal/storage/parquets3/drain_healthy_property_test.go",
+    "internal/storage/parquets3/drain_invariant_test.go",
+    "internal/storage/parquets3/drain_plan_bench_test.go",
+    "internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go",
+    "internal/storage/parquets3/drain_stalled_gauge_test.go",
+    "internal/storage/parquets3/drain_stalled_move_aside_test.go",
+    "internal/storage/tenant_stream_map.go",
+    "internal/storage/tenant_stream_map_bench_test.go",
+    "internal/storage/tenant_stream_map_fuzz_test.go",
+    "internal/storage/tenant_stream_map_test.go",
+    "internal/tenant/cardinality.go",
+    "internal/vlstorage/flush_keeper_test.go",
+    "internal/vlstorage/insert.go",
+    "internal/vlstorage/insert_admission_bench_test.go",
+    "internal/vlstorage/insert_admission_cross_tenant_test.go",
+    "internal/vlstorage/insert_admission_mixed_bench_test.go",
+    "internal/vlstorage/insert_admission_test.go",
+    "internal/vlstorage/insert_before_epoch_test.go",
+    "lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go",
+    "lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go",
+    "lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go",
+    "lakehouse-traces/internal/storage/parquets3/acked_rows_support_test.go",
+    "lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go",
+    "lakehouse-traces/internal/storage/parquets3/buffer_flusher.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_cancel_test.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_healthy_property_test.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_plan_bench_test.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go",
+    "lakehouse-traces/internal/storage/parquets3/drain_stalled_move_aside_test.go",
+    "lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go",
+    "lakehouse-traces/internal/vlstorage/insert.go",
+    "lakehouse-traces/internal/vlstorage/insert_admission_bench_test.go",
+    "lakehouse-traces/internal/vlstorage/insert_admission_cross_tenant_test.go",
+    "lakehouse-traces/internal/vlstorage/insert_admission_mixed_bench_test.go",
+    "lakehouse-traces/internal/vlstorage/insert_admission_test.go",
+    "lakehouse-traces/internal/vlstorage/insert_before_epoch_test.go",
+    "lakehouse-traces/internal/vlstorage/insert_index_rows_test.go",
+    "scripts/ci/tests/cardinality_restart_test.sh",
+    "scripts/ci/tests/pre1970_hot_compare.compose.yml",
+    "scripts/ci/tests/pre1970_hot_compare_test.sh",
+    "tests/conformance/cmd/confgen/main.go",
+    "tests/conformance/cmd/confgen/main_test.go",
+    "tests/conformance/registry/durability.go",
+    "tests/conformance/registry/features/ingest.yaml",
+    "tests/conformance/registry/features/ops.yaml",
+    "tests/conformance/registry/rows/lh/durability.yaml",
+    "tests/conformance/registry/schema.go",
+    "tests/conformance/registry/schema_durability_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=product code: internal/metrics/lakehouse.go",
+    "detail=",
+    "gate_file=scripts/ci/tests/cardinality_restart_test.sh",
+    "gate_file=scripts/ci/tests/pre1970_hot_compare.compose.yml",
+    "gate_file=scripts/ci/tests/pre1970_hot_compare_test.sh"
+   ],
+   "pr": 551,
+   "sha": "95e97f90f631f8c82718a4faa88334fd44681056",
+   "title": "fix(buffer): acknowledged rows always reach Parquet; per-tenant admission; stall alerts (#388, #389)"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 552,
+   "sha": "ddc22fea481a77bc7d937b6fcda297371bff667d",
+   "title": "chore: release metadata for v0.156.2 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "Makefile",
+    "deployment/docker/docker-compose-proof.yml",
+    "docs/benchmarks.md",
+    "docs/features.md",
+    "docs/pr-perf-smoke.md",
+    "scripts/bench/ab/abreg.py",
+    "scripts/bench/ab/api_matrix.py",
+    "scripts/bench/ab/api_rows.py",
+    "scripts/bench/ab/comment.py",
+    "scripts/bench/ab/components.py",
+    "scripts/bench/ab/docker-compose.ab.yml",
+    "scripts/bench/ab/known.py",
+    "scripts/bench/ab/latency.py",
+    "scripts/bench/ab/measure.py",
+    "scripts/bench/ab/pr_smoke.py",
+    "scripts/bench/ab/quality.py",
+    "scripts/bench/ab/report.py",
+    "scripts/bench/ab/requirements.txt",
+    "scripts/bench/ab/selection.py",
+    "scripts/bench/ab/shapes.json",
+    "scripts/bench/ab/stack.py",
+    "scripts/bench/ab/tests/conftest.py",
+    "scripts/bench/ab/tests/fakes.py",
+    "scripts/bench/ab/tests/helpers.py",
+    "scripts/bench/ab/tests/test_api_matrix.py",
+    "scripts/bench/ab/tests/test_api_rows.py",
+    "scripts/bench/ab/tests/test_comment.py",
+    "scripts/bench/ab/tests/test_components.py",
+    "scripts/bench/ab/tests/test_known.py",
+    "scripts/bench/ab/tests/test_latency.py",
+    "scripts/bench/ab/tests/test_measure.py",
+    "scripts/bench/ab/tests/test_old_injector.py",
+    "scripts/bench/ab/tests/test_pr_smoke.py",
+    "scripts/bench/ab/tests/test_quality.py",
+    "scripts/bench/ab/tests/test_report.py",
+    "scripts/bench/ab/tests/test_selection.py",
+    "scripts/bench/ab/tests/test_stack.py",
+    "scripts/bench/ab/tests/test_validate.py",
+    "scripts/bench/ab/validate.py",
+    "scripts/bench/with-s3-latency.sh",
+    "scripts/inject-s3-latency.sh",
+    "tests/conformance/registry/features/ops.yaml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 554,
+   "sha": "234be54d064df1474de4b3424e26f22e305f5c1c",
+   "title": "ci(bench): PR perf smoke harness, registry API matrix, verified S3 latency probe and known-differences report [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "docs/pr-perf-smoke.md",
+    "scripts/bench/ab/abreg.py",
+    "scripts/bench/ab/api_matrix.py",
+    "scripts/bench/ab/api_rows.py",
+    "scripts/bench/ab/comment.py",
+    "scripts/bench/ab/known.py",
+    "scripts/bench/ab/measure.py",
+    "scripts/bench/ab/pr_smoke.py",
+    "scripts/bench/ab/report.py",
+    "scripts/bench/ab/selection.py",
+    "scripts/bench/ab/shapes.json",
+    "scripts/bench/ab/stack.py",
+    "scripts/bench/ab/tests/test_api_matrix.py",
+    "scripts/bench/ab/tests/test_comment.py",
+    "scripts/bench/ab/tests/test_known.py",
+    "scripts/bench/ab/tests/test_measure.py",
+    "scripts/bench/ab/tests/test_pr_smoke.py",
+    "scripts/bench/ab/tests/test_report.py",
+    "scripts/bench/ab/tests/test_selection.py",
+    "scripts/bench/ab/tests/test_stack.py",
+    "scripts/bench/ab/tests/test_validate.py",
+    "scripts/bench/ab/validate.py"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 555,
+   "sha": "f7f74b533d9f0bfe22cccdc62544bab8b65b9f30",
+   "title": "ci(bench): second review round of the PR perf smoke harness; a refused stack is never torn down, transient errors are retried, Tempo shapes fixed [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 564,
+   "sha": "00dd9a5a03efbc456ff3da7283d74d93357eddc4",
+   "title": "deps: loki-vl-proxy v2.15.0 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 577,
+   "sha": "f575d3c1a43ee55151dc3845ca16a9693983574c",
+   "title": "deps: loki-vl-proxy v2.15.1 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "UPSTREAM_COVERAGE.md",
+    "cmd/lakehouse-logs/main.go",
+    "cmd/lakehouse-logs/shutdown_snapshot_test.go",
+    "docs/durability.md",
+    "docs/features.md",
+    "internal/compaction/orphan_sweep.go",
+    "internal/compaction/orphan_sweep_test.go",
+    "internal/compaction/scheduler.go",
+    "internal/compaction/scheduler_test.go",
+    "internal/config/config.go",
+    "internal/config/testdata/field-docs.json",
+    "internal/pmeta/persist.go",
+    "internal/pmeta/store_surface_test.go",
+    "internal/resourcebounds/bounds_test.go",
+    "internal/storage/parquets3/close_pmeta_test.go",
+    "internal/storage/parquets3/pmeta_wire.go",
+    "internal/storage/parquets3/storage.go",
+    "internal/storage/parquets3/writer.go",
+    "lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go",
+    "lakehouse-traces/internal/storage/parquets3/pmeta_wire.go",
+    "lakehouse-traces/internal/storage/parquets3/storage.go",
+    "lakehouse-traces/internal/storage/parquets3/writer.go",
+    "lakehouse-traces/main.go",
+    "lakehouse-traces/shutdown_snapshot_test.go",
+    "tests/conformance/registry/features/storage.yaml",
+    "tests/conformance/registry/rows/lh/endpoints.yaml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=product code: cmd/lakehouse-logs/main.go",
+    "detail="
+   ],
+   "pr": 578,
+   "sha": "2413c204a76ceefb297a60d20b9499ab919e2aa1",
+   "title": "fix(pmeta): Close persists the dirty pmeta bundles so a restart after a compaction keeps the compacted file's entry"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "UPSTREAM_COVERAGE.md",
+    "docs/features.md",
+    "docs/parity-and-gaps.md",
+    "internal/manifest/manifest.go",
+    "internal/manifest/manifest_bench_test.go",
+    "internal/manifest/manifest_range_test.go",
+    "internal/manifest/manifest_test.go",
+    "internal/manifest/partition_stats.go",
+    "internal/manifest/range_end_inclusive_test.go",
+    "internal/manifest/stress_test.go",
+    "internal/manifest/tenant_scoped_query_test.go",
+    "internal/selectapi/coverage_hardening_test.go",
+    "internal/selectapi/handler.go",
+    "internal/selectapi/handler_test.go",
+    "internal/selectapi/memleak_test.go",
+    "internal/selectapi/time_range_params_test.go",
+    "internal/selectapi/verify_test.go",
+    "internal/storage/parquets3/coverage_medium_test.go",
+    "internal/storage/parquets3/range_end_http_test.go",
+    "internal/storage/parquets3/range_end_inclusive_test.go",
+    "internal/storage/parquets3/storage_query.go",
+    "lakehouse-traces/internal/selectapi/handler.go",
+    "lakehouse-traces/internal/selectapi/handler_test.go",
+    "lakehouse-traces/internal/selectapi/memleak_test.go",
+    "lakehouse-traces/internal/selectapi/time_range_params_test.go",
+    "lakehouse-traces/internal/storage/parquets3/coverage_medium_test.go",
+    "lakehouse-traces/internal/storage/parquets3/range_end_inclusive_test.go",
+    "lakehouse-traces/internal/storage/parquets3/storage_query.go",
+    "tests/conformance/registry/features/query.yaml",
+    "tests/conformance/registry/features/traces.yaml",
+    "tests/conformance/registry/rows/lh/divergences.yaml",
+    "tests/conformance/registry/rows/vl/select.yaml",
+    "tests/conformance/registry/rows/vt/logsql.yaml",
+    "tests/parity/known_failures.txt",
+    "tests/parity/lock_cells.txt",
+    "tests/parity/logs_timerange_test.go",
+    "tests/parity/rows_ties.go",
+    "tests/parity/traces_timerange_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=product code: internal/manifest/manifest.go",
+    "detail=",
+    "gate_file=tests/parity/known_failures.txt",
+    "gate_file=tests/parity/lock_cells.txt"
+   ],
+   "pr": 581,
+   "sha": "9bbbdfdec5acc350fd81e314e8c851725a909882",
+   "title": "fix(query): the time range of a request is exact to its unit and its end is inclusive on every layer (B7)"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "cmd/lakehouse-logs/main.go",
+    "cmd/lakehouse-logs/shutdown_snapshot_test.go",
+    "docs/durability.md",
+    "docs/features.md",
+    "internal/config/config.go",
+    "internal/config/shutdown_test.go",
+    "internal/config/testdata/field-docs.json",
+    "internal/pmeta/persist.go",
+    "internal/pmeta/store_surface_test.go",
+    "internal/storage/parquets3/close_pmeta_test.go",
+    "internal/storage/parquets3/pmeta_wire.go",
+    "internal/storage/parquets3/storage.go",
+    "lakehouse-traces/internal/storage/parquets3/close_pmeta_test.go",
+    "lakehouse-traces/internal/storage/parquets3/pmeta_wire.go",
+    "lakehouse-traces/internal/storage/parquets3/storage.go",
+    "lakehouse-traces/main.go",
+    "lakehouse-traces/shutdown_snapshot_test.go",
+    "tests/conformance/registry/features/storage.yaml",
+    "tests/conformance/registry/rows/lh/endpoints.yaml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=product code: cmd/lakehouse-logs/main.go",
+    "detail="
+   ],
+   "pr": 585,
+   "sha": "32b667411c9bcc184191d159cd694f3548f6f3d0",
+   "title": "fix(shutdown): compaction stop overlaps the shutdown phases; docs no longer claim the preStop drain ran"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 586,
+   "sha": "d76bfd43bad02e772fe037be5e793a391af98ebd",
+   "title": "chore: release metadata for v0.156.3 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 587,
+   "sha": "4c78b376b5ea75c2c65c1867c80604835a58e307",
+   "title": "deps: loki-vl-proxy v2.16.0 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/ci.yaml": {
+      "detail": "a line outside every job changed: the whole workflow runs",
+      "jobs": [
+       "bench-selftest",
+       "benchmarks-logs",
+       "benchmarks-traces",
+       "build-logs",
+       "build-traces",
+       "deps",
+       "docker-logs",
+       "docker-traces",
+       "field-metadata-perf",
+       "helm",
+       "helm-config-drift",
+       "lint-logs",
+       "lint-traces",
+       "parity-unit",
+       "parquet-readback",
+       "security-logs",
+       "security-traces",
+       "storage-health-compaction",
+       "test-logs",
+       "test-parquets3-heavy",
+       "test-traces"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "ci",
+    "force": "ci.yaml:bench-selftest,ci.yaml:benchmarks-logs,ci.yaml:benchmarks-traces,ci.yaml:build-logs,ci.yaml:build-traces,ci.yaml:deps,ci.yaml:docker-logs,ci.yaml:docker-traces,ci.yaml:field-metadata-perf,ci.yaml:helm,ci.yaml:helm-config-drift,ci.yaml:lint-logs,ci.yaml:lint-traces,ci.yaml:parity-unit,ci.yaml:parquet-readback,ci.yaml:security-logs,ci.yaml:security-traces,ci.yaml:storage-health-compaction,ci.yaml:test-logs,ci.yaml:test-parquets3-heavy,ci.yaml:test-traces",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    ".github/workflows/ci.yaml",
+    "scripts/ci/gate_replay.sh"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/gate_replay.sh"
+   ],
+   "pr": 588,
+   "sha": "62ed43cf57bf41179ce815e340928c511a4eb251",
+   "title": "ci: gate-replay NEL case works with an empty allowlist; pin golangci-lint [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 589,
+   "sha": "6facf29f70f897c3ca6f17d7c9583522fa6b8c9a",
+   "title": "chore: release metadata for v0.156.4 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 592,
+   "sha": "60e8dd163d1b27de2d8e9d377f84850fd3e870ff",
+   "title": "chore: release metadata for v0.156.5 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "README.md",
+    "docs/architecture.md",
+    "docs/configuration.md",
+    "docs/cost-comparison.md",
+    "docs/cost-estimates.md",
+    "docs/deletion-strategy.md",
+    "docs/durability.md",
+    "docs/getting-started.md",
+    "docs/multi-tenancy.md",
+    "docs/operations.md",
+    "docs/petabyte-scale-audit.md",
+    "docs/storage-flow.md",
+    "docs/use-cases.md",
+    "docs/write-path.md",
+    "scripts/cost/cost_tiering.py",
+    "website/src/components/HomepageFeatures.tsx",
+    "website/src/pages/cost-optimization.tsx",
+    "website/src/pages/index.tsx",
+    "website/src/pages/loki-tempo-alternative.tsx",
+    "website/src/pages/unlimited-retention.tsx"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 593,
+   "sha": "94bbf662a7d1deba17885fe062b8f4daf3990ec6",
+   "title": "docs(cost): S3 Standard is the default; cold-class ladders are examples with read, retrieval and early-deletion costs [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "UPSTREAM_COVERAGE.md",
+    "charts/victoria-lakehouse/values.yaml",
+    "cmd/lakehouse-logs/fake_s3_test.go",
+    "cmd/lakehouse-logs/main.go",
+    "cmd/lakehouse-logs/maintenance_gate_test.go",
+    "cmd/lakehouse-logs/maintenance_inventory_test.go",
+    "docs/architecture/roles.md",
+    "docs/features.md",
+    "docs/getting-started.md",
+    "docs/kubernetes-deployment.md",
+    "docs/operations.md",
+    "docs/write-path.md",
+    "internal/config/config.go",
+    "internal/config/config_test.go",
+    "internal/storage/parquets3/storage.go",
+    "lakehouse-traces/fake_s3_test.go",
+    "lakehouse-traces/internal/storage/parquets3/storage.go",
+    "lakehouse-traces/main.go",
+    "lakehouse-traces/maintenance_gate_test.go",
+    "lakehouse-traces/maintenance_inventory_test.go",
+    "tests/conformance/registry/features/deploy.yaml",
+    "tests/conformance/registry/rows/lh/roles.yaml",
+    "website/sidebars.ts"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=packaged/patched: charts/victoria-lakehouse/values.yaml",
+    "detail="
+   ],
+   "pr": 596,
+   "sha": "b206065b326fec7947ef42a4b036e8c3a0874932",
+   "title": "fix(roles): select pods never write to the bucket, compact, rewrite or delete; compaction hashes over the writer pods [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/fuzz-stress-memleak.yaml": {
+      "detail": "lines changed inside the jobs fuzz-logs",
+      "jobs": [
+       "fuzz-logs"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/fuzz-stress-memleak.yaml",
+    "CHANGELOG.md",
+    "UPSTREAM_COVERAGE.md",
+    "alerts/alerts-lakehouse.yml",
+    "charts/victoria-lakehouse/templates/statefulsets.yaml",
+    "charts/victoria-lakehouse/test_templates.sh",
+    "cmd/lakehouse-logs/main.go",
+    "cmd/lakehouse-logs/maintenance_gate_test.go",
+    "cmd/lakehouse-logs/ring_multiinstance_test.go",
+    "cmd/lakehouse-logs/ring_self_test.go",
+    "dashboards/victoria-lakehouse.json",
+    "docs/architecture/roles.md",
+    "docs/features.md",
+    "docs/kubernetes-deployment.md",
+    "docs/observability.md",
+    "docs/operations.md",
+    "internal/compaction/README.md",
+    "internal/compaction/RUNBOOK.md",
+    "internal/compaction/orphan_sweep.go",
+    "internal/compaction/ownership.go",
+    "internal/compaction/ownership_bench_test.go",
+    "internal/compaction/ownership_self_test.go",
+    "internal/compaction/ownership_test.go",
+    "internal/compaction/recompact_handler.go",
+    "internal/compaction/recompact_trigger_test.go",
+    "internal/compaction/scheduler.go",
+    "internal/metrics/lakehouse.go",
+    "internal/metrics/ring_self_test.go",
+    "internal/peercache/peercache.go",
+    "internal/peercache/ring.go",
+    "internal/peercache/ring_self_test.go",
+    "internal/selfaddr/env.go",
+    "internal/selfaddr/env_test.go",
+    "internal/selfaddr/fuzz_test.go",
+    "internal/selfaddr/selfaddr.go",
+    "internal/selfaddr/selfaddr_test.go",
+    "internal/selfaddr/tracker.go",
+    "internal/selfaddr/tracker_test.go",
+    "internal/smartcache/ring_self_test.go",
+    "lakehouse-traces/main.go",
+    "lakehouse-traces/maintenance_gate_test.go",
+    "lakehouse-traces/ring_multiinstance_test.go",
+    "lakehouse-traces/ring_self_test.go",
+    "tests/conformance/registry/features/deploy.yaml",
+    "tests/conformance/registry/rows/lh/roles.yaml",
+    "tests/verification/matrix.md"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=packaged/patched: charts/victoria-lakehouse/templates/statefulsets.yaml",
+    "detail="
+   ],
+   "pr": 604,
+   "sha": "13353b26fa68c5611e1263d050acc1237dee1f71",
+   "title": "fix(roles): a pod finds itself in the discovered ring, so every partition has one scheduler owner"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 610,
+   "sha": "29360e5707bc9c5a5833edd2cb785aca9e40ecd5",
+   "title": "chore: release metadata for v0.156.6 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/fuzz-stress-memleak.yaml": {
+      "detail": "lines changed inside the jobs fuzz-logs",
+      "jobs": [
+       "fuzz-logs"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/fuzz-stress-memleak.yaml",
+    "CHANGELOG.md",
+    "README.md",
+    "UPSTREAM_COVERAGE.md",
+    "alerts/alerts-lakehouse.yml",
+    "charts/victoria-lakehouse/values.schema.json",
+    "charts/victoria-lakehouse/values.yaml",
+    "cmd/lakehouse-logs/delete_auth_key_test.go",
+    "cmd/lakehouse-logs/delete_rewriter_test.go",
+    "cmd/lakehouse-logs/fake_s3_test.go",
+    "cmd/lakehouse-logs/main.go",
+    "cmd/lakehouse-logs/maintenance_gate_test.go",
+    "cmd/lakehouse-logs/maintenance_inventory_test.go",
+    "cmd/lakehouse-logs/public_delete_mount_test.go",
+    "cmd/lakehouse-logs/public_delete_post_only_test.go",
+    "cmd/lakehouse-logs/public_delete_tenant_forms_test.go",
+    "cmd/lakehouse-logs/ring_multiinstance_test.go",
+    "cmd/lakehouse-logs/testdata/config-surface.json",
+    "cmd/lakehouse-logs/tombstone_multiinstance_test.go",
+    "cmd/lakehouse-logs/tombstones.go",
+    "cmd/lakehouse-logs/tombstones_test.go",
+    "dashboards/victoria-lakehouse.json",
+    "docs/architecture/roles.md",
+    "docs/configuration.md",
+    "docs/cost-comparison.md",
+    "docs/cost-estimates.md",
+    "docs/deletion-strategy.md",
+    "docs/durability.md",
+    "docs/features.md",
+    "docs/manifest-system.md",
+    "docs/multi-tenancy.md",
+    "docs/observability.md",
+    "docs/open-parquet-format.md",
+    "docs/operations.md",
+    "docs/parity-and-gaps.md",
+    "internal/compaction/compactor.go",
+    "internal/compaction/delete_clean_marking_test.go",
+    "internal/compaction/delete_property_test.go",
+    "internal/compaction/delete_race_test.go",
+    "internal/compaction/delete_refresh_test.go",
+    "internal/compaction/fixtures_test.go",
+    "internal/compaction/listed_helper_test.go",
+    "internal/compaction/no_tombstone_view_test.go",
+    "internal/compaction/orphan_sweep.go",
+    "internal/compaction/orphan_sweep_test.go",
+    "internal/compaction/review404_r4_test.go",
+    "internal/compaction/review404_r5_test.go",
+    "internal/compaction/scheduler.go",
+    "internal/compaction/tierA_tombstones_test.go",
+    "internal/compaction/tombstone_scope_test.go",
+    "internal/compaction/tombstones.go",
+    "internal/compaction/tombstones_test.go",
+    "internal/compaction/trace_encoding_test.go",
+    "internal/compaction/trace_id_hex_test.go",
+    "internal/config/config.go",
+    "internal/config/config_coverage_test.go",
+    "internal/config/config_test.go",
+    "internal/config/profile.go",
+    "internal/config/profile_regression_test.go",
+    "internal/config/profile_test.go",
+    "internal/config/testdata/field-docs.json",
+    "internal/delete/backend.go",
+    "internal/delete/branches_test.go",
+    "internal/delete/cache.go",
+    "internal/delete/column_fence_test.go",
+    "internal/delete/coverage_test.go",
+    "internal/delete/delete_fuzz_test.go",
+    "internal/delete/deletetest/bucket.go",
+    "internal/delete/deletetest/bucket_test.go",
+    "internal/delete/deletetest/memstore/memstore.go",
+    "internal/delete/deletetest/memstore/memstore_test.go",
+    "internal/delete/docs_examples_test.go",
+    "internal/delete/durability_units_test.go",
+    "internal/delete/events_links_test.go",
+    "internal/delete/filtercache.go",
+    "internal/delete/fixtures_test.go",
+    "internal/delete/gc_test.go",
+    "internal/delete/handler.go",
+    "internal/delete/handler_leftovers.go",
+    "internal/delete/handler_leftovers_test.go",
+    "internal/delete/handler_scope.go",
+    "internal/delete/handler_scope_test.go",
+    "internal/delete/handler_tenant_forms_test.go",
+    "internal/delete/handler_test.go",
+    "internal/delete/handler_undelete_test.go",
+    "internal/delete/integration_test.go",
+    "internal/delete/intents.go",
+    "internal/delete/intents_resume_test.go",
+    "internal/delete/intents_test.go",
+    "internal/delete/keys.go",
+    "internal/delete/keys_test.go",
+    "internal/delete/listing_property_test.go",
+    "internal/delete/manifest_sync.go",
+    "internal/delete/memleak_test.go",
+    "internal/delete/multiinstance_test.go",
+    "internal/delete/protocol.go",
+    "internal/delete/protocol_test.go",
+    "internal/delete/review404_r4_test.go",
+    "internal/delete/rewrite_crash_durability_test.go",
+    "internal/delete/rewrite_crash_refresh_test.go",
+    "internal/delete/rewrite_crash_test.go",
+    "internal/delete/rewrite_durability_test.go",
+    "internal/delete/rewrite_key_collision_test.go",
+    "internal/delete/rewrite_manifest_test.go",
+    "internal/delete/rewrite_publish_hook_test.go",
+    "internal/delete/rewrite_refresh_test.go",
+    "internal/delete/rewrite_tenant_key_test.go",
+    "internal/delete/rewriter.go",
+    "internal/delete/rewriter_created_by_test.go",
+    "internal/delete/rewriter_test.go",
+    "internal/delete/rollback_compat_test.go",
+    "internal/delete/rowfields.go",
+    "internal/delete/s3backend.go",
+    "internal/delete/s3backend_test.go",
+    "internal/delete/scale_test.go",
+    "internal/delete/scheduler.go",
+    "internal/delete/scheduler_test.go",
+    "internal/delete/selfcheck.go",
+    "internal/delete/sparse_first_listing_test.go",
+    "internal/delete/store.go",
+    "internal/delete/tasks.go",
+    "internal/delete/tasks_test.go",
+    "internal/delete/tenant_scope.go",
+    "internal/delete/tenant_scope_test.go",
+    "internal/delete/tombstone.go",
+    "internal/delete/tombstone_durability_test.go",
+    "internal/delete/tombstone_persist.go",
+    "internal/delete/tombstone_removal_bounds_test.go",
+    "internal/delete/tombstone_removal_test.go",
+    "internal/delete/tombstone_removed.go",
+    "internal/delete/tombstone_restore_test.go",
+    "internal/delete/tombstone_sync_test.go",
+    "internal/delete/tombstone_test.go",
+    "internal/delete/trace_encoding_test.go",
+    "internal/delete/trace_id_hex_test.go",
+    "internal/delete/trace_message_test.go",
+    "internal/metrics/lakehouse.go",
+    "internal/metrics/verify_test.go",
+    "internal/retention/policy.go",
+    "internal/s3reader/list_after.go",
+    "internal/s3reader/list_after_test.go",
+    "internal/storage/parquets3/delete_rewrite_catalog_test.go",
+    "internal/storage/parquets3/fields_tombstones_test.go",
+    "internal/storage/parquets3/pmeta_rows_removed.go",
+    "internal/storage/parquets3/storage_fields.go",
+    "internal/storage/parquets3/storage_query.go",
+    "internal/storage/parquets3/tombstone_gate_test.go",
+    "internal/storage/parquets3/tombstone_scope.go",
+    "internal/storage/parquets3/tombstone_scope_test.go",
+    "internal/telemetry/traced_storage.go",
+    "internal/telemetry/traced_storage_tenant_test.go",
+    "internal/vlstorage/internal_delete_gate_test.go",
+    "internal/vlstorage/memleak_test.go",
+    "internal/vlstorage/vlstorage.go",
+    "internal/vlstorage/vlstorage_test.go",
+    "lakehouse-traces/delete_rewriter_test.go",
+    "lakehouse-traces/fake_s3_test.go",
+    "lakehouse-traces/httpauth_suffix_test.go",
+    "lakehouse-traces/internal/storage/parquets3/fields_tombstones_test.go",
+    "lakehouse-traces/internal/storage/parquets3/pmeta_rows_removed.go",
+    "lakehouse-traces/internal/storage/parquets3/storage_fields.go",
+    "lakehouse-traces/internal/storage/parquets3/storage_query.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_scope.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go",
+    "lakehouse-traces/internal/storage/parquets3/trace_index_lookup.go",
+    "lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go",
+    "lakehouse-traces/internal/vlstorage/memleak_test.go",
+    "lakehouse-traces/internal/vlstorage/traced_storage.go",
+    "lakehouse-traces/internal/vlstorage/traced_storage_test.go",
+    "lakehouse-traces/internal/vlstorage/vlstorage.go",
+    "lakehouse-traces/internal/vlstorage/vlstorage_test.go",
+    "lakehouse-traces/main.go",
+    "lakehouse-traces/maintenance_gate_test.go",
+    "lakehouse-traces/maintenance_inventory_test.go",
+    "lakehouse-traces/public_delete_post_only_test.go",
+    "lakehouse-traces/public_delete_tenant_forms_test.go",
+    "lakehouse-traces/public_delete_test.go",
+    "lakehouse-traces/ring_multiinstance_test.go",
+    "lakehouse-traces/testdata/config-surface.json",
+    "lakehouse-traces/tombstone_multiinstance_test.go",
+    "lakehouse-traces/tombstones.go",
+    "lakehouse-traces/tombstones_test.go",
+    "tests/conformance/registry/features/deletion.yaml",
+    "tests/conformance/registry/features/deploy.yaml",
+    "tests/conformance/registry/features/ingest.yaml",
+    "tests/conformance/registry/features/tenancy.yaml",
+    "tests/conformance/registry/rows/lh/divergences.yaml",
+    "tests/conformance/registry/rows/lh/endpoints.yaml",
+    "tests/conformance/registry/rows/lh/tombstones.yaml",
+    "tests/conformance/registry/rows/vt/absent_fields.yaml",
+    "tests/e2e/delete_test.go",
+    "tests/e2e/metrics_verification_test.go",
+    "tests/e2e/multitenancy_test.go",
+    "tests/e2e/own_tombstone_test.go",
+    "tests/s3compat/lakehouse-smoke.sh",
+    "tests/s3compat/s3compat_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=packaged/patched: charts/victoria-lakehouse/values.schema.json",
+    "detail="
+   ],
+   "pr": 613,
+   "sha": "2bdefa0758accee65b7779506c02cbb8a88ffad7",
+   "title": "feat(delete): write-once tombstones read from the bucket by every pod [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 614,
+   "sha": "8634bdb184a41e2ddf337ecba02fa8bae1fe0943",
+   "title": "deps: loki-vl-proxy v2.18.1 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "tests/e2e/chaos_durability_test.go",
+    "tests/e2e/chaos_durability_traces_test.go",
+    "tests/parity/helpers.go",
+    "tests/parity/logs_crossvalidation_test.go",
+    "tests/parity/parity_test.go",
+    "tests/parity/traces_parity_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 615,
+   "sha": "67e29e2ad3f8df71e3b29b37aff8c0a67119e736",
+   "title": "test: clear the existing errcheck, gocyclo and staticcheck findings in the parity and chaos test helpers [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "UPSTREAM_COVERAGE.md",
+    "cmd/lakehouse-logs/main.go",
+    "cmd/lakehouse-logs/retention_policy_test.go",
+    "docs/features.md",
+    "docs/read-path.md",
+    "internal/retention/policy.go",
+    "internal/retention/policy_test.go",
+    "internal/retention/retention.go",
+    "internal/storage/parquets3/retention_cut_test.go",
+    "internal/storage/parquets3/storage.go",
+    "internal/storage/parquets3/tenant_scope.go",
+    "lakehouse-traces/internal/storage/parquets3/retention_cut_test.go",
+    "lakehouse-traces/internal/storage/parquets3/storage.go",
+    "lakehouse-traces/internal/storage/parquets3/tenant_scope.go",
+    "lakehouse-traces/main.go",
+    "lakehouse-traces/retention_policy_test.go",
+    "tests/conformance/registry/features/storage.yaml",
+    "tests/conformance/registry/rows/lh/read_path.yaml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=product code: cmd/lakehouse-logs/main.go",
+    "detail="
+   ],
+   "pr": 616,
+   "sha": "79f39cb933ea05893ee2e020a6f628aae2d0f7e3",
+   "title": "feat(query): reads cut at the tenant retention, with upstream's day floor; one retention policy for the cut and eviction"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 620,
+   "sha": "2d79b281323d633d37df5c3f45cac6cd0fdd7040",
+   "title": "chore: release metadata for v0.157.0 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "UPSTREAM_COVERAGE.md",
+    "docs/features.md",
+    "docs/operations.md",
+    "docs/read-path.md",
+    "internal/delete/proof.go",
+    "internal/delete/proof_test.go",
+    "internal/storage/parquets3/field_values_collect.go",
+    "internal/storage/parquets3/storage.go",
+    "internal/storage/parquets3/storage_query.go",
+    "internal/storage/parquets3/tombstone_gating_bench_test.go",
+    "internal/storage/parquets3/tombstone_gating_test.go",
+    "internal/storage/parquets3/tombstone_proof.go",
+    "internal/storage/parquets3/tombstone_proof_bench_test.go",
+    "internal/storage/parquets3/tombstone_proof_property_test.go",
+    "internal/storage/parquets3/tombstone_proof_test.go",
+    "internal/storage/parquets3/tombstone_scope.go",
+    "lakehouse-traces/internal/storage/parquets3/field_values_collect.go",
+    "lakehouse-traces/internal/storage/parquets3/storage.go",
+    "lakehouse-traces/internal/storage/parquets3/storage_query.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_gating_test.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_proof.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_proof_property_test.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_proof_test.go",
+    "lakehouse-traces/internal/storage/parquets3/tombstone_scope.go",
+    "tests/conformance/registry/features/deletion.yaml",
+    "tests/conformance/registry/rows/lh/read_path.yaml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=product code: internal/delete/proof.go",
+    "detail="
+   ],
+   "pr": 624,
+   "sha": "a7e34111d565f8a18343d8771752ec3d834e424b",
+   "title": "perf(query): a tombstone only turns off the metadata fast path for the files it can match"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=1",
+    "reason=packaged/patched: charts/victoria-lakehouse/Chart.yaml",
+    "detail="
+   ],
+   "pr": 626,
+   "sha": "61994248e028ceb1192ae3ccf87b063972db9df1",
+   "title": "chore: release metadata for v0.157.1 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "docs",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 630,
+   "sha": "5488328bef5e00dfc72b9b470d534518440538eb",
+   "title": "docs(changelog): restore the 0.157.0 section; the retention read-cut bullet was lost in a merge resolution [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 634,
+   "sha": "5dc4aaa65be62009eba23d6168468e30e1316086",
+   "title": "deps: loki-vl-proxy v2.20.1 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "tests/parity/README.md",
+    "tests/parity/layer_controls_test.go",
+    "tests/parity/sort_all_columns_parity_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 637,
+   "sha": "a700c786a1bf2c1f217a8968921303713f682f61",
+   "title": "test(parity): force-compact the layer case only once every object is released (#636) [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "docs/features.md",
+    "tests/conformance/registry/features/traces.yaml",
+    "tests/parity/traces_events_links_layers_test.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 643,
+   "sha": "17fca2948947c5ebc46db8e1280b8177a27ba7c7",
+   "title": "test(parity): the events and links cases no longer wait up to 12 minutes for the next hour [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 649,
+   "sha": "6d4bcc6c1483e1a947283729ee275210514c6f2b",
+   "title": "deps: loki-vl-proxy v2.21.1 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "Dockerfile.datagen",
+    "Dockerfile.logs",
+    "Dockerfile.traces",
+    "go.mod",
+    "go.work",
+    "lakehouse-traces/go.mod",
+    "tests/parity/docker-compose.yml"
+   ],
+   "legacy": [
+    "exempt=toolchain-only",
+    "product=0",
+    "reason=",
+    "detail=only Go toolchain and dependency versions (and golang image digests) changed in Dockerfile.datagen, Dockerfile.logs, Dockerfile.traces, go.mod, go.work, lakehouse-traces/go.mod, tests/parity/docker-compose.yml"
+   ],
+   "pr": 652,
+   "sha": "9d6ccc16bf6c13521864ae67a310e9548bb433d0",
+   "title": "fix(security): Go 1.27.3 for GO-2026-6809"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "deps",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "scripts/proof/requirements.txt"
+   ],
+   "legacy": [
+    "exempt=dependency-only",
+    "product=0",
+    "reason=",
+    "detail=only go.mod require versions outside the storage-critical modules, go.sum hash lines and requirements files changed"
+   ],
+   "pr": 653,
+   "sha": "94f1d8f7871c4ebfb3a80afa14143797dfc8bcc2",
+   "title": "chore(deps): bump pillow from 12.3.0 to 13.0.0 in /scripts/proof in the pip group across 1 directory"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 654,
+   "sha": "8046b75fbdeb06a9ce06f9ad8f1d8038a7552445",
+   "title": "chore: release metadata for v0.157.2 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 655,
+   "sha": "256c5de1b349dacda64855b860bead48263e8667",
+   "title": "chore: release metadata for v0.157.3 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/ci.yaml": {
+      "detail": "only the ref of 65 uses: pin(s) changed",
+      "jobs": []
+     },
+     ".github/workflows/codeql.yaml": {
+      "detail": "a line outside every job changed: the whole workflow runs",
+      "jobs": [
+       "analyze",
+       "analyze-actions"
+      ]
+     },
+     ".github/workflows/fuzz-stress-memleak.yaml": {
+      "detail": "lines changed inside the jobs fuzz-logs, fuzz-traces",
+      "jobs": [
+       "fuzz-logs",
+       "fuzz-traces"
+      ]
+     },
+     ".github/workflows/parity.yaml": {
+      "detail": "only the ref of 3 uses: pin(s) changed",
+      "jobs": []
+     },
+     ".github/workflows/security.yaml": {
+      "detail": "only the ref of 11 uses: pin(s) changed",
+      "jobs": []
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "codeql.yaml:analyze,codeql.yaml:analyze-actions,fuzz-stress-memleak.yaml:fuzz-logs,fuzz-stress-memleak.yaml:fuzz-traces",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    ".github/workflow-lint-requirements.txt",
+    ".github/workflows/auto-release.yaml",
+    ".github/workflows/badges.yaml",
+    ".github/workflows/changelog-pr.yaml",
+    ".github/workflows/ci.yaml",
+    ".github/workflows/codeql.yaml",
+    ".github/workflows/conformance.yaml",
+    ".github/workflows/docs-site.yaml",
+    ".github/workflows/e2e.yaml",
+    ".github/workflows/fuzz-stress-memleak.yaml",
+    ".github/workflows/loadtest.yml",
+    ".github/workflows/loki-vl-proxy-bump.yaml",
+    ".github/workflows/market-data.yaml",
+    ".github/workflows/minio-images.yaml",
+    ".github/workflows/parity.yaml",
+    ".github/workflows/parquet-readers.yaml",
+    ".github/workflows/pr-labeler.yaml",
+    ".github/workflows/proof-metrics.yaml",
+    ".github/workflows/s3-compat.yaml",
+    ".github/workflows/security.yaml",
+    ".github/workflows/upstream-check.yaml",
+    ".github/workflows/verification-matrix-check.yaml",
+    ".github/workflows/workflow-lint.yaml",
+    ".github/zizmor.yml",
+    "CHANGELOG.md",
+    "scripts/ci/tests/test_workflow_action_pins.py"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=.github/workflows/conformance.yaml",
+    "gate_file=.github/workflows/parity.yaml",
+    "gate_file=scripts/ci/tests/test_workflow_action_pins.py"
+   ],
+   "pr": 656,
+   "sha": "c34ed373de2a6a610bbac6295cb7ecd63abd6f12",
+   "title": "ci: pin third-party actions to commit SHAs and lint workflows [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "scripts/bench/plansim-scratch/go.mod",
+    "scripts/bench/plansim-scratch/go.sum",
+    "scripts/bench/plansim-scratch/main.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 657,
+   "sha": "a4ff74c593f727f7486d59a3e0f43047837a65de",
+   "title": "chore: remove the unused plansim scratch module [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/ci.yaml": {
+      "detail": "lines changed inside the jobs helm-config-drift, parquet-readback, security-logs, security-traces",
+      "jobs": [
+       "helm-config-drift",
+       "parquet-readback",
+       "security-logs",
+       "security-traces"
+      ]
+     },
+     ".github/workflows/parity.yaml": {
+      "detail": "lines changed inside the jobs parity",
+      "jobs": [
+       "parity"
+      ]
+     },
+     ".github/workflows/security.yaml": {
+      "detail": "lines changed inside the jobs gitleaks, gosec, govulncheck",
+      "jobs": [
+       "gitleaks",
+       "gosec",
+       "govulncheck"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "ci.yaml:helm-config-drift,ci.yaml:parquet-readback,ci.yaml:security-logs,ci.yaml:security-traces,parity.yaml:parity,security.yaml:gitleaks,security.yaml:gosec,security.yaml:govulncheck",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/changelog-pr.yaml",
+    ".github/workflows/ci.yaml",
+    ".github/workflows/gate-selftest.yaml",
+    ".github/workflows/market-data.yaml",
+    ".github/workflows/parity.yaml",
+    ".github/workflows/parquet-readers.yaml",
+    ".github/workflows/proof-metrics.yaml",
+    ".github/workflows/security.yaml",
+    "CHANGELOG.md",
+    "scripts/ci/config-report/requirements.in",
+    "scripts/ci/config-report/requirements.txt",
+    "scripts/ci/parquet-readback/requirements.in",
+    "scripts/ci/parquet-readback/requirements.txt",
+    "scripts/ci/requirements.in",
+    "scripts/ci/requirements.txt",
+    "scripts/ci/tests/test_ci_tool_pins.py",
+    "scripts/ci/tool_pins_allowlist.txt",
+    "scripts/proof/requirements.in",
+    "scripts/proof/requirements.txt",
+    "tests/readers/requirements.in",
+    "tests/readers/requirements.txt",
+    "tests/readers/test_harness.py"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=.github/workflows/gate-selftest.yaml",
+    "gate_file=.github/workflows/parity.yaml",
+    "gate_file=scripts/ci/config-report/requirements.in",
+    "gate_file=scripts/ci/config-report/requirements.txt",
+    "gate_file=scripts/ci/parquet-readback/requirements.in",
+    "gate_file=scripts/ci/parquet-readback/requirements.txt",
+    "gate_file=scripts/ci/requirements.in",
+    "gate_file=scripts/ci/requirements.txt",
+    "gate_file=scripts/ci/tests/test_ci_tool_pins.py",
+    "gate_file=scripts/ci/tool_pins_allowlist.txt"
+   ],
+   "pr": 658,
+   "sha": "8ca096e4dfc9da9a3842e130dd500c5d5d84bf68",
+   "title": "ci: pin tool versions and verify downloads [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/s3-compat.yaml",
+    "CHANGELOG.md",
+    "deployment/docker/Dockerfile.bench-shaped",
+    "deployment/docker/Dockerfile.grafana",
+    "deployment/docker/Dockerfile.loki",
+    "deployment/docker/Dockerfile.loki-vl-proxy",
+    "deployment/docker/docker-compose-benchmark.yml",
+    "deployment/docker/docker-compose-e2e.yml",
+    "deployment/docker/docker-compose-proof.yml",
+    "deployment/docker/minio-src/mc.Dockerfile",
+    "deployment/docker/minio-src/minio.Dockerfile",
+    "scripts/bench/compaction/compose.yml",
+    "scripts/bench/restart-ab/compose.yml",
+    "scripts/ci/image_pins_allowlist.txt",
+    "scripts/ci/tests/pre1970_hot_compare.compose.yml",
+    "scripts/ci/tests/test_image_digest_pins.py",
+    "tests/parity/docker-compose.yml",
+    "tests/s3compat/compose/garage.yml",
+    "tests/s3compat/compose/minio.yml",
+    "tests/s3compat/compose/seaweedfs.yml",
+    "tests/s3compat/compose/versitygw.yml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/image_pins_allowlist.txt",
+    "gate_file=scripts/ci/tests/pre1970_hot_compare.compose.yml",
+    "gate_file=scripts/ci/tests/test_image_digest_pins.py"
+   ],
+   "pr": 659,
+   "sha": "24ddca94cc4e5783faa72a191a4b4f6e7489be87",
+   "title": "ci: pin container images by digest [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    ".github/dependabot.yml",
+    ".github/zizmor.yml",
+    "CHANGELOG.md",
+    "scripts/ci/dependabot_allowlist.txt",
+    "scripts/ci/tests/test_dependabot_coverage.py"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/dependabot_allowlist.txt",
+    "gate_file=scripts/ci/tests/test_dependabot_coverage.py"
+   ],
+   "pr": 660,
+   "sha": "0a7b2d7d32f14d7e8adfb6d5b6020c19a7d231a6",
+   "title": "ci: keep every dependency ecosystem updated with Dependabot [skip release]"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/minio-src/mc.Dockerfile",
+    "deployment/docker/minio-src/minio.Dockerfile"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 661,
+   "sha": "0a14ee0fd5feeffb99379fe423be94c5fb57af54",
+   "title": "chore(deps): bump alpine from 3.21 to 3.24 in /deployment/docker/minio-src in the docker-images group across 1 directory [skip release]"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "tests/playwright/proof/package-lock.json",
+    "tests/playwright/proof/package.json",
+    "website/package.json"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 663,
+   "sha": "b2dfd59b0947dcff7995cff49ffab81b89ffdafa",
+   "title": "chore(deps): bump the npm-minor-patch group across 2 directories with 8 updates [skip release]"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "docs",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "website/package.json"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 664,
+   "sha": "26c7eedeb7d40d1f4bd6f85aa4720e865e9a51d2",
+   "title": "chore(deps-dev): bump typescript from 6.0.3 to 7.0.2 in /website [skip release]"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "deps",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "false"
+   },
+   "files": [
+    "scripts/bench/ab/requirements.txt",
+    "scripts/ci/config-report/requirements.txt",
+    "scripts/ci/requirements.in",
+    "scripts/ci/requirements.txt",
+    "scripts/proof/requirements.in",
+    "scripts/proof/requirements.txt",
+    "tests/readers/requirements.in",
+    "tests/readers/requirements.txt"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/config-report/requirements.txt",
+    "gate_file=scripts/ci/requirements.in",
+    "gate_file=scripts/ci/requirements.txt"
+   ],
+   "pr": 666,
+   "sha": "e93725c62a406fde8167c37ce15bf9db25249d52",
+   "title": "chore(deps): bump the python-minor-patch group across 4 directories with 2 updates"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "deps",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "scripts/bench/ab/requirements.txt"
+   ],
+   "legacy": [
+    "exempt=dependency-only",
+    "product=0",
+    "reason=",
+    "detail=only go.mod require versions outside the storage-critical modules, go.sum hash lines and requirements files changed"
+   ],
+   "pr": 667,
+   "sha": "3425e0a210860b773e1acf9f76761e08346439b8",
+   "title": "chore(deps): bump pytest-cov from 6.0.0 to 7.1.0 in /scripts/bench/ab [skip release]"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "deps",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "scripts/bench/ab/requirements.txt"
+   ],
+   "legacy": [
+    "exempt=dependency-only",
+    "product=0",
+    "reason=",
+    "detail=only go.mod require versions outside the storage-critical modules, go.sum hash lines and requirements files changed"
+   ],
+   "pr": 668,
+   "sha": "910c31607c7ba9150e5896a13014e6731f2cd6b0",
+   "title": "chore(deps): bump pyflakes from 3.2.0 to 4.0.3 in /scripts/bench/ab"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "deps",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "scripts/proof/requirements.in",
+    "scripts/proof/requirements.txt"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 669,
+   "sha": "db68785ad00e210f012798c60222b020d17b5404",
+   "title": "chore(deps): bump pyflakes from 3.2.0 to 4.0.3 in /scripts/proof"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "deps",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "scripts/proof/requirements.in",
+    "scripts/proof/requirements.txt"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 670,
+   "sha": "246d2feeae541eebd8fe5e0f89d218d4ffea294a",
+   "title": "chore(deps): bump pytest-cov from 6.0.0 to 7.1.0 in /scripts/proof [skip release]"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/security.yaml": {
+      "detail": "only the ref of 1 uses: pin(s) changed",
+      "jobs": []
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "deps",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    ".github/workflows/security.yaml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 671,
+   "sha": "43a8257afa1e19d439a9cc63a7ed9cbdccffb6b0",
+   "title": "chore(deps): bump aquasecurity/trivy-action from 6abccf398f78b4c337599c0656f933d91efb91a0 to 8f28faec26515256b6d22074d1d2a8986f4cbd87 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    ".github/workflows/changelog-pr.yaml",
+    "CHANGELOG.md",
+    "scripts/ci/check_changelog_pr.py",
+    "scripts/ci/tests/test_check_changelog_pr.py"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/check_changelog_pr.py",
+    "gate_file=scripts/ci/tests/test_check_changelog_pr.py"
+   ],
+   "pr": 672,
+   "sha": "c2e558277efa24ab0701147e75d905b15e78b39a",
+   "title": "ci: changelog-check exempts dependency-only Dependabot PRs [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "ci",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    ".github/dependabot.yml"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 673,
+   "sha": "87c6ef0ba83619a210049fb68b56de5e49242623",
+   "title": "ci: Dependabot ignores curated reader-matrix engines and the probe base image [skip release]"
+  },
+  {
+   "author": "dependabot[bot]",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.bench-shaped",
+    "deployment/docker/Dockerfile.loki",
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 674,
+   "sha": "2b0ab008bcf9f5290f55bc52bfa1e386d1e20187",
+   "title": "chore(deps): bump the docker-images group across 1 directory with 2 updates [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 675,
+   "sha": "c0858c208ba0970b7a91091c2c3f7a6c691ac208",
+   "title": "chore: release metadata for v0.157.4 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "release-metadata",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "charts/victoria-lakehouse/Chart.yaml"
+   ],
+   "legacy": [
+    "exempt=release-metadata",
+    "product=0",
+    "reason=",
+    "detail=exact release-metadata shape (CHANGELOG, Chart.yaml, regenerated docs)"
+   ],
+   "pr": 676,
+   "sha": "ededa7cccdc7d2347c44bda9b43113d0184b0a3d",
+   "title": "chore: release metadata for v0.157.5 [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    ".github/workflows/parquet-readers.yaml",
+    "CHANGELOG.md",
+    "tests/readers/requirements-parquet-tools.txt",
+    "tests/readers/requirements.in",
+    "tests/readers/requirements.txt",
+    "tests/readers/test_harness.py"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 678,
+   "sha": "233195e546ea054354c27edd2aa31eea8923e99b",
+   "title": "deps: update thrift in the reader-matrix lock [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "stack",
+    "force": "",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    "deployment/docker/Dockerfile.loki-vl-proxy"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail="
+   ],
+   "pr": 679,
+   "sha": "2730aba0ba4e61710fa2063fb82fdb8c99f5c6e6",
+   "title": "deps: loki-vl-proxy v2.24.3 for the e2e/proof stack [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {
+     ".github/workflows/security.yaml": {
+      "detail": "lines changed inside the jobs gosec, trivy, trivy-gate-fixture, trivy-image",
+      "jobs": [
+       "gosec",
+       "trivy",
+       "trivy-gate-fixture",
+       "trivy-image"
+      ]
+     }
+    }
+   },
+   "expected": {
+    "ci_class": "mixed-infra",
+    "force": "security.yaml:gosec,security.yaml:trivy,security.yaml:trivy-gate-fixture,security.yaml:trivy-image",
+    "skip_go": "true",
+    "skip_image": "true",
+    "skip_parity": "true"
+   },
+   "files": [
+    ".github/workflows/security.yaml",
+    "CHANGELOG.md",
+    "scripts/ci/tests/test_trivy_gate.py",
+    "scripts/ci/trivy_fetch_db.sh"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/tests/test_trivy_gate.py",
+    "gate_file=scripts/ci/trivy_fetch_db.sh"
+   ],
+   "pr": 684,
+   "sha": "af6c79ddc0eafe69fc016b0a548813255a0bd06f",
+   "title": "ci(security): make the vulnerability scan able to fail and scan the release images [skip release]"
+  },
+  {
+   "author": "szibis",
+   "evidence": {
+    "image_pins_only": [],
+    "workflows": {}
+   },
+   "expected": {
+    "ci_class": "product",
+    "force": "",
+    "skip_go": "false",
+    "skip_image": "false",
+    "skip_parity": "false"
+   },
+   "files": [
+    "CHANGELOG.md",
+    "scripts/ci/pr_classify.py",
+    "scripts/ci/tests/test_pr_classify_toolchain.py",
+    "scripts/ci/tests/testdata/golang_image_cases.json",
+    "tests/conformance/README.md",
+    "tests/conformance/registry/lockcode.go"
+   ],
+   "legacy": [
+    "exempt=none",
+    "product=0",
+    "reason=",
+    "detail=",
+    "gate_file=scripts/ci/pr_classify.py",
+    "gate_file=scripts/ci/tests/test_pr_classify_toolchain.py",
+    "gate_file=scripts/ci/tests/testdata/golang_image_cases.json",
+    "gate_file=tests/conformance/registry/lockcode.go"
+   ],
+   "pr": 686,
+   "sha": "1bb69ab3c2c4a1bf7036a6be13cdf8f9581b1084",
+   "title": "ci(gate): classify digest pins on release Dockerfile base images as non-product [skip release]"
+  }
+ ],
+ "legacy_rev": "4deaa7dc"
+}
