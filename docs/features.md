@@ -1921,11 +1921,11 @@ Scanning that runs on every PR is the only kind that finds things before release
 
 **Hardened images and pods**: minimal non-root images with a read-only root filesystem and dropped capabilities, and chart defaults that set the matching pod security context rather than leaving it to the deployer.
 
-The default deployment should be the safe one. The images carry no shell-level extras, the chart's security context is restrictive out of the box, and probes verify the shipped image actually has the properties claimed.
+The default deployment should be the safe one. The images carry no shell-level extras, the chart's security context is restrictive out of the box, and probes verify the shipped image actually has the properties claimed. The default image is built with Go's standard crypto and only the `-fips` variant (build argument `FIPS=1`, exact match) is built with the FIPS 140 module; a static test and a check of the built binaries keep the two apart.
 
-- Verification: tests: `tests/verification/probe_fips_active.sh`, `tests/verification/probe_image_size.sh`, `charts/victoria-lakehouse/test_templates.sh`
+- Verification: tests: `tests/verification/probe_fips_active.sh`, `tests/verification/probe_image_size.sh`, `charts/victoria-lakehouse/test_templates.sh`, `scripts/ci/tests/test_fips_build_arg.py`
 - Docs: `docs/security.md`, `docs/kubernetes-deployment.md`
-- Note: CI runs the linked chart template test. The linked probes check built images and a deployed stack, and are run by hand.
+- Note: CI runs the linked chart template test and the Dockerfile FIPS test, and the trivy-image jobs check the build settings of the built binary of each variant. The linked probes check built images and a deployed stack, and are run by hand.
 
 ### ✅ Cross-signal hint authentication
 

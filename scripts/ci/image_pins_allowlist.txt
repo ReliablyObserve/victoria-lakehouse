@@ -26,3 +26,5 @@ scripts/bench/ab/docker-compose.ab.yml | compose-image | ${AB_TOXIPROXY_IMAGE} |
 #
 # Workflows
 .github/workflows/auto-release.yaml | workflow-image | docker pull ghcr.io/${REPO}/lakehouse- | pulls the images the same run has just pushed, to smoke-test the published tags
+.github/workflows/security.yaml | workflow-image | docker create "${IMAGE}" | extracts the binary of the image the previous step of the same job just built (FIPS variant check)
+.github/workflows/security.yaml | workflow-image | docker run --rm "${IMAGE}" fips-status | runs the image the previous step of the same job just built (FIPS variant check)

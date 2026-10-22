@@ -18,8 +18,11 @@ ARG TARGETARCH
 # crypto module at build time; runtime activation also requires
 # GODEBUG=fips140=on, which the release manifests can set per deployment.
 ARG FIPS=0
+# Only the exact value 1 selects the module; the default (FIPS=0) and any other
+# value build with Go's standard crypto. The module is selected in the build RUN
+# below with an exact comparison: a shell-style "is it set" expansion in an ENV
+# would treat FIPS=0 as set and put the module into the default image too.
 ENV GOWORK=off
-ENV GOFIPS140=${FIPS:+v1.0.0}
 COPY go.mod go.sum ./
 RUN mkdir -p deps && \
     git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \
@@ -35,9 +38,9 @@ RUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/
 # The healthcheck binary (~3 MB) was previously COPY'd into the image as a
 # separate executable for HEALTHCHECK directives. PR #96 folded that probe
 # into the main binary as `lakehouse-logs healthcheck`, saving ~10% of image
-# size. The FIPS environment is propagated via ENV above so this RUN step
-# inherits it when --build-arg FIPS=1 is set.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+# size. GOFIPS140 is exported here only when --build-arg FIPS=1 is set.
+RUN if [ "$FIPS" = "1" ]; then export GOFIPS140=v1.0.0; fi && \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-logs ./cmd/lakehouse-logs && \
     mkdir -p /data/lakehouse/cache
 

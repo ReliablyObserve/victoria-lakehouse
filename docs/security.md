@@ -14,6 +14,7 @@ Victoria Lakehouse uses a hardened container image:
 - **Stripped binary**: built with `-s -w` linker flags (no debug symbols)
 - **Static binary**: `CGO_ENABLED=0` — no dynamic library dependencies
 - **Multi-stage build**: builder stage discarded, only binary copied to runtime
+- **FIPS 140-3 variant**: the default image (`vX.Y.Z`) is built with Go's standard crypto and is not FIPS. Only the `-fips` image (`vX.Y.Z-fips`, built with `--build-arg FIPS=1`) is compiled with the Go FIPS 140-3 module (`GOFIPS140=v1.0.0`) and runs with `fips140=on` by default; `lakehouse-logs fips-status` and `lakehouse-traces fips-status` report which one a binary is.
 
 ## Kubernetes Security Context
 
