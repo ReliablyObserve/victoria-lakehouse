@@ -188,6 +188,18 @@ The default vmauth configuration in the chart is not changed by this setting: it
 select pods, `/internal/*` included. Put vmauth routes for the paths clients may use only, or a NetworkPolicy, in front
 of the pods.
 
+### Cross-signal hints and requests that carry a key
+
+The cross-signal hint endpoints (`/internal/prefetch/hint`, `/internal/cache/evict-hint`) take `cross_signal.auth_key`
+in the `X-Cross-Signal-Key` header when one is set. The comparison is constant time (`internal/peerauth`), the JSON
+body is capped at 4 MiB (about 100 000 trace IDs; a larger body gets 413, a sender batches 100 IDs by default), and
+the key is checked before the body is read. Which endpoints take a key is unchanged.
+
+Every HTTP client that sends a peer key or the cross-signal key to a peer (the peer cache, the manifest, stats and
+tenant pushes, the select pods' buffer bridge, the zone probe and the hint client) refuses redirects: a peer that
+answers with a redirect gets no second request, so a key is never repeated at a location the operator did not
+configure. The redirect answer counts as a failed call, as any other non-200 answer does.
+
 ### Internal endpoints and the peer key
 
 VictoriaLogs and VictoriaTraces protect their own internal endpoints (`/internal/select/*`, `/internal/insert`) by

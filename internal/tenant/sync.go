@@ -96,7 +96,7 @@ func NewSyncPusher(cfg SyncPusherConfig) *SyncPusher {
 	}
 	return &SyncPusher{
 		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		httpClient: &http.Client{Timeout: 5 * time.Second, CheckRedirect: peerauth.RefuseRedirects},
 		lastSnap:   make(map[string]TenantID),
 	}
 }

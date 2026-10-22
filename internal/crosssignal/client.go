@@ -11,6 +11,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 )
 
 // PrefetchHint is sent to a peer to request prefetching of trace data.
@@ -71,7 +72,8 @@ func NewClient(cfg ClientConfig) *Client {
 		endpoint: cfg.Endpoint,
 		authKey:  cfg.AuthKey,
 		httpClient: &http.Client{
-			Timeout: cfg.Timeout,
+			Timeout:       cfg.Timeout,
+			CheckRedirect: peerauth.RefuseRedirects,
 		},
 		maxBatch: cfg.MaxBatch,
 		closed:   make(chan struct{}),
@@ -224,7 +226,7 @@ func (c *Client) sendPrefetchHint(hint PrefetchHint) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.authKey != "" {
-		req.Header.Set("X-Cross-Signal-Key", c.authKey)
+		req.Header.Set(KeyHeader, c.authKey)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -255,7 +257,7 @@ func (c *Client) sendEvictionHint(hint EvictionHint) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.authKey != "" {
-		req.Header.Set("X-Cross-Signal-Key", c.authKey)
+		req.Header.Set(KeyHeader, c.authKey)
 	}
 
 	resp, err := c.httpClient.Do(req)

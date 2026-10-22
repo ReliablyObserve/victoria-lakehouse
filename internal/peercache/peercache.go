@@ -41,8 +41,9 @@ func New(selfAddr, authKey string, timeout time.Duration, maxConns int) *PeerCac
 		ring:    NewRing(selfAddr, defaultVnodes),
 		authKey: authKey,
 		httpClient: &http.Client{
-			Timeout:   timeout,
-			Transport: transport,
+			Timeout:       timeout,
+			Transport:     transport,
+			CheckRedirect: peerauth.RefuseRedirects,
 		},
 		rcm: newRingChangeManager(DefaultStabilizeDuration),
 	}
