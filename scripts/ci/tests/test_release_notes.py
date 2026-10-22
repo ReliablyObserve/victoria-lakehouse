@@ -465,11 +465,11 @@ class AfterTag(unittest.TestCase):
 
 
 class WorkflowWiring(unittest.TestCase):
-    """The release job puts the generated notes in front of the artifacts section."""
+    """The build job puts the generated notes in front of the artifacts section."""
 
     def step(self):
         workflow = read(os.path.join(ROOT, ".github/workflows/auto-release.yaml"))
-        step = workflow.split("      - name: Create release\n", 1)[1]
+        step = workflow.split("      - name: Render release notes\n", 1)[1]
         return step.split("\n      - name:", 1)[0]
 
     def test_notes_come_from_the_generator(self):
@@ -502,11 +502,11 @@ class WorkflowWiring(unittest.TestCase):
                     "- **Quoting.** keeps `$(touch PWNED)`, $(touch PWNED2), `id` and $HOME (#5).\n\n"
                     "## [1.0.0] - 2026-01-01\n"
                 )
-            script = script.replace("/tmp/release-notes.md", os.path.join(tmp, "out.md"))
-            script = script.replace("${{ github.repository_owner }}", "Owner")
+            script = script.replace('"$RUNNER_TEMP/release-notes/release-notes.md"', '"$RUNNER_TEMP/out.md"')
+            env = dict(os.environ, RUNNER_TEMP=tmp, GITHUB_REPOSITORY_OWNER="Owner")
             result = subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", 'VERSION=v1.2.3\nREPO=o/r\n' + script],
-                cwd=tmp, capture_output=True, text=True,
+                cwd=tmp, capture_output=True, text=True, env=env,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             out = read(os.path.join(tmp, "out.md"))
