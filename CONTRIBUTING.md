@@ -134,7 +134,7 @@ CI enforces this through the required `conformance-inventory` check: it fails a 
 ### CI Checks
 
 All PRs must pass the required status checks on `main`:
-- Unit tests with race detector and the 90% per-package coverage floor (`test-logs`, `test-traces`)
+- Unit tests with race detector and the 90% per-package coverage floor (`test-logs`, `test-traces`); every package under `internal/` is held to it by its full path, including `internal/storage/parquets3`, and the exclusions are named in the workflow (`scripts/ci/check_coverage.sh`)
 - `golangci-lint` v2 (`lint-logs`, `lint-traces`)
 - Security: `gosec`, `govulncheck`, `gitleaks`, `trivy`
 - Build and image verification (`build-logs`/`build-traces` for linux amd64 and arm64, `docker-logs`,
