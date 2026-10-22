@@ -7,9 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- **The CI classifier can report which checks a change needs, from the changed files (CI only; no change to the Lakehouse binaries or to runtime behaviour).** `scripts/ci/pr_classify.py --ci-scope --event pull_request` now prints, after the five keys the registry gate reads (unchanged, byte for byte), the class of the change and whether the Go group, the release-image build and the parity suite are needed, plus the jobs that must run anyway because the change edits them or a script they run. Any path that is not on the explicit infra list, any error and any event other than a pull request give the full answer. No job is skipped by this change; the workflows will read the output in later changes. `scripts/ci/tests/test_pr_classify_ci_scope.py` covers every class and every path that must run everything, and 70 recorded merges are replayed from their file lists (`scripts/ci/tests/ci_scope_replay_check.py` replays them on the real git objects in `gate-selftest.yaml`; `scripts/ci/ci_scope_replay_gen.py` regenerates the record).
+## [0.157.6] - 2026-10-22
 
 ### Fixed
 
