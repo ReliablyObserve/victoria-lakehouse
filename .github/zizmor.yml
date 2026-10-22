@@ -61,4 +61,5 @@ rules:
   # for local actions. The `$/` form zizmor suggests is not used. Listed per file.
   self-repository:
     ignore:
+      - ci.yaml
       - fuzz-stress-memleak.yaml

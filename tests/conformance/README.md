@@ -810,8 +810,9 @@ union of what each asks for; one product path asks for everything.
 - `release-image-pin`: a release Dockerfile whose only change is the digest of its `FROM` images
   (`image_pin_only`): the Go group is skipped, the image build and scan and the parity suite run.
 - Parity tooling (`Dockerfile.datagen`, `tests/parity/docker-compose.yml`,
-  `deployment/docker/Dockerfile.upstream-probe`, `scripts/ci/parity_ratchet.py`, `scripts/ci/requirements.txt`):
-  `skip_parity=false`.
+  `deployment/docker/Dockerfile.upstream-probe`, `scripts/ci/parity_ratchet.py`,
+  `scripts/ci/tests/test_parity_ratchet.py`, `scripts/ci/requirements.txt`): `skip_parity=false`.
+- `.github/codeql/` (the CodeQL configuration) forces `codeql.yaml:analyze`, the Go analysis that reads it.
 - `stack`, `ci`, `deps`, `docs`: `deployment/`, `scripts/`, the non-Go test tooling (`tests/readers/`,
   `tests/s3compat/compose/`, `tests/playwright/`, `tests/verification/`), `.github/` and documentation. The
   stack workflows (e2e, readers, s3-compat, proof, minio images, docs site) keep their own `paths:` filters.
@@ -898,19 +899,45 @@ Rules that keep the required checks working (also enforced by the test, with the
   pull request: a workflow skipped by a filter leaves its checks pending.
 - `force` lists jobs, not their `needs:` ancestors. A gated job that `needs` another gated job must list the same
   guard on the ancestor (or the ancestor must not be gated): the ancestor's skip would otherwise skip the job.
-- Job names and matrix legs do not change.
+  The lint checks both directions: every `needs` names a job of the workflow, an ungated job never needs a gated
+  one, and a gated job needs only ungated jobs or jobs gated by the same group. The shared setup job (`deps` in
+  `ci.yaml` and `security.yaml`) is never gated.
+- Job names and matrix legs do not change. A skipped matrix job is shown as one unexpanded check, which is one
+  more reason no required matrix job is ever gated.
+- A job that never ran on a push (the benchmark smoke runs) keeps that: its `if:` is the same form behind
+  `github.event_name == 'pull_request' && `, and the lint accepts exactly that prefix and no other.
 
-Opted in so far: `fuzz-stress-memleak.yaml` (memleak, stress and fuzz jobs; `fuzz-matrix-drift` always runs).
+Opted in so far:
+
+- `fuzz-stress-memleak.yaml`: the memleak, stress and fuzz jobs (`fuzz-matrix-drift` always runs).
+- `ci.yaml`: the heavy jobs that are not required checks (`test-parquets3-heavy`, `storage-health-compaction`,
+  `parity-unit`, `field-metadata-perf`, `parquet-readback`, `security-logs`, `security-traces`,
+  `benchmarks-logs`, `benchmarks-traces`). `deps`, `helm-config-drift`, `bench-selftest` and every required check
+  (`helm`, `test-*`, `lint-*`, `build-*`, `docker-*`) always run. Each gated job needs `[scope, deps]`, so after a
+  failed `deps` job (and no skip) it still runs and fails on the missing tree instead of being skipped. The test
+  checks that each script a gated job runs is in `CI_CONSUMERS` (an edit to it forces the job).
+
+**Known gap (not caused by the scope, not fixed here).** The required jobs that `need: deps` (in `ci.yaml`: `lint-*`,
+`test-*`, `build-*`, `docker-*`; in `security.yaml`: `govulncheck`, `gosec`) are skipped when `deps` fails, and a
+skipped job reads as passing. `DepsHoleKnownGap` in `test_ci_scope_workflows.py` lists them and fails when the list
+is stale; the fix (a `!cancelled()` condition plus a step that fails when `deps` did not succeed) changes required
+jobs and is a separate change.
+
 Tests: `python -m unittest scripts/ci/tests/test_ci_scope_workflows.py` (the lint and its fixtures, the repository
 workflows, and the action's script run as the runner runs it in temporary git repositories).
 
-## Release skip (`[skip release]`)
+## Release skip (non-product merges and `[skip release]`)
 
-`auto-release.yaml` does not release a push whose commit subject, or whose merged pull request's
-title, contains `[skip release]` (`scripts/ci/release_skip.py`). The PR is looked up from the
-pushed commit (`GET /commits/{sha}/pulls`), so squash, merge and rebase merges all work; a job
-re-run re-reads the title. If the lookup fails three times the push is not released, the run
-summary says why and the run turns red; a manual `workflow_dispatch` run (main only, never
-skipped, optional `pr` input for labels and size) releases. The loki-vl-proxy sync probe commit
-carries the marker itself; a product follow-up commit pushed on that sync PR would not release
-either, so give such a PR its own title without the marker.
+A merge to `main` that changes nothing that ships is never released, so the marker below is no longer
+needed for it (it is still honoured). `scripts/ci/release_product_check.py` runs in the workflow's
+`skip` step and asks the registry gate's own classifier (`scripts/ci/pr_classify.py`, taken from the
+parent commit) about the pushed commit. Not released: docs, CI workflows, tests, scripts, test-stack
+compose files and Dockerfiles, tooling locks (pip, npm) and Dependabot bumps of them, release metadata.
+Released although the gate waives them, because they rebuild the binaries or images: `go.mod`, `go.sum`,
+`go.work` of the root and `lakehouse-traces` modules (Go toolchain and dependency bumps), a changed
+`FROM` digest or tag in `Dockerfile`, `Dockerfile.logs` or `Dockerfile.traces` (a digest *added* to a
+line that had none pins what the tag already resolves to and is not released; a digest that changes
+or goes away is), and the upstream pins in `auto-release.yaml`. Every doubt releases: a manual run, a
+push that is not exactly one commit on the previous head (a rebase merge), a merge commit, an empty
+diff, a classifier error. Known gap: other edits of the build steps in `auto-release.yaml` (not the
+pins) are treated as CI. Tests: `python -m unittest scripts.ci.tests.test_release_product_check`.

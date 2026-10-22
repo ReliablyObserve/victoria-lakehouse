@@ -120,7 +120,7 @@ class PathTable(unittest.TestCase):
 
     def test_parity_tooling_keeps_the_parity_suite(self):
         for p in ("Dockerfile.datagen", "tests/parity/docker-compose.yml", "deployment/docker/Dockerfile.upstream-probe",
-                  "scripts/ci/parity_ratchet.py", "scripts/ci/requirements.txt"):
+                  "scripts/ci/parity_ratchet.py", "scripts/ci/tests/test_parity_ratchet.py", "scripts/ci/requirements.txt"):
             with self.subTest(path=p):
                 res = scope([p])
                 self.assertEqual(group(res), ("true", "true", "false"), res)
@@ -150,6 +150,11 @@ class PathTable(unittest.TestCase):
         self.assertEqual(scope(["scripts/bench/compaction/ab.py"])["force"], "ci.yaml:storage-health-compaction")
         self.assertEqual(scope(["scripts/ci/short_gated_tests.sh"])["force"], "ci.yaml:test-parquets3-heavy")
         self.assertEqual(scope(["scripts/ci/gotest_report.py"])["force"].count("ci.yaml:"), 4)
+
+    def test_codeql_configuration_forces_the_go_analysis(self):
+        res = scope([".github/codeql/codeql-config.yml"])
+        self.assertEqual((res["ci_class"], group(res), res["force"]), ("ci", ("true", "true", "true"), "codeql.yaml:analyze"))
+        self.assertEqual(scope([".github/dependabot.yml"])["force"], "")  # the rest of .github/ forces nothing
 
     def test_every_consumer_path_exists(self):
         """A consumer entry that matches no file is dead: the script moved and the map did not follow."""
