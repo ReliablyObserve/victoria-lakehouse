@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The external-reader test matrix uses a patched release of a transitive Python dependency (test tooling only; no change to the Lakehouse binaries or to runtime behaviour).** `thrift` moves from 0.16.0 to 0.24.0 in `tests/readers/requirements.txt`, which closes Dependabot alerts 29, 30 and 31. `parquet-tools` pins `thrift` below 0.17, so it is now installed from its own hashed file, `tests/readers/requirements-parquet-tools.txt`, after the main lock and without dependency resolution; its other dependencies are listed in `requirements.in`. Only the `readers-inprocess` job installs it.
+
 ## [0.157.5] - 2026-10-21
 
 ## [0.157.4] - 2026-10-21

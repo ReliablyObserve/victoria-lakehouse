@@ -157,8 +157,13 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: tests/readers/requirements.txt
+          cache-dependency-path: |
+            tests/readers/requirements.txt
+            tests/readers/requirements-parquet-tools.txt
       - run: pip install --require-hashes -r tests/readers/requirements.txt
+      # parquet-tools caps thrift below the patched release, so it is installed after the lock, hashed
+      # and without dependency resolution (the rest of its dependencies are in the lock).
+      - run: pip install --require-hashes --no-deps -r tests/readers/requirements-parquet-tools.txt
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: readers-fixture
