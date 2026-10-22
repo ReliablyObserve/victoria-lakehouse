@@ -21,7 +21,6 @@ Run: python3 -I -m unittest discover -s scripts/ci/tests -p test_trivy_gate.py -
 import datetime
 import os
 import pathlib
-import re
 import stat
 import subprocess
 import tempfile
