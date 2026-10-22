@@ -482,7 +482,11 @@ func lockReachRules(r3 *rule, repo, base, head string, bs, hs registry.ParitySna
 	if basePath, headPath := allowlistPaths[0], allowlistPaths[1]; basePath != "" && headPath != "" {
 		if mp := registry.MinPassProblems(headPath, show(base)(basePath), show(head)(headPath)); len(mp) > 0 {
 			r3.fail("this PR lowers or drops the expected number of passing parity tests", mp,
-				"keep `# min-pass: N` in the allowlist at least at its merge-base value: a fix raises it, nothing may lower it")
+				"keep `# min-pass: N`, `# min-pass-logs: N` and `# min-pass-traces: N` in the allowlist at least at their merge-base values: a fix raises them, nothing may lower them")
+		}
+		if es := registry.ExpectedSkipProblems(headPath, show(base)(basePath), show(head)(headPath)); len(es) > 0 {
+			r3.fail("this PR adds an expected skip to the parity allowlist", es,
+				"a skipped parity test counts as a failure unless the allowlist names it as `# expected-skip: <test>  # <reason>`; fix the test or its data instead, or get the owner's approval for the entry")
 		}
 	}
 	return listed

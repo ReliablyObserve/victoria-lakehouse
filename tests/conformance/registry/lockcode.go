@@ -1499,24 +1499,31 @@ func MergeLockChanges(lists ...[]LockChange) []LockChange {
 
 const minPassDirective = "min-pass:"
 
-// parseMinPass reads the `# min-pass: N` directive of the parity allowlist the way the Python ratchet
+// floorDirectives are the expected-pass floors of the parity allowlist: the combined one and one per
+// signal. `min-pass-logs:` does not start with `min-pass:`, so each directive is found by its own name.
+var floorDirectives = []string{minPassDirective, "min-pass-logs:", "min-pass-traces:"}
+
+// expectedSkipDirective names a skip the parity ratchet accepts: `# expected-skip: <test path>  # <reason>`.
+const expectedSkipDirective = "expected-skip:"
+
+// parseFloor reads one `# <name> N` directive of the parity allowlist the way the Python ratchet
 // does (parity_ratchet.parse_allowlist: a comment line, leading '#' characters stripped, then white
 // space), except that the value must be ASCII digits only, which the ratchet requires too. present is
 // false when there is no directive; err is set for a duplicate or an unreadable value.
-func parseMinPass(src []byte) (n uint64, present bool, err error) {
+func parseFloor(src []byte, name string) (n uint64, present bool, err error) {
 	for i, raw := range strings.Split(string(src), "\n") {
 		line := strings.TrimSpace(raw)
 		if !strings.HasPrefix(line, "#") {
 			continue
 		}
 		directive := strings.TrimSpace(strings.TrimLeft(line, "#"))
-		if !strings.HasPrefix(directive, minPassDirective) {
+		if !strings.HasPrefix(directive, name) {
 			continue
 		}
 		if present {
-			return 0, true, fmt.Errorf("line %d: duplicate min-pass directive", i+1)
+			return 0, true, fmt.Errorf("line %d: duplicate %s directive", i+1, strings.TrimSuffix(name, ":"))
 		}
-		value := strings.TrimSpace(strings.TrimPrefix(directive, minPassDirective))
+		value := strings.TrimSpace(strings.TrimPrefix(directive, name))
 		ok := value != "" && len(value) <= 15
 		for _, r := range value {
 			if r < '0' || r > '9' {
@@ -1524,7 +1531,7 @@ func parseMinPass(src []byte) (n uint64, present bool, err error) {
 			}
 		}
 		if !ok {
-			return 0, true, fmt.Errorf("line %d: unreadable min-pass value %q", i+1, value)
+			return 0, true, fmt.Errorf("line %d: unreadable %s value %q", i+1, strings.TrimSuffix(name, ":"), value)
 		}
 		n, _ = strconv.ParseUint(value, 10, 64)
 		present = true
@@ -1532,24 +1539,69 @@ func parseMinPass(src []byte) (n uint64, present bool, err error) {
 	return n, present, nil
 }
 
+// parseMinPass reads the combined `# min-pass: N` directive.
+func parseMinPass(src []byte) (n uint64, present bool, err error) {
+	return parseFloor(src, minPassDirective)
+}
+
 // MinPassProblems is the ratchet of the expected number of passing parity tests: the value of
-// `# min-pass: N` in the allowlist may grow, never shrink, and the directive may not disappear or become
-// unreadable. A base whose directive is unreadable has nothing to compare against.
+// `# min-pass: N` in the allowlist, and of the per-signal `# min-pass-logs: N` and
+// `# min-pass-traces: N`, may grow, never shrink, and a directive may not disappear or become
+// unreadable. A base whose directive is missing or unreadable has nothing to compare against for it.
 func MinPassProblems(allowlistPath string, baseSrc, headSrc []byte) []string {
 	if headSrc == nil {
 		return nil // a missing allowlist is reported elsewhere
 	}
-	b, bPresent, bErr := parseMinPass(baseSrc)
-	h, hPresent, hErr := parseMinPass(headSrc)
-	switch {
-	case hErr != nil:
-		return []string{fmt.Sprintf("%s: %v", allowlistPath, hErr)}
-	case bErr != nil || !bPresent:
-		return nil
-	case !hPresent:
-		return []string{fmt.Sprintf("%s: the `# min-pass: %d` directive was removed (that lowers the expected number of passing parity tests to none)", allowlistPath, b)}
-	case h < b:
-		return []string{fmt.Sprintf("%s: `# min-pass:` lowered from %d to %d; the expected number of passing parity tests may only grow", allowlistPath, b, h)}
+	var out []string
+	for _, name := range floorDirectives {
+		b, bPresent, bErr := parseFloor(baseSrc, name)
+		h, hPresent, hErr := parseFloor(headSrc, name)
+		switch {
+		case hErr != nil:
+			out = append(out, fmt.Sprintf("%s: %v", allowlistPath, hErr))
+		case bErr != nil || !bPresent:
+		case !hPresent:
+			out = append(out, fmt.Sprintf("%s: the `# %s %d` directive was removed (that lowers the expected number of passing parity tests to none)", allowlistPath, name, b))
+		case h < b:
+			out = append(out, fmt.Sprintf("%s: `# %s` lowered from %d to %d; the expected number of passing parity tests may only grow", allowlistPath, name, b, h))
+		}
 	}
-	return nil
+	return out
+}
+
+// expectedSkips returns the test paths the allowlist lists as `# expected-skip: <path>  # <reason>`.
+func expectedSkips(src []byte) map[string]bool {
+	out := map[string]bool{}
+	for _, raw := range strings.Split(string(src), "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "#") {
+			continue
+		}
+		directive := strings.TrimSpace(strings.TrimLeft(line, "#"))
+		if !strings.HasPrefix(directive, expectedSkipDirective) {
+			continue
+		}
+		if f := strings.Fields(strings.TrimPrefix(directive, expectedSkipDirective)); len(f) > 0 {
+			out[f[0]] = true
+		}
+	}
+	return out
+}
+
+// ExpectedSkipProblems lists the expected skips a PR adds to the parity allowlist. A skip counts as a
+// failure unless the allowlist names it, so each added entry loosens the parity ratchet and needs the
+// owner, like an added allowlist entry. Removing one is free.
+func ExpectedSkipProblems(allowlistPath string, baseSrc, headSrc []byte) []string {
+	if headSrc == nil {
+		return nil
+	}
+	base := expectedSkips(baseSrc)
+	var out []string
+	for name := range expectedSkips(headSrc) {
+		if !base[name] {
+			out = append(out, fmt.Sprintf("%s: expected skip added: %s", allowlistPath, name))
+		}
+	}
+	sort.Strings(out)
+	return out
 }

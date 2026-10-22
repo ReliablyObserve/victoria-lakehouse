@@ -1,5 +1,7 @@
 """quality.py: static counts from a tree, cover profiles, and the gates."""
 
+import json
+
 import quality
 
 
@@ -57,6 +59,25 @@ def test_report_says_not_collected_instead_of_zero():
     assert "Parity suite**: not collected" in text
     text, v = quality.render(snap(), snap(tests=9))
     assert v["exit"] == 1 and "RED" in text
+
+
+def test_report_prints_logs_and_traces_parity_side_by_side(tmp_path):
+    results = tmp_path / "parity-results.json"
+    results.write_text("\n".join(json.dumps(e) for e in (
+        {"Action": "pass", "Package": "p", "Test": "TestParity_Filters/a"},
+        {"Action": "pass", "Package": "p", "Test": "TestParity_Filters/b"},
+        {"Action": "pass", "Package": "p", "Test": "TestParity_Traces_Jaeger/a"},
+        {"Action": "skip", "Package": "p", "Test": "TestParity_Traces_Jaeger/b"},
+        {"Action": "pass", "Package": "p", "Test": "TestHarness_JudgeCounts"},
+    )) + "\n")
+    parity = quality.parity_summary(str(results), str(tmp_path))
+    assert parity["by_signal"]["logs"] == {"pass": 2, "fail": 0, "skip": 0}
+    assert parity["by_signal"]["traces"] == {"pass": 1, "fail": 0, "skip": 1}
+    assert parity["by_signal"]["unattributed"] == {"pass": 1, "fail": 0, "skip": 0}
+    p = snap()
+    p["parity"] = parity
+    text, _ = quality.render(snap(), p)
+    assert "| logs | 2 | 0 | 0 |" in text and "| traces | 1 | 0 | 1 |" in text and "| unattributed | 1 | 0 | 0 |" in text
 
 
 def test_dot_directories_are_skipped_whatever_their_name(tmp_path):

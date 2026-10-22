@@ -16,8 +16,9 @@ package parity
 //   - both > 0 when data is known to exist
 //   - response shape (keys, types) is identical
 //
-// All tests skip cleanly when the underlying data isn't present yet
-// (right after a fresh restart) instead of flaking.
+// TestMain holds the suite until the seeded corpus is in Parquet, so a test
+// that finds no data to compare waits a short, bounded time for it
+// (require_data_test.go) and then FAILS with the evidence: it never skips.
 
 import (
 	"encoding/json"
@@ -44,7 +45,8 @@ func TestParity_Jaeger_Services_NonEmpty(t *testing.T) {
 		time.Sleep(15 * time.Second)
 	}
 	if len(hot) == 0 {
-		t.Skip("hot has no services after 3min — bucket may be empty")
+		t.Fatalf("hot has no services after 3min (%s) — the seeded corpus must be in hot VictoriaTraces: "+
+			"a seed or hot-tier defect, not an empty bucket to skip", probeStatus(t, vtBaseURL, "/select/jaeger/api/services", nil))
 	}
 	if len(cold) == 0 {
 		t.Fatalf("cold has no services after 3min but hot has %d — likely a manifest or label index regression", len(hot))
@@ -60,16 +62,14 @@ func TestParity_Jaeger_Services_NonEmpty(t *testing.T) {
 }
 
 func TestParity_Jaeger_Operations_SameForKnownService(t *testing.T) {
-	hot := jaegerServices(t, vtBaseURL)
-	if len(hot) == 0 {
-		t.Skip("no services to compare operations for")
-	}
+	hot := requireHotServices(t, "operations")
 	svc := hot[0]
-	hotOps := jaegerOperations(t, vtBaseURL, svc)
+	var hotOps []string
+	requireEventually(t, "hot operations for "+svc, func() bool {
+		hotOps = jaegerOperations(t, vtBaseURL, svc)
+		return len(hotOps) > 0
+	}, func() string { return probeStatus(t, vtBaseURL, "/select/jaeger/api/services/"+svc+"/operations", nil) })
 	coldOps := jaegerOperations(t, lhtBaseURL, svc)
-	if len(hotOps) == 0 {
-		t.Skipf("hot has no operations for %s yet", svc)
-	}
 	missing := setDiff(hotOps, coldOps)
 	if len(missing) > 0 {
 		t.Errorf("operations on %s in hot but not in cold: %v", svc, missing)
@@ -77,21 +77,24 @@ func TestParity_Jaeger_Operations_SameForKnownService(t *testing.T) {
 }
 
 func TestParity_Jaeger_TraceByID_Roundtrip(t *testing.T) {
-	hot := jaegerServices(t, vtBaseURL)
-	if len(hot) == 0 {
-		t.Skip("no services")
-	}
-	svc := findCommonService(t, hot)
-	if svc == "" {
-		t.Skip("no service common to both tiers")
-	}
+	hot := requireHotServices(t, "trace-by-ID round trip")
+	var svc string
+	requireEventually(t, "a service common to both tiers", func() bool {
+		svc = findCommonService(t, hot)
+		return svc != ""
+	}, func() string {
+		return fmt.Sprintf("hot=%v cold=%v", hot, jaegerServices(t, lhtBaseURL))
+	})
 	// Pull one trace ID from COLD (not hot) so we know cold has it.
 	// Then fetch by ID on cold — that's the actual cold-tier
 	// trace-by-id correctness check.
-	traces := jaegerSearch(t, lhtBaseURL, svc, 1)
-	if len(traces) == 0 {
-		t.Skipf("cold returned no traces for %s", svc)
-	}
+	var traces []string
+	requireEventually(t, "cold traces for "+svc, func() bool {
+		traces = jaegerSearch(t, lhtBaseURL, svc, 1)
+		return len(traces) > 0
+	}, func() string {
+		return probeStatus(t, lhtBaseURL, "/select/jaeger/api/traces", url.Values{"service": {svc}, "limit": {"1"}})
+	})
 	tid := traces[0]
 	coldSpans := jaegerSpans(t, lhtBaseURL, tid)
 	if coldSpans == 0 {
@@ -126,11 +129,14 @@ func TestParity_Tempo_TagsScopesIdentical(t *testing.T) {
 }
 
 func TestParity_Tempo_ServiceNameValuesSuperset(t *testing.T) {
-	hotVals := tempoTagValues(t, vtBaseURL, "service.name")
+	var hotVals []string
+	requireEventually(t, "hot Tempo service.name values", func() bool {
+		hotVals = tempoTagValues(t, vtBaseURL, "service.name")
+		return len(hotVals) > 0
+	}, func() string {
+		return probeStatus(t, vtBaseURL, "/select/tempo/api/v2/search/tag/service.name/values", nil)
+	})
 	coldVals := tempoTagValues(t, lhtBaseURL, "service.name")
-	if len(hotVals) == 0 {
-		t.Skip("hot has no service.name values")
-	}
 	missing := setDiff(hotVals, coldVals)
 	if len(missing) > 0 {
 		t.Errorf("service.name values in hot missing from cold: %v", missing)
@@ -138,11 +144,14 @@ func TestParity_Tempo_ServiceNameValuesSuperset(t *testing.T) {
 }
 
 func TestParity_LogsQL_FieldNamesSuperset(t *testing.T) {
-	hot := logsqlFieldNames(t, vtBaseURL, "*")
+	var hot []string
+	requireEventually(t, "hot field names", func() bool {
+		hot = logsqlFieldNames(t, vtBaseURL, "*")
+		return len(hot) > 0
+	}, func() string {
+		return probeStatus(t, vtBaseURL, "/select/logsql/field_names", url.Values{"query": {"*"}})
+	})
 	cold := logsqlFieldNames(t, lhtBaseURL, "*")
-	if len(hot) == 0 {
-		t.Skip("hot label index is empty")
-	}
 	// Trace-specific fields (trace_id, span_id, etc.) must appear on
 	// both tiers. Cold may have additional fields from older data.
 	core := []string{"trace_id", "span_id", "parent_span_id", "name"}
@@ -173,11 +182,14 @@ func TestParity_LogsQL_CountConsistency_RecentWindow(t *testing.T) {
 	// A 1-hour window. Cold may have more (retention) but the ratio
 	// shouldn't be wildly different. Catches accidental query-path
 	// regressions where cold drops most of its rows.
-	hotN := logsqlCount(t, vtBaseURL, "_time:1h *")
+	var hotN int
+	requireEventually(t, "hot rows in the last hour", func() bool {
+		hotN = logsqlCount(t, vtBaseURL, "_time:1h *")
+		return hotN > 0
+	}, func() string {
+		return probeStatus(t, vtBaseURL, "/select/logsql/stats_query", url.Values{"query": {"_time:1h * | stats count() as n"}})
+	})
 	coldN := logsqlCount(t, lhtBaseURL, "_time:1h *")
-	if hotN == 0 {
-		t.Skip("hot is empty in last hour")
-	}
 	if coldN == 0 {
 		t.Errorf("cold has 0 rows in last hour while hot has %d", hotN)
 	}
@@ -186,21 +198,21 @@ func TestParity_LogsQL_CountConsistency_RecentWindow(t *testing.T) {
 func TestParity_LogsQL_ServiceFilterFindsData(t *testing.T) {
 	// Filter by a known service name on BOTH tiers; both must return
 	// non-zero. Direct correctness check on the most common query.
-	hot := jaegerServices(t, vtBaseURL)
-	if len(hot) == 0 {
-		t.Skip("no services to test")
-	}
+	hot := requireHotServices(t, "service filter")
 	svc := hot[0]
 	// The field name contains a ':' so it MUST be backtick-quoted —
 	// unquoted, LogsQL reads `resource_attr` as the field and
 	// `service.name:="..."` as a bucket, which matches nothing and turns
 	// this into a silent skip instead of a comparison.
 	q := fmt.Sprintf("%s `resource_attr:service.name`:=%q | stats count() as n", seedWindowFilter(), svc)
-	hotN := logsqlStatsCount(t, vtBaseURL, q)
+	var hotN int
+	requireEventually(t, "hot service filter for "+svc, func() bool {
+		hotN = logsqlStatsCount(t, vtBaseURL, q)
+		return hotN > 0
+	}, func() string {
+		return probeStatus(t, vtBaseURL, "/select/logsql/stats_query", url.Values{"query": {q}})
+	})
 	coldN := logsqlStatsCount(t, lhtBaseURL, q)
-	if hotN == 0 {
-		t.Skipf("hot service filter for %s found nothing", svc)
-	}
 	if coldN == 0 {
 		t.Errorf("cold service filter for %s = 0 (hot=%d)", svc, hotN)
 	}
@@ -210,11 +222,12 @@ func TestParity_LogsQL_AggregateByService_SameKeys(t *testing.T) {
 	// Group-by on a top-level promoted column. Both tiers must
 	// produce the same key set even if counts differ.
 	q := seedWindowFilter() + " * | stats by (`resource_attr:service.name`) count() as n"
-	hot := logsqlGroupKeys(t, vtBaseURL, q, "resource_attr:service.name")
+	var hot []string
+	requireEventually(t, "hot service.name groups", func() bool {
+		hot = logsqlGroupKeys(t, vtBaseURL, q, "resource_attr:service.name")
+		return len(hot) > 0
+	}, func() string { return probeStatus(t, vtBaseURL, "/select/logsql/query", url.Values{"query": {q}}) })
 	cold := logsqlGroupKeys(t, lhtBaseURL, q, "resource_attr:service.name")
-	if len(hot) == 0 {
-		t.Skip("hot returned no groups")
-	}
 	missing := setDiff(hot, cold)
 	if len(missing) > 0 {
 		t.Errorf("group-by service.name: hot has keys missing from cold: %v", missing)
@@ -267,18 +280,18 @@ func TestParity_LogsQL_LimitParity(t *testing.T) {
 func TestParity_LogsQL_StreamSelectorEqualsCardinality(t *testing.T) {
 	// {service.name="X"} stream selector should return the same
 	// number of UNIQUE traces on both tiers (modulo TTL).
-	hot := jaegerServices(t, vtBaseURL)
-	if len(hot) == 0 {
-		t.Skip("no services")
-	}
+	hot := requireHotServices(t, "stream selector cardinality")
 	svc := hot[0]
 	// Counts of distinct trace_ids.
 	q := fmt.Sprintf("%s `resource_attr:service.name`:=%q | fields trace_id | uniq by (trace_id) | stats count() as n", seedWindowFilter(), svc)
-	hotN := logsqlStatsCount(t, vtBaseURL, q)
+	var hotN int
+	requireEventually(t, "hot distinct trace_ids for "+svc, func() bool {
+		hotN = logsqlStatsCount(t, vtBaseURL, q)
+		return hotN > 0
+	}, func() string {
+		return probeStatus(t, vtBaseURL, "/select/logsql/stats_query", url.Values{"query": {q}})
+	})
 	coldN := logsqlStatsCount(t, lhtBaseURL, q)
-	if hotN == 0 {
-		t.Skipf("hot has no traces for %s", svc)
-	}
 	if coldN == 0 {
 		t.Errorf("cold has no distinct trace_ids for %s (hot=%d)", svc, hotN)
 	}

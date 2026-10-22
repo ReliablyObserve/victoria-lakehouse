@@ -17,23 +17,27 @@ func getTraceID(t *testing.T, baseURL string) string {
 		"lookback": {"48h"},
 		"limit":    {"1"},
 	}
-	r := fetch(t, baseURL, "/select/jaeger/api/traces", params)
-	if r.StatusCode != 200 {
-		t.Fatalf("Jaeger search returned %d", r.StatusCode)
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(r.Body, &resp); err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	dataArr, _ := resp["data"].([]any)
-	if len(dataArr) == 0 {
-		t.Skip("no traces found")
-	}
-	first, _ := dataArr[0].(map[string]any)
-	id, _ := first["traceID"].(string)
-	if id == "" {
-		t.Fatal("empty traceID")
-	}
+	var id string
+	requireEventually(t, "a Jaeger trace of api-gateway on "+baseURL, func() bool {
+		r := fetch(t, baseURL, "/select/jaeger/api/traces", params)
+		if r.StatusCode != 200 {
+			t.Fatalf("Jaeger search returned %d", r.StatusCode)
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(r.Body, &resp); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		dataArr, _ := resp["data"].([]any)
+		if len(dataArr) == 0 {
+			return false
+		}
+		first, _ := dataArr[0].(map[string]any)
+		id, _ = first["traceID"].(string)
+		if id == "" {
+			t.Fatal("empty traceID")
+		}
+		return true
+	}, func() string { return probeStatus(t, baseURL, "/select/jaeger/api/traces", params) })
 	return id
 }
 
@@ -219,10 +223,6 @@ func TestParity_Traces_TempoSearchStartTimeIsString(t *testing.T) {
 		"end":   {fmt.Sprint(now)},
 	}
 	for name, base := range map[string]string{"hot": vtBaseURL, "cold": lhtBaseURL} {
-		r := fetch(t, base, "/select/tempo/api/search", params)
-		if r.StatusCode != 200 {
-			t.Fatalf("%s tempo search returned %d: %s", name, r.StatusCode, string(r.Body))
-		}
 		var resp struct {
 			Traces []struct {
 				StartTimeUnixNano json.RawMessage `json:"startTimeUnixNano"`
@@ -233,12 +233,17 @@ func TestParity_Traces_TempoSearchStartTimeIsString(t *testing.T) {
 				} `json:"spanSets"`
 			} `json:"traces"`
 		}
-		if err := json.Unmarshal(r.Body, &resp); err != nil {
-			t.Fatalf("%s: parse tempo response: %v", name, err)
-		}
-		if len(resp.Traces) == 0 {
-			t.Skipf("%s tier returned no traces to check", name)
-		}
+		requireEventually(t, name+" tempo search traces", func() bool {
+			r := fetch(t, base, "/select/tempo/api/search", params)
+			if r.StatusCode != 200 {
+				t.Fatalf("%s tempo search returned %d: %s", name, r.StatusCode, string(r.Body))
+			}
+			resp.Traces = nil
+			if err := json.Unmarshal(r.Body, &resp); err != nil {
+				t.Fatalf("%s: parse tempo response: %v", name, err)
+			}
+			return len(resp.Traces) > 0
+		}, func() string { return probeStatus(t, base, "/select/tempo/api/search", params) })
 		isString := func(raw json.RawMessage) bool { return len(raw) > 0 && raw[0] == '"' }
 		for _, tr := range resp.Traces {
 			if !isString(tr.StartTimeUnixNano) {
@@ -474,14 +479,15 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 		params := tracesFullRange()
 		params.Set("query", "span_id:*")
 		params.Set("limit", "1")
-		sut := fetch(t, lhtBaseURL, "/select/logsql/query", params)
-		if sut.StatusCode != 200 {
-			t.Fatalf("SUT returned status %d", sut.StatusCode)
-		}
-		rows := parseNDJSON(sut.Body)
-		if len(rows) == 0 {
-			t.Skip("no rows returned")
-		}
+		var rows []map[string]any
+		requireEventually(t, "cold span rows", func() bool {
+			sut := fetch(t, lhtBaseURL, "/select/logsql/query", params)
+			if sut.StatusCode != 200 {
+				t.Fatalf("SUT returned status %d", sut.StatusCode)
+			}
+			rows = parseNDJSON(sut.Body)
+			return len(rows) > 0
+		}, func() string { return probeStatus(t, lhtBaseURL, "/select/logsql/query", params) })
 		val, ok := rows[0]["start_time_unix_nano"]
 		if !ok {
 			t.Fatal("start_time_unix_nano field missing from query result")
@@ -497,19 +503,22 @@ func TestParity_Traces_LogsQL(t *testing.T) {
 
 	// VT index entries must not appear in LHT queries.
 	t.Run("traces_no_index_entries", func(t *testing.T) {
-		params := tracesFullRange()
-		params.Set("query", "* | stats count() rows")
-		ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
-		params.Set("query", "span_id:* | stats count() rows")
-		refFiltered := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
-		sutAll := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
-		refAllCount := extractCount(t, ref.Body)
-		refFilteredCount := extractCount(t, refFiltered.Body)
-		sutCount := extractCount(t, sutAll.Body)
-		indexEntries := refAllCount - refFilteredCount
-		if indexEntries <= 0 {
-			t.Skip("no VT index entries detected")
-		}
+		var refAllCount, refFilteredCount, sutCount, indexEntries int
+		requireEventually(t, "VT index entries (trace_id_idx rows)", func() bool {
+			params := tracesFullRange()
+			params.Set("query", "* | stats count() rows")
+			ref := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
+			params.Set("query", "span_id:* | stats count() rows")
+			refFiltered := fetch(t, vtBaseURL, "/select/logsql/stats_query", params)
+			sutAll := fetch(t, lhtBaseURL, "/select/logsql/stats_query", params)
+			refAllCount = extractCount(t, ref.Body)
+			refFilteredCount = extractCount(t, refFiltered.Body)
+			sutCount = extractCount(t, sutAll.Body)
+			indexEntries = refAllCount - refFilteredCount
+			return indexEntries > 0
+		}, func() string {
+			return fmt.Sprintf("all rows=%d, span rows=%d", refAllCount, refFilteredCount)
+		})
 		t.Logf("VT index entries: %d (total=%d filtered=%d)", indexEntries, refAllCount, refFilteredCount)
 		if sutCount != refFilteredCount {
 			t.Errorf("LHT count %d != VT filtered count %d (LHT should not have index entries)", sutCount, refFilteredCount)

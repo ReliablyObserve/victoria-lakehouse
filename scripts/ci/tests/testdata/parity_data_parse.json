@@ -224,6 +224,16 @@
    "text": "# one\n\n# two\n",
    "python": [],
    "go": []
+  },
+  {
+   "name": "per-signal floors and an expected skip are comments to both readers",
+   "text": "# min-pass: 9\n# min-pass-logs: 4\n# min-pass-traces: 3\n# expected-skip: TestSkip/x  # why, #1\nTestA  # B1: reason\n",
+   "python": [
+    "TestA"
+   ],
+   "go": [
+    "TestA"
+   ]
   }
  ],
  "lock_cells": [

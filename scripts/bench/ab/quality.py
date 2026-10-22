@@ -106,7 +106,8 @@ def parity_summary(results_path: str, tree: str) -> dict:
         with open(allow_path, encoding="utf-8") as f:
             allow = pr.parse_allowlist(f.read())
     unexpected = pr.unexpected_failures(run.results, set(allow.entries))
-    return {"counts": pr.count_by_action(run.results), "known_failures": len(allow.entries),
+    by_signal = {(sig or "unattributed"): c for sig, c in pr.counts_by_signal(run.results).items()}
+    return {"counts": pr.count_by_action(run.results), "by_signal": by_signal, "known_failures": len(allow.entries),
             "known": [{"test": t, "reason": r[:140]} for t, r in sorted(allow.entries.items())][:60],
             "unexpected": [f"{p}:{t}" for p, t in unexpected][:20], "aborted": len(run.aborted()), "min_pass": allow.min_pass}
 
@@ -185,6 +186,13 @@ def render(base: dict, pr: dict, perf_pointer: str = "") -> tuple[str, dict]:
         c = pp["counts"]
         lines += ["", f"**Parity suite**: {', '.join(f'{n} {k}' for k, n in sorted(c.items()))}; {pp['known_failures']} known failure(s) allowlisted"
                   + (f" (base {bp['known_failures']})" if bp else "") + "."]
+        by_signal = pp.get("by_signal")
+        if by_signal:
+            lines += ["", "| Parity results | pass | fail | skip |", "| --- | --- | --- | --- |"]
+            for sig in ("logs", "traces", "unattributed"):
+                c = by_signal.get(sig, {})
+                lines.append(f"| {sig} | {c.get('pass', 0)} | {c.get('fail', 0)} | {c.get('skip', 0)} |")
+            lines.append("")
         for e in pp["known"][:10]:
             lines.append(f"- known: `{e['test']}` {e['reason']}".rstrip())
     else:

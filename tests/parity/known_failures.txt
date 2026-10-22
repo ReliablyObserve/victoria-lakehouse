@@ -15,7 +15,20 @@
 #   * a listed test passes, skips, or no longer exists — the entry is stale
 #     and must be deleted, so the list only ever shrinks;
 #   * fewer than `min-pass` tests pass — coverage went backwards. The file
-#     holds exactly one `min-pass` directive.
+#     holds exactly one `min-pass` directive;
+#   * fewer than `min-pass-logs` logs results or `min-pass-traces` traces
+#     results pass (a result belongs to a signal by the name rules of
+#     `signal_of` in scripts/ci/parity_ratchet.py), or a signal with a floor
+#     reports no result at all: one signal cannot lose its tests while the
+#     other keeps the combined count up. Each floor is the lowest pass count
+#     of the last five green main runs of the parity job, and floors only go
+#     up, by an explicit change in a pull request;
+#   * a test skips and is not listed below as an `expected-skip`. A skipped
+#     parity test proved nothing, so a skip is a failure unless a reviewer
+#     accepted it: `# expected-skip: <test path>  # <reason and issue link>`,
+#     one line per test (a comment line, so the entries below stay the
+#     known failures). An expected skip whose test stops skipping is stale and
+#     must be deleted, like an entry.
 #
 # A parent test that fails only because a listed subtest failed does not need
 # its own entry. go test reports a parent's own failure and its children's
@@ -26,7 +39,9 @@
 # cold-tier divergence with a fix in flight; a harness defect belongs in the
 # harness, not on this list.
 #
-# min-pass: 460
+# min-pass: 1192
+# min-pass-logs: 669
+# min-pass-traces: 418
 
 # --- B1: cold query rows carry columns hot does not -------------------------
 # `<null>` placeholders for unset map attributes, the account_id/project_id
