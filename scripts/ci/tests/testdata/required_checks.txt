@@ -1,0 +1,24 @@
+# The required status check contexts of the main branch (branch protection), one per line.
+# scripts/ci/tests/test_ci_scope_workflows.py fails if a job that reports one of them is gated by the
+# CI scope. Keep it equal to the protection rule; a new required check is added here in the same change.
+helm
+gosec
+govulncheck
+gitleaks
+trivy
+changelog-check
+changelog-tests
+test-logs
+test-traces
+lint-logs
+lint-traces
+build-logs (linux, amd64)
+build-logs (linux, arm64)
+build-traces (linux, amd64)
+build-traces (linux, arm64)
+docker-logs
+docker-traces
+conformance-inventory
+registry-gate
+registry-gate-base
+parity

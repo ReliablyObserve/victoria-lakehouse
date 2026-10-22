@@ -1,0 +1,73 @@
+name: ci-scope
+description: >-
+  Work out which checks a pull request needs, from the changed files. The classifier is
+  taken from the merge base, so a change to it cannot decide its own scope. Any error, and
+  every event other than a pull request, give a full run.
+
+inputs:
+  base-sha:
+    description: Base commit of the pull request (github.event.pull_request.base.sha)
+    required: false
+    default: ""
+  author:
+    description: Login of the pull request author (github.event.pull_request.user.login)
+    required: false
+    default: ""
+
+outputs:
+  skip_go:
+    description: "'true' only when the Go group is proven not needed; anything else means run it"
+    value: ${{ steps.scope.outputs.skip_go }}
+  skip_image:
+    description: "'true' only when the release-image build and scan is proven not needed"
+    value: ${{ steps.scope.outputs.skip_image }}
+  skip_parity:
+    description: "'true' only when the parity suite is proven not needed"
+    value: ${{ steps.scope.outputs.skip_parity }}
+  force:
+    description: "Comma-separated <workflow>:<job> entries that run although their group is skipped"
+    value: ${{ steps.scope.outputs.force }}
+
+runs:
+  using: composite
+  steps:
+    # The checkout is done by the caller (fetch-depth: 0). The variable CI_SCOPE comes from the
+    # caller's job environment and is only ever read as $CI_SCOPE: nothing is interpolated into
+    # the script. The script is plain bash and is exercised by
+    # scripts/ci/tests/test_ci_scope_workflows_static.py.
+    - id: scope
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE_SHA: ${{ inputs.base-sha }}
+        AUTHOR: ${{ inputs.author }}
+      run: |
+        set -u
+        full() {  # fail open: every group runs
+          printf 'skip_go=false\nskip_image=false\nskip_parity=false\nforce=\n' >> "$GITHUB_OUTPUT"
+          echo "### CI scope: full run ($1)" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        }
+        [ "$EVENT" = pull_request ] || full "event $EVENT"
+        [ "${CI_SCOPE:-}" != full ] || full "CI_SCOPE=full"
+        [ -n "$BASE_SHA" ] || full "no base commit"
+        base=$(git merge-base "$BASE_SHA" HEAD 2>/dev/null) || full "no merge base"
+        dir="${RUNNER_TEMP:-/tmp}/ci-scope-base"
+        rm -rf "$dir" && mkdir -p "$dir" || full "no scratch directory"
+        # the classifier of the merge base, not the one of the pull request
+        { git archive "$base" scripts/ci | tar -x -C "$dir"; } 2>/dev/null || full "no classifier at the merge base"
+        # an empty list only narrows the release-metadata shape (the bot author still counts)
+        git show "$base:.github/release-metadata-approvers" > "$dir/approvers" 2>/dev/null || : > "$dir/approvers"
+        out=$(python3 "$dir/scripts/ci/pr_classify.py" --base "$base" --head HEAD --ci-scope --event "$EVENT" \
+                --author "$AUTHOR" --approvers "$dir/approvers" 2>/dev/null) \
+          || full "classifier error"
+        pick() { printf '%s\n' "$out" | grep -c "^$1=" | grep -qx 1 && printf '%s\n' "$out" | sed -n "s/^$1=//p"; }
+        for k in skip_go skip_image skip_parity; do
+          v=$(pick "$k") || full "classifier gave no $k"
+          case "$v" in true | false) ;; *) full "classifier gave a bad $k" ;; esac
+        done
+        force=$(pick force) || full "classifier gave no force"
+        case "$force" in *[!A-Za-z0-9_.:,-]*) full "classifier gave a bad force" ;; esac
+        printf 'skip_go=%s\nskip_image=%s\nskip_parity=%s\nforce=%s\n' \
+          "$(pick skip_go)" "$(pick skip_image)" "$(pick skip_parity)" "$force" >> "$GITHUB_OUTPUT"
+        { echo "### CI scope"; printf '%s\n' "$out" | grep -E '^(ci_class|skip_go|skip_image|skip_parity|force|ci_reason|ci_detail)=' | sed 's/^/    /'; } >> "$GITHUB_STEP_SUMMARY"
