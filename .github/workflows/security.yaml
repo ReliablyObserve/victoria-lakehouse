@@ -98,15 +98,205 @@ jobs:
             && go build -o "$gosec_dir/gosec" github.com/securego/gosec/v2/cmd/gosec)
           "$gosec_dir/gosec" -exclude=G110,G115,G304,G401,G501,G705 ./internal/... ./cmd/...
 
+  # Fails the job on a fixable HIGH or CRITICAL finding (and on a secret). Exceptions go in
+  # a reviewed .trivyignore, one reason and one expiry date per entry
+  # (scripts/ci/tests/test_trivy_gate.py checks the format).
   trivy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.1 # keep equal to the version the pinned trivy-action installs by default
+      - name: Date for the database cache key
+        id: date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Restore vulnerability database cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ steps.date.outputs.date }}
+          restore-keys: trivy-db-
+      # Its own step: a failure here is a registry or network problem, a failure of a scan
+      # step below is a finding (those steps never update the database).
+      - name: Download vulnerability database
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: bash scripts/ci/trivy_fetch_db.sh
+      - name: Scan dependencies
+        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        env:
+          TRIVY_SKIP_DB_UPDATE: "true"
         with:
           scan-type: fs
           scan-ref: .
+          scanners: vuln,secret
           severity: HIGH,CRITICAL
+          ignore-unfixed: "true"
+          exit-code: "1"
+          skip-setup-trivy: "true"
+          cache: "false"
+          cache-dir: ${{ runner.temp }}/trivy-cache
+
+  # The release images (default and -fips variant of both binaries), built from the
+  # repository Dockerfiles with the arguments the release uses, and scanned from the local
+  # Docker daemon. Nothing is pushed.
+  trivy-image:
+    name: trivy-image-${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: logs
+            module: logs
+            fips: "0"
+          - target: logs-fips
+            module: logs
+            fips: "1"
+          - target: traces
+            module: traces
+            fips: "0"
+          - target: traces-fips
+            module: traces
+            fips: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        # Retry: registry pulls from the runners time out now and then; a real build error
+        # still fails on the last attempt.
+        env:
+          MODULE: ${{ matrix.module }}
+          FIPS_ARG: ${{ matrix.fips }}
+          IMAGE: lakehouse-${{ matrix.target }}:scan
+          VERSION: ${{ github.sha }}
+        run: |
+          for attempt in 1 2 3; do
+            docker build -f "Dockerfile.${MODULE}" \
+              --build-arg VERSION="${VERSION}" \
+              --build-arg FIPS="${FIPS_ARG}" \
+              --build-arg VL_VERSION="${VL_VERSION_LOGS}" \
+              --build-arg VL_COMMIT="${VL_COMMIT_TRACES}" \
+              --build-arg VT_VERSION="${VT_VERSION}" \
+              -t "${IMAGE}" . && exit 0
+            echo "build attempt ${attempt} failed; retrying in $((attempt*20))s"
+            sleep $((attempt*20))
+          done
+          exit 1
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.1 # keep equal to the version the pinned trivy-action installs by default
+      - name: Date for the database cache key
+        id: date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Restore vulnerability database cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ steps.date.outputs.date }}
+          restore-keys: trivy-db-
+      # Its own step: a failure here is a registry or network problem, a failure of a scan
+      # step below is a finding (those steps never update the database).
+      - name: Download vulnerability database
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: bash scripts/ci/trivy_fetch_db.sh
+      - name: Scan image
+        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        env:
+          TRIVY_SKIP_DB_UPDATE: "true"
+        with:
+          scan-type: image
+          image-ref: lakehouse-${{ matrix.target }}:scan
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "true"
+          exit-code: "1"
+          skip-setup-trivy: "true"
+          cache: "false"
+          cache-dir: ${{ runner.temp }}/trivy-cache
+
+  # Proves the gate itself: the scan steps exit 1 on a fixture with a known fixable HIGH
+  # finding and exit 0 on a clean fixture. Both are written at run time, so the repository
+  # carries no vulnerable manifest.
+  trivy-gate-fixture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.76.1 # keep equal to the version the pinned trivy-action installs by default
+      - name: Date for the database cache key
+        id: date
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Restore vulnerability database cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ steps.date.outputs.date }}
+          restore-keys: trivy-db-
+      # Its own step: a failure here is a registry or network problem, a failure of a scan
+      # step below is a finding (those steps never update the database).
+      - name: Download vulnerability database
+        env:
+          TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+        run: bash scripts/ci/trivy_fetch_db.sh
+      - name: Write the fixtures
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/trivy-fixture"
+          mkdir -p "$dir/clean" "$dir/vulnerable"
+          printf 'module example.com/trivyfixture\n\ngo 1.21\n' > "$dir/clean/go.mod"
+          printf 'module example.com/trivyfixture\n\ngo 1.21\n\nrequire golang.org/x/crypto v0.0.0-20200220183623-bac4c82f6975\n' > "$dir/vulnerable/go.mod"
+      - name: Scan the clean fixture (must pass)
+        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        env:
+          TRIVY_SKIP_DB_UPDATE: "true"
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/trivy-fixture/clean
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "true"
+          exit-code: "1"
+          skip-setup-trivy: "true"
+          cache: "false"
+          cache-dir: ${{ runner.temp }}/trivy-cache
+
+      - name: Scan the vulnerable fixture (must fail)
+        id: vulnerable
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        env:
+          TRIVY_SKIP_DB_UPDATE: "true"
+        with:
+          scan-type: fs
+          scan-ref: ${{ runner.temp }}/trivy-fixture/vulnerable
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "true"
+          exit-code: "1"
+          skip-setup-trivy: "true"
+          cache: "false"
+          cache-dir: ${{ runner.temp }}/trivy-cache
+          format: json
+          output: ${{ runner.temp }}/trivy-fixture-report.json
+      - name: Check the gate failed on the vulnerable fixture
+        env:
+          OUTCOME: ${{ steps.vulnerable.outcome }}
+          REPORT: ${{ runner.temp }}/trivy-fixture-report.json
+        run: |
+          if [ "$OUTCOME" != "failure" ]; then
+            echo "::error::the scan did not fail on a fixture with a known fixable HIGH vulnerability (outcome: ${OUTCOME})"
+            exit 1
+          fi
+          jq -e '[.Results[]?.Vulnerabilities[]?] | length > 0' "$REPORT" > /dev/null \
+            || { echo "::error::the scan failed but reported no vulnerability"; exit 1; }
+          echo "the gate failed on the vulnerable fixture and passed on the clean one"
 
   gitleaks:
     runs-on: ubuntu-latest
