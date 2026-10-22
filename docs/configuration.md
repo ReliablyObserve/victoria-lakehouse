@@ -555,7 +555,7 @@ Controls the distributed peer cache.
 
 | Key | Type | Default | Config file | Flags | Profile overrides | Description |
 |---|---|---|---|---|---|---|
-| `peer.auth_enabled` | bool | `unset` | set | `-lakehouse.peer.auth-enabled` |  | Tri-state: unset enforces a configured AuthKey on the internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync), false only sends the key and serves them without a credential, true enforces and requires AuthKey. |
+| `peer.auth_enabled` | bool | `""` | set | `-lakehouse.peer.auth-enabled` |  | Tri-state: unset enforces a configured AuthKey on the internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync), false only sends the key and serves them without a credential, true enforces and requires AuthKey. |
 | `peer.auth_key` | string | `""` | set | `-lakehouse.peer.auth-key` |  | The bearer key of the pods' internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); empty serves them without a credential. |
 | `peer.az_aware` | bool | `true` | enable-only |  | dev: `false` | Prefers peers in the pod's own availability zone. |
 | `peer.az_env_var` | string | `LAKEHOUSE_AZ` | set |  |  | Names the environment variable that overrides the detected availability zone. |
