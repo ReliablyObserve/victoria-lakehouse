@@ -55,3 +55,10 @@ rules:
   cache-poisoning:
     ignore:
       - parquet-readers.yaml:107
+
+  # The `ci-scope` composite action is referenced as `./.github/actions/ci-scope`, the form
+  # the pin test (scripts/ci/tests/test_workflow_action_pins.py) and actionlint already accept
+  # for local actions. The `$/` form zizmor suggests is not used. Listed per file.
+  self-repository:
+    ignore:
+      - fuzz-stress-memleak.yaml

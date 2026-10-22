@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Pull requests that need no product checks no longer run the fuzz, stress and memleak jobs (CI only; no change to the Lakehouse binaries or to runtime behaviour).** A new local action, `.github/actions/ci-scope`, runs the classifier of the merge base on the changed files, and the `Fuzz / Stress / Memleak` workflow gets a `scope` job: its memleak, stress and fuzz jobs are skipped when the change is only documentation, CI scripts, workflow or stack files, except the jobs the change edits and the jobs that run a script it edits. Product changes, any path the classifier does not know, any error, pushes to `main`, the nightly run and manual runs run everything as before, and so does a repository variable `CI_SCOPE=full`. Job names and matrix legs are unchanged, and no required check is affected. `scripts/ci/tests/test_ci_scope_workflows.py` fails if a workflow uses a scope output in any other `if:` shape, if a job that needs `scope` lacks the `!cancelled()` guard, or if a job that reports a required check (`scripts/ci/tests/testdata/required_checks.txt`) is gated, and it runs the action's script on temporary repositories (a documentation-only change, a product change, every event, the override, an unknown base, a classifier that is missing, old, failing or garbled, and a pull request that edits the classifier). `.github/zizmor.yml` lists the local-action reference of that workflow under `self-repository`.
+
 ## [0.157.6] - 2026-10-22
 
 ### Fixed
