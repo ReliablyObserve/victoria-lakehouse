@@ -107,3 +107,5 @@ L2 disk cache is the most cost-effective optimization: $4-16/month avoids thousa
 - CPU utilization consistently < 20%
 - `lakehouse_concurrent_select_current` consistently < 25% of capacity
 - L2 disk cache utilization < 30%
+
+<!-- scratch: scope proof -->
