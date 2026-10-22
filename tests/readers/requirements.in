@@ -10,7 +10,7 @@ duckdb==1.5.6
 pyarrow==25.0.1
 pandas==2.3.3
 polars==1.44.2
-datafusion==54.0.0
+datafusion==55.0.0
 s3fs==2026.9.0
 trino==0.340.0
 # parquet-tools 0.2.16 is installed from requirements-parquet-tools.txt with --no-deps: it caps thrift
