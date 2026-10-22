@@ -474,7 +474,7 @@ class RegistryGateKeysAreUnchanged(unittest.TestCase):
         r = Repo({"docs/a.md": "a\n"}, {"docs/a.md": "b\n"})
         self.addCleanup(r.close)
         keys = {ln.split("=", 1)[0] for ln in r.run().stdout.splitlines()}
-        self.assertTrue(keys <= set(LEGACY_KEYS), keys)
+        self.assertLessEqual(keys, set(LEGACY_KEYS))
         # --event alone changes nothing either
         self.assertEqual(r.run("--event", "pull_request").stdout, r.run().stdout)
 
@@ -555,19 +555,19 @@ class RecordedPullRequests(unittest.TestCase):
         self.assertEqual(group(r)[0], "true")
         want = {"ci.yaml:helm-config-drift", "ci.yaml:parquet-readback", "ci.yaml:security-logs", "ci.yaml:security-traces",
                 "security.yaml:govulncheck", "security.yaml:gosec", "security.yaml:gitleaks", "parity.yaml:parity"}
-        self.assertTrue(want <= set(r["force"].split(",")), r["force"])
+        self.assertLessEqual(want, set(r["force"].split(",")))
         self.assertNotIn("ci.yaml:test-logs", r["force"])
         self.assertEqual(r["skip_parity"], "false")
         # #656 moves action tags to SHAs in 26 workflows and also edits non-uses lines of the fuzz jobs and the top of codeql.yaml
         r = self.decide(self.cases[656])
         force = set(r["force"].split(","))
-        self.assertTrue({"fuzz-stress-memleak.yaml:fuzz-logs", "fuzz-stress-memleak.yaml:fuzz-traces",
-                         "codeql.yaml:analyze", "codeql.yaml:analyze-actions"} <= force, r["force"])
+        self.assertLessEqual({"fuzz-stress-memleak.yaml:fuzz-logs", "fuzz-stress-memleak.yaml:fuzz-traces",
+                              "codeql.yaml:analyze", "codeql.yaml:analyze-actions"}, force)
         self.assertNotIn("ci.yaml:test-logs", force)
         # #588 changed ci.yaml outside any job (a lint version pin): every job of ci.yaml is forced
         r = self.decide(self.cases[588])
         jobs = self.cases[588]["evidence"]["workflows"][".github/workflows/ci.yaml"]["jobs"]
-        self.assertTrue({"test-logs", "test-traces", "lint-logs", "docker-logs", "docker-traces"} <= set(jobs))
+        self.assertLessEqual({"test-logs", "test-traces", "lint-logs", "docker-logs", "docker-traces"}, set(jobs))
         self.assertEqual(set(r["force"].split(",")), {"ci.yaml:" + j for j in jobs})
 
     def test_invariant_over_all_recorded_pull_requests(self):
