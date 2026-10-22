@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`TestSelectRole_ShutdownWritesNothing` of the traces binary can be repeated with `-count>1` (test only; no change to the Lakehouse binaries or to runtime behaviour).** Upstream's `vtinsert.Stop()` closes a channel that is created once per process, so the insert-role control of the test panicked with `close of closed channel` on the second iteration. The first iteration runs the control in process as before, later ones run it in a child process of the same test binary, so every iteration still asserts both roles (#633).
+
 ## [0.167.0] - 2026-10-22
 
 ### Added
