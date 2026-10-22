@@ -13,7 +13,6 @@
 package peerauth
 
 import (
-	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
 	"net/http"
@@ -34,13 +33,11 @@ const (
 	bearerPrefix = "Bearer "
 )
 
-// Equal reports whether got equals want in constant time. Both sides are
-// hashed first, so the time does not depend on where they differ or on the
-// length of the key presented.
+// Equal reports whether got equals want in constant time: the time does not
+// depend on where the two differ. The length of the key is not secret (a
+// different length is answered at once).
 func Equal(got, want string) bool {
-	g := sha256.Sum256([]byte(got))
-	w := sha256.Sum256([]byte(want))
-	return subtle.ConstantTimeCompare(g[:], w[:]) == 1
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 // Bearer reports whether r may be served by an endpoint that enforces key and
