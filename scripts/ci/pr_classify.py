@@ -668,7 +668,8 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
 #   * the product trees, patches (all of them), charts (not their prose), the Makefile, go.work, the linter config, alerts, dashboards,
 #     the shipped Dockerfiles (unless only the digests of their FROM images changed) and every test tree not
 #     listed below -> everything;
-#   * a documented infra path (docs, CI scripts, workflows, deployment, the non-Go test tooling) -> infra;
+#   * a documented infra path (docs, CI scripts, workflows, deployment, the non-Go test tooling) -> infra; the parity
+#     tooling also keeps the parity suite, and the CodeQL configuration (.github/codeql/) forces the Go analysis;
 #   * any path not named in this table -> everything (fail open).
 # A union of infra paths asks for the union of what they ask for; one product path asks for everything.
 # Any error, an unreadable diff, an event other than `pull_request` -> everything (see ci_scope_full).
@@ -701,6 +702,7 @@ CI_PARITY_TOOLS = (
     "tests/parity/docker-compose.yml",
     "deployment/docker/Dockerfile.upstream-probe",
     "scripts/ci/parity_ratchet.py",
+    "scripts/ci/tests/test_parity_ratchet.py",
     "scripts/ci/requirements.txt",
 )
 # Scripts that a gated job runs: a change forces those jobs (a static test checks the paths exist).
@@ -900,6 +902,8 @@ def _ci_path(path: str, ev: "GitEvidence") -> "str | tuple[str, bool, bool, tupl
             "deps" if not jobs else "ci", False, name == "parity.yaml" and bool(jobs),
             tuple(f"{name}:{j}" for j in jobs), f"{path}: {note}",
         )
+    if path.startswith(".github/codeql/"):  # the CodeQL configuration: the Go analysis reads it
+        return ("ci", False, False, ("codeql.yaml:analyze",), "")
     if path.startswith(".github/"):
         return ("ci", False, False, (), "")
     if path.startswith(("scripts/", "deployment/")):

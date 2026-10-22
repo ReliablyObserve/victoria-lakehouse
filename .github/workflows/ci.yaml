@@ -19,6 +19,35 @@ env:
   GOLANGCI_LINT_VERSION: v2.14.0
 
 jobs:
+  # -------------------------------------------------------------------
+  # Scope: works out, from the changed files, whether a pull request needs
+  # the heavy Go checks below (see .github/actions/ci-scope). Only jobs that
+  # are NOT required checks carry the scope `if:`; the required checks
+  # (test-*, lint-*, build-*, docker-*, helm) always run. Pushes to main and
+  # manual runs always run everything, and so does any error: a job is
+  # skipped only on an explicit `true`.
+  # -------------------------------------------------------------------
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      CI_SCOPE: ${{ vars.CI_SCOPE }}
+    outputs:
+      skip_go: ${{ steps.scope.outputs.skip_go }}
+      force: ${{ steps.scope.outputs.force }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          author: ${{ github.event.pull_request.user.login }}
+
   deps:
     runs-on: ubuntu-latest
     steps:
@@ -142,7 +171,8 @@ jobs:
   # its flushed twin is. S3 latency does not change the counters, so the gate
   # runs at 0 ms; latency budgets are held by the recorded per-PR matrix.
   field-metadata-perf:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:field-metadata-perf,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -189,7 +219,8 @@ jobs:
           retention-days: 14
 
   parquet-readback:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:parquet-readback,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -385,7 +416,8 @@ jobs:
   # before sharding. Run as 2 shards, each with a 600 s -timeout; the report warns
   # at 70% and fails at 90% of it.
   test-parquets3-heavy:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:test-parquets3-heavy,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -437,7 +469,8 @@ jobs:
   # simulated multi-day runs hold the storage invariants. Both signals run
   # inside each test (internal/compaction exists once, in the root module).
   storage-health-compaction:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:storage-health-compaction,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -470,7 +503,8 @@ jobs:
   # almost always one of the regression classes the cold/hot drilldown
   # has shipped before — cf. issue #99, commit a5576bf, commit be8c126.
   parity-unit:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:parity-unit,')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -763,7 +797,8 @@ jobs:
           exit 1
 
   security-logs:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:security-logs,')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -786,7 +821,8 @@ jobs:
           govulncheck ./internal/... ./cmd/...
 
   security-traces:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:security-traces,')) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -844,10 +880,10 @@ jobs:
   #    logs estimate; traces gets 15m / 20m. gotest_report.py warns at 70% and
   #    fails at 90% of the go -timeout.
   benchmarks-logs:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ github.event_name == 'pull_request' && !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:benchmarks-logs,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -879,10 +915,10 @@ jobs:
 
   # Same shape as benchmarks-logs (see the comment there).
   benchmarks-traces:
-    needs: deps
+    needs: [scope, deps]
+    if: ${{ github.event_name == 'pull_request' && !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',ci.yaml:benchmarks-traces,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

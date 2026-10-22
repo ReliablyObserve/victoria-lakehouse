@@ -25,11 +25,17 @@ import subprocess
 import tempfile
 import unittest
 
+import fnmatch
+import sys
+
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
 ACTION = ROOT / ".github" / "actions" / "ci-scope" / "action.yml"
+sys.path.insert(0, str(ROOT / "scripts" / "ci"))
+import pr_classify  # noqa: E402  (CI_CONSUMERS: the scripts a gated job runs)
+
 REQUIRED_FILE = pathlib.Path(__file__).resolve().parent / "testdata" / "required_checks.txt"
 
 GROUPS = ("go", "image", "parity")
@@ -38,10 +44,15 @@ LOCAL_ACTION = "./.github/actions/ci-scope"
 SCOPE_REF = re.compile(r"needs\.scope\b|outputs\.(?:skip_(?:go|image|parity)|force)\b")
 
 
-def canonical_if(workflow_file: str, job: str, group: str = "go") -> str:
-    """The only `if:` that lets a scope output skip a job."""
+def canonical_if(workflow_file: str, job: str, group: str = "go", pr_only: bool = False) -> str:
+    """The only `if:` that lets a scope output skip a job.
+
+    `pr_only` is the same form behind `github.event_name == 'pull_request' &&`, for a job that never ran on a push
+    before the scope existed (the benchmark smoke runs): the scope must not start it on `main`.
+    """
+    event = "github.event_name == 'pull_request' && " if pr_only else ""
     return (
-        f"${{{{ !cancelled() && (needs.scope.outputs.skip_{group} != 'true' || "
+        f"${{{{ {event}!cancelled() && (needs.scope.outputs.skip_{group} != 'true' || "
         f"contains(format(',{{0}},', needs.scope.outputs.force), ',{workflow_file}:{job},')) }}}}"
     )
 
@@ -76,7 +87,7 @@ def lint_workflow(workflow_file: str, doc: dict, required: "set[str]") -> "list[
         cond = job.get("if")
         cond_s = "" if cond is None else str(cond)
         needs = as_list(job.get("needs"))
-        canon = {canonical_if(workflow_file, jid, g) for g in GROUPS}
+        canon = {canonical_if(workflow_file, jid, g, pr) for g in GROUPS for pr in (False, True)}
         gated = SCOPE_REF.search(cond_s) is not None or "scope" in needs
 
         if cond_s in canon:
@@ -131,6 +142,41 @@ def lint_workflow(workflow_file: str, doc: dict, required: "set[str]") -> "list[
                 problems.append(f"{where}: a job that computes the scope needs exactly `contents: read`")
             if "skip_go" not in (job.get("outputs") or {}) or "force" not in (job.get("outputs") or {}):
                 problems.append(f"{where}: must expose skip_go and force as job outputs")
+    problems += lint_needs(workflow_file, doc)
+    return problems
+
+
+def gate_group(job: dict) -> "str | None":
+    """The scope group (`go`, `image`, `parity`) whose output a job's `if:` reads; None for an ungated job."""
+    m = re.search(r"outputs\.skip_(go|image|parity)\b", str(job.get("if", "")))
+    return m.group(1) if m else None
+
+
+def lint_needs(workflow_file: str, doc: dict) -> "list[str]":
+    """The `needs:` chains around gated jobs.
+
+    A job whose `needs` is skipped is skipped too, and a skipped job reads as passing. So:
+      * every `needs` names a job of the workflow;
+      * an ungated job never needs a gated one (it would be skipped, green, whenever its ancestor is);
+      * a gated job needs only ungated jobs (`deps`) or jobs gated by the same group. `force` lists jobs, not their
+        ancestors, so a forced job whose same-group ancestor is skipped runs without it: avoid such chains.
+    """
+    problems: "list[str]" = []
+    jobs = doc.get("jobs") or {}
+    for jid, job in jobs.items():
+        where = f"{workflow_file}:{jid}"
+        mine = gate_group(job)
+        for n in as_list(job.get("needs")):
+            if n not in jobs:
+                problems.append(f"{where}: needs `{n}`, which is not a job of this workflow")
+                continue
+            if n == "scope":
+                continue
+            theirs = gate_group(jobs[n])
+            if theirs is not None and mine is None:
+                problems.append(f"{where}: is not gated but needs the gated job `{n}`; a skipped ancestor skips it, and a skipped job reads as passing")
+            elif theirs is not None and mine is not None and theirs != mine:
+                problems.append(f"{where}: is gated by `{mine}` but needs `{n}`, gated by `{theirs}`; an ancestor must carry the same guard or not be gated")
     return problems
 
 
@@ -184,6 +230,42 @@ class LintFixtures(unittest.TestCase):
     def test_image_and_parity_twins_pass(self):
         jobs = {"scope": scope_job(), "a": heavy(canonical_if("w.yaml", "a", "image")), "b": heavy(canonical_if("w.yaml", "b", "parity"))}
         self.assertEqual(self.lint(jobs), [])
+
+    def test_pull_request_only_form_passes(self):
+        jobs = {"scope": scope_job(), "bench": heavy(canonical_if("w.yaml", "bench", pr_only=True))}
+        self.assertEqual(self.lint(jobs), [])
+
+    def test_pull_request_only_form_must_be_the_exact_prefix(self):
+        cond = canonical_if("w.yaml", "bench", pr_only=True).replace("github.event_name == 'pull_request' && ", "github.event_name != 'push' && ")
+        self.assertTrue(self.lint({"scope": scope_job(), "bench": heavy(cond)}))
+        cond = canonical_if("w.yaml", "bench").replace("!cancelled()", "github.event_name == 'pull_request' || !cancelled()")
+        self.assertTrue(self.lint({"scope": scope_job(), "bench": heavy(cond)}))
+
+    def test_gated_job_may_need_an_ungated_job(self):
+        jobs = {"scope": scope_job(), "deps": {"runs-on": "x", "steps": [{"run": "true"}]},
+                "fuzz": heavy(canonical_if("w.yaml", "fuzz"), needs=("scope", "deps"))}
+        self.assertEqual(self.lint(jobs), [])
+
+    def test_ungated_job_needing_a_gated_job_is_rejected(self):
+        jobs = {"scope": scope_job(), "fuzz": self.good(),
+                "report": {"runs-on": "x", "needs": ["fuzz"], "steps": [{"run": "true"}]}}
+        msg = self.lint(jobs)
+        self.assertTrue(any("report" in m and "not gated but needs the gated job" in m for m in msg), msg)
+
+    def test_gated_job_needing_a_gated_job_of_another_group_is_rejected(self):
+        jobs = {"scope": scope_job(), "a": heavy(canonical_if("w.yaml", "a", "image")),
+                "b": heavy(canonical_if("w.yaml", "b", "go"), needs=("scope", "a"))}
+        msg = self.lint(jobs)
+        self.assertTrue(any("b" in m and "same guard" in m for m in msg), msg)
+
+    def test_gated_job_needing_a_gated_job_of_the_same_group_passes(self):
+        jobs = {"scope": scope_job(), "a": self.good("a"),
+                "b": heavy(canonical_if("w.yaml", "b"), needs=("scope", "a"))}
+        self.assertEqual(self.lint(jobs), [])
+
+    def test_needs_a_job_that_does_not_exist_is_rejected(self):
+        jobs = {"scope": scope_job(), "fuzz": heavy(canonical_if("w.yaml", "fuzz"), needs=("scope", "deps"))}
+        self.assertTrue(any("not a job of this workflow" in m for m in self.lint(jobs)))
 
     def test_no_scope_usage_is_not_flagged(self):
         jobs = {"a": {"runs-on": "x", "steps": [{"run": "true"}]}, "b": {"runs-on": "x", "if": "github.event_name == 'push'", "steps": []}}
@@ -331,7 +413,137 @@ class RepositoryWiring(unittest.TestCase):
         for name, doc in load_workflows().items():
             for jid, job in doc["jobs"].items():
                 if SCOPE_REF.search(str(job.get("if", ""))):
-                    self.assertEqual(job["if"], canonical_if(name, jid), f"{name}:{jid}")
+                    self.assertIn(job["if"], (canonical_if(name, jid), canonical_if(name, jid, pr_only=True)), f"{name}:{jid}")
+
+
+def jobs_of(workflow: str) -> dict:
+    return load_workflows()[workflow]["jobs"]
+
+
+def scripts_referenced(job: dict) -> "set[str]":
+    return set(re.findall(r"scripts/[A-Za-z0-9_./*-]+", json.dumps(steps_of(job))))
+
+
+class CiWorkflow(unittest.TestCase):
+    """ci.yaml: the heavy jobs that are not required checks are skipped by the scope; everything else is not."""
+
+    # job id -> the `if:` form it must carry. The benchmark smoke runs never ran on a push: they keep that.
+    GATED = {
+        "field-metadata-perf": False, "parquet-readback": False, "test-parquets3-heavy": False,
+        "storage-health-compaction": False, "parity-unit": False, "security-logs": False, "security-traces": False,
+        "benchmarks-logs": True, "benchmarks-traces": True,
+    }
+    # jobs that always run: the required checks, and the cheap infra checks
+    ALWAYS = ("deps", "helm-config-drift", "bench-selftest", "helm", "lint-logs", "lint-traces", "test-logs", "test-traces",
+              "build-logs", "build-traces", "docker-logs", "docker-traces")
+
+    def test_exactly_the_heavy_non_required_jobs_are_gated(self):
+        jobs = jobs_of("ci.yaml")
+        self.assertEqual(sorted(j for j, job in jobs.items() if gate_group(job)), sorted(self.GATED))
+        for jid, pr_only in self.GATED.items():
+            self.assertEqual(jobs[jid].get("if"), canonical_if("ci.yaml", jid, pr_only=pr_only), jid)
+            self.assertEqual(as_list(jobs[jid].get("needs")), ["scope", "deps"], jid)
+
+    def test_no_job_is_unaccounted_for(self):
+        self.assertEqual(sorted(jobs_of("ci.yaml")), sorted(["scope", *self.GATED, *self.ALWAYS]))
+
+    def test_always_jobs_are_not_gated_and_do_not_need_scope(self):
+        jobs = jobs_of("ci.yaml")
+        for jid in self.ALWAYS:
+            self.assertNotIn("scope", as_list(jobs[jid].get("needs")), jid)
+            self.assertFalse(SCOPE_REF.search(str(jobs[jid].get("if", ""))), jid)
+            self.assertEqual(jobs[jid].get("if"), None, jid)  # nor any other job-level condition
+
+    def test_required_checks_of_ci_yaml_keep_their_names_and_legs(self):
+        jobs = jobs_of("ci.yaml")
+        required = {c for c in required_contexts() if context_base(c) in self.ALWAYS}
+        self.assertEqual(len(required), 11)  # helm, test-*, lint-*, docker-*, and the 4 linux build legs
+        for jid in ("build-logs", "build-traces"):
+            self.assertNotIn("name", jobs[jid], jid)  # the context is `<job id> (<goos>, <goarch>)`
+            matrix = jobs[jid]["strategy"]["matrix"]
+            self.assertEqual(list(matrix), ["goos", "goarch"], jid)  # the order of the leg label
+            self.assertEqual((matrix["goos"], matrix["goarch"]), (["linux", "darwin"], ["amd64", "arm64"]), jid)
+        for jid in ("helm", "lint-logs", "lint-traces", "test-logs", "test-traces", "docker-logs", "docker-traces"):
+            self.assertNotIn("name", jobs[jid], jid)
+
+    def test_matrix_job_name_is_unchanged(self):
+        job = jobs_of("ci.yaml")["test-parquets3-heavy"]
+        self.assertEqual(job["name"], "test-parquets3-heavy (${{ matrix.module }})")
+        self.assertEqual([m["module"] for m in job["strategy"]["matrix"]["include"]], ["logs", "traces"])
+
+    def test_triggers_have_no_path_filter(self):
+        doc = load_workflows()["ci.yaml"]
+        on = doc.get("on", doc.get(True))
+        self.assertEqual(sorted(on), ["pull_request", "push"])
+        self.assertEqual(on["pull_request"], {"branches": ["main"]})
+        self.assertEqual(on["push"], {"branches": ["main"]})
+
+    def test_scope_job_runs_first_and_alone(self):
+        jobs = jobs_of("ci.yaml")
+        self.assertEqual(list(jobs)[0], "scope")
+        self.assertNotIn("needs", jobs["scope"])
+        self.assertLessEqual(jobs["scope"]["timeout-minutes"], 10)
+
+    def test_deps_is_never_gated(self):
+        # every required job of ci.yaml and security.yaml and every gated job needs it
+        for wf in ("ci.yaml", "security.yaml"):
+            deps = jobs_of(wf)["deps"]
+            self.assertNotIn("scope", as_list(deps.get("needs")), wf)
+            self.assertIsNone(gate_group(deps), wf)
+            self.assertIsNone(deps.get("if"), wf)
+
+    def test_every_script_a_gated_job_runs_is_in_the_consumer_map(self):
+        consumers = pr_classify.CI_CONSUMERS
+        for jid in self.GATED:
+            key = f"ci.yaml:{jid}"
+            for path in sorted(scripts_referenced(jobs_of("ci.yaml")[jid])):
+                covered = any(
+                    key in forced and (fnmatch.fnmatchcase(path, pattern) or pattern.startswith(path.rstrip("/.") + "/"))
+                    for pattern, forced in consumers
+                )
+                self.assertTrue(covered, f"{key} runs {path}, but pr_classify.CI_CONSUMERS does not force it when that script changes")
+
+    def test_consumer_map_names_real_ci_jobs(self):
+        jobs = jobs_of("ci.yaml")
+        for pattern, forced in pr_classify.CI_CONSUMERS:
+            for entry in forced:
+                wf, _, jid = entry.partition(":")
+                if wf == "ci.yaml":
+                    self.assertIn(jid, jobs, f"{pattern} forces {entry}")
+
+
+class DepsHoleKnownGap(unittest.TestCase):
+    """KNOWN GAP (not fixed here): a failing `deps` job skips the required jobs that need it, and GitHub reports a
+    skipped job as passing. The scope does not cause this and does not make it worse (no required job needs `scope`).
+    The fix (`if: !cancelled()` plus a step that fails when `deps` did not succeed) changes required jobs, so it is a
+    separate change. When it lands, this list must shrink to nothing: the test fails when it is stale in either
+    direction, and the gated jobs of this change already run (and fail loudly) after a `deps`
+    failure, because their `if:` carries `!cancelled()`."""
+
+    EXPECTED = {
+        "ci.yaml": ["build-logs", "build-traces", "docker-logs", "docker-traces", "lint-logs", "lint-traces", "test-logs", "test-traces"],
+        "security.yaml": ["gosec", "govulncheck"],
+    }
+
+    @staticmethod
+    def exposed(workflow: str) -> "list[str]":
+        required_bases = {context_base(c) for c in required_contexts()}
+        out = []
+        for jid, job in jobs_of(workflow).items():
+            name = job.get("name", jid)
+            if "deps" in as_list(job.get("needs")) and context_base(name) in required_bases and "!cancelled()" not in str(job.get("if", "")):
+                out.append(jid)
+        return sorted(out)
+
+    def test_required_jobs_that_a_deps_failure_would_skip_are_the_documented_ones(self):
+        for wf, expected in self.EXPECTED.items():
+            self.assertEqual(self.exposed(wf), expected, f"{wf}: update DepsHoleKnownGap.EXPECTED (and the known-gap note in tests/conformance/README.md)")
+
+    def test_gated_jobs_still_run_after_a_deps_failure(self):
+        for wf, doc in load_workflows().items():
+            for jid, job in doc["jobs"].items():
+                if "deps" in as_list(job.get("needs")) and gate_group(job):
+                    self.assertIn("!cancelled()", str(job["if"]), f"{wf}:{jid}")
 
 
 class ActionDefinition(unittest.TestCase):
