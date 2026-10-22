@@ -62,9 +62,9 @@ func bufferReq(t *testing.T, mux http.Handler, all bool, authz string) (int, str
 
 func TestMountBufferQuery_PeerKey(t *testing.T) {
 	keyed := http.NewServeMux()
-	mountBufferQuery(keyed, twoTenantBuffer{}, "k")
+	mountBufferQuery(keyed, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k", AuthEnabled: true})
 	open := http.NewServeMux()
-	mountBufferQuery(open, twoTenantBuffer{}, "")
+	mountBufferQuery(open, twoTenantBuffer{}, config.PeerConfig{})
 
 	for _, tc := range []struct {
 		name     string
@@ -99,7 +99,7 @@ func TestInternalSelectDisable_TurnsOffBothInternalReadRoutes(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mountInternalProtocol(mux, false)
-	mountBufferQuery(mux, twoTenantBuffer{}, "k")
+	mountBufferQuery(mux, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k", AuthEnabled: true})
 
 	if err := flag.Set(buffer.InternalSelectDisableFlag, "true"); err != nil {
 		t.Fatal(err)

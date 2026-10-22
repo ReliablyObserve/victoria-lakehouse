@@ -13,6 +13,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 	"gopkg.in/yaml.v3"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -657,6 +658,17 @@ type PeerConfig struct {
 	// bridge, the peer cache, manifest, stats and tenant sync); empty serves
 	// them without a credential.
 	AuthKey string `yaml:"auth_key"`
+	// AuthEnabled makes the pods require AuthKey on their internal endpoints
+	// (the buffer bridge, the peer cache, manifest, stats and tenant sync);
+	// false (the default) serves them without a credential. A pod sends
+	// AuthKey on its own peer calls whenever one is set, whatever this says,
+	// so the key can be rolled out before enforcement is switched on. true
+	// needs AuthKey; the process refuses to start without it.
+	AuthEnabled bool `yaml:"auth_enabled"`
+	// MaxRequestBodyBytes caps the request body of every internal endpoint
+	// that reads one (manifest update, stats sync, tenant sync), and the size
+	// a compressed stats sync body expands to.
+	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes"`
 	// Timeout bounds a single peer cache fetch.
 	Timeout time.Duration `yaml:"timeout"`
 	// MaxConnections caps HTTP connections per peer.
@@ -1298,13 +1310,14 @@ func Default() *Config {
 		},
 
 		Peer: PeerConfig{
-			Timeout:         5 * time.Second,
-			MaxConnections:  32,
-			AZAware:         true,
-			AZMode:          "preferred",
-			CrossAZFallback: true,
-			AZEnvVar:        "LAKEHOUSE_AZ",
-			AZMinPeersPerAZ: 2,
+			MaxRequestBodyBytes: peerauth.DefaultMaxBodyBytes,
+			Timeout:             5 * time.Second,
+			MaxConnections:      32,
+			AZAware:             true,
+			AZMode:              "preferred",
+			CrossAZFallback:     true,
+			AZEnvVar:            "LAKEHOUSE_AZ",
+			AZMinPeersPerAZ:     2,
 		},
 
 		Startup: StartupConfig{
@@ -1668,7 +1681,24 @@ func (c *Config) normalizePeerAuthKey() error {
 		return err
 	}
 	c.Peer.AuthKey = k
+	if c.Peer.AuthEnabled && c.Peer.AuthKey == "" {
+		return fmt.Errorf("peer.auth_enabled (-lakehouse.peer.auth-enabled) is true but peer.auth_key (-lakehouse.peer.auth-key) is empty; " +
+			"set the key, or leave peer.auth_enabled false")
+	}
+	if c.Peer.MaxRequestBodyBytes < 0 {
+		return fmt.Errorf("peer.max_request_body_bytes must not be negative, got %d", c.Peer.MaxRequestBodyBytes)
+	}
 	return nil
+}
+
+// EnforcedKey is the key the pod's internal endpoints require: AuthKey when
+// peer.auth_enabled is set, "" (require nothing) otherwise. The pod's own
+// peer calls send AuthKey, not this.
+func (p PeerConfig) EnforcedKey() string {
+	if p.AuthEnabled {
+		return p.AuthKey
+	}
+	return ""
 }
 
 func (c *Config) Validate() error {
@@ -2291,6 +2321,12 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	// Peer
 	if overlay.Peer.AuthKey != "" {
 		base.Peer.AuthKey = overlay.Peer.AuthKey
+	}
+	if overlay.Peer.AuthEnabled {
+		base.Peer.AuthEnabled = true
+	}
+	if overlay.Peer.MaxRequestBodyBytes > 0 {
+		base.Peer.MaxRequestBodyBytes = overlay.Peer.MaxRequestBodyBytes
 	}
 	if overlay.Peer.Timeout > 0 {
 		base.Peer.Timeout = overlay.Peer.Timeout

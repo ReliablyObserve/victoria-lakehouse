@@ -5,3 +5,4 @@ lakehouse:
     buffer_flush_interval: 1h
   peer:
     auth_key: proof-peer-key
+    auth_enabled: true

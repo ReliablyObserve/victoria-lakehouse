@@ -70,12 +70,16 @@ manifest.sqs_region
 manifest.sqs_wait_time
 mode
 peer.auth_key
+# peer.auth_enabled is switched with the chart's peerAuth.enabled (-lakehouse.peer.auth-enabled, a Secret is required), not through the ConfigMap;
+# peer.max_request_body_bytes keeps the binary's default (64 MiB, docs/security.md). Documenting either default under lakehouseConfig.peer would change the default render.
+peer.auth_enabled
 peer.az_aware
 peer.az_env_var
 peer.az_min_peers_per_az
 peer.az_mode
 peer.cross_az_fallback
 peer.max_connections
+peer.max_request_body_bytes
 peer.timeout
 prefetch.correlated
 prefetch.max_concurrent

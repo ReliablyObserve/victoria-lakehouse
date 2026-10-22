@@ -7,6 +7,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 )
 
 // CacheStore defines the interface for cache operations used by HTTP handlers.
@@ -29,12 +30,9 @@ func HandleCacheClear(store CacheStore, authKey string) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if authKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+authKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+		if !peerauth.Bearer(r, authKey) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 		store.ClearCaches()
 		w.Header().Set("Content-Type", "application/json")
@@ -50,12 +48,9 @@ func HandleCacheStats(store CacheStore, authKey string) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if authKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+authKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+		if !peerauth.Bearer(r, authKey) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 		stats := store.MemCacheStats()
 		w.Header().Set("Content-Type", "application/json")
@@ -79,6 +74,18 @@ type LakehouseInfoConfig struct {
 	Compat   string
 	IsReady  func() bool
 	Phase    func() string
+	PeerAuth PeerAuthInfo
+}
+
+// PeerAuthInfo is the peer authentication state /lakehouse/info reports under
+// "peer_auth". It never carries the key.
+type PeerAuthInfo struct {
+	// Enabled is peer.auth_enabled: this pod refuses requests without the key
+	// on its internal endpoints.
+	Enabled bool `json:"enabled"`
+	// KeyConfigured is whether peer.auth_key is set: this pod sends it on its
+	// own peer calls.
+	KeyConfigured bool `json:"key_configured"`
 }
 
 // HandleLakehouseInfo returns an HTTP handler that reports build and config info.
@@ -90,34 +97,38 @@ func HandleLakehouseInfo(cfg LakehouseInfoConfig) http.HandlerFunc {
 			compatKey = "vl_compat"
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version":  cfg.Version,
-			"mode":     cfg.Mode,
-			"topology": cfg.Topology,
-			"ready":    cfg.IsReady(),
-			"phase":    cfg.Phase(),
-			compatKey:  cfg.Compat,
+			"version":   cfg.Version,
+			"mode":      cfg.Mode,
+			"topology":  cfg.Topology,
+			"ready":     cfg.IsReady(),
+			"phase":     cfg.Phase(),
+			compatKey:   cfg.Compat,
+			"peer_auth": cfg.PeerAuth,
 		})
 	}
 }
 
 // HandleManifestUpdate returns an HTTP handler that processes manifest update notifications.
-// It requires POST method, optional bearer token auth, and a JSON body with added/removed files.
+// It requires POST method, bearer token auth when authKey is set, and a JSON body (capped at
+// peer.max_request_body_bytes) with added/removed files.
 func HandleManifestUpdate(store ManifestStore, authKey string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		if authKey != "" {
-			auth := r.Header.Get("Authorization")
-			if auth != "Bearer "+authKey {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
+		if !peerauth.Bearer(r, authKey) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 
+		peerauth.LimitBody(w, r)
 		var update manifest.ManifestUpdate
 		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			if peerauth.TooLarge(err) {
+				peerauth.ReadError(w, err)
+				return
+			}
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}

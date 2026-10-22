@@ -425,6 +425,9 @@
         "secretKey": {
           "type": "string",
           "minLength": 1
+        },
+        "enabled": {
+          "type": "boolean"
         }
       }
     }

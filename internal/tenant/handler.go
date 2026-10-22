@@ -10,6 +10,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 )
 
 type AliasListResponse struct {
@@ -51,11 +52,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request) bool {
-	if h.authKey == "" {
-		return true
-	}
-	auth := r.Header.Get("Authorization")
-	if auth != "Bearer "+h.authKey {
+	if !peerauth.Bearer(r, h.authKey) {
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return false
 	}

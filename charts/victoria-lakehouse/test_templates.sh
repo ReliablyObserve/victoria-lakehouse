@@ -537,6 +537,55 @@ else
   echo "  FAIL  both keys refused for another reason:"; sed 's/^/         /' /tmp/helm_test_err; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
 fi
 
+# Peer authentication is opt-in (peerAuth.enabled): off renders no flag, on needs the
+# Secret and renders -lakehouse.peer.auth-enabled=true into every pod of both signals.
+echo ""
+echo "--- Peer authentication switch ---"
+expect_render "no auth-enabled flag by default" no \
+  "lakehouse.peer.auth-enabled"
+expect_render "a key from a Secret alone does not enforce" no \
+  "lakehouse.peer.auth-enabled" \
+  --set "peerAuth.existingSecret=lh-peer"
+expect_render "peerAuth.enabled passes the enforcement flag" yes \
+  '"-lakehouse.peer.auth-enabled=true"' \
+  --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=true"
+n_flags="$(helm template test-release "${CHART_DIR}" --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=true" --set "traces.enabled=true" 2>/dev/null | grep -c 'lakehouse.peer.auth-enabled=true' || true)"
+if [[ "${n_flags}" == "4" ]]; then
+  echo "  PASS  the enforcement flag reaches all four StatefulSets (logs and traces, insert and select)"; PASSED=$((PASSED + 1))
+else
+  echo "  FAIL  the enforcement flag reaches ${n_flags} StatefulSet(s), want 4"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+fi
+for no_secret in "" "--set lakehouseConfig.peer.auth_key=plain"; do
+  # shellcheck disable=SC2086
+  if helm template test-release "${CHART_DIR}" --set "peerAuth.enabled=true" ${no_secret} >/dev/null 2>/tmp/helm_test_err; then
+    echo "  FAIL  peerAuth.enabled renders without peerAuth.existingSecret (${no_secret:-no key})"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  elif grep -q "peerAuth.enabled needs peerAuth.existingSecret" /tmp/helm_test_err; then
+    echo "  PASS  peerAuth.enabled without peerAuth.existingSecret is refused (${no_secret:-no key})"; PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL  peerAuth.enabled refused for another reason:"; sed 's/^/         /' /tmp/helm_test_err; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  fi
+done
+# the switch is peerAuth.enabled (with the Secret); enabling it through the ConfigMap would run on a plain key
+for cm_flag in "lakehouseConfig.peer.auth_enabled=true" ; do
+  if helm template test-release "${CHART_DIR}" --set "${cm_flag}" --set "lakehouseConfig.peer.auth_key=plain" >/dev/null 2>/tmp/helm_test_err; then
+    echo "  FAIL  ${cm_flag} with a plain key renders"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  elif grep -q "not lakehouseConfig.peer.auth_enabled" /tmp/helm_test_err; then
+    echo "  PASS  ${cm_flag} (a plain key in the ConfigMap) is refused"; PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL  ${cm_flag} refused for another reason:"; sed 's/^/         /' /tmp/helm_test_err; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  fi
+done
+if helm template test-release "${CHART_DIR}" --set "lakehouseConfig.peer.auth_enabled=true" --set "peerAuth.existingSecret=lh-peer" >/dev/null 2>&1; then
+  echo "  FAIL  lakehouseConfig.peer.auth_enabled=true renders even with a Secret"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+else
+  echo "  PASS  lakehouseConfig.peer.auth_enabled=true is refused even with a Secret (use peerAuth.enabled)"; PASSED=$((PASSED + 1))
+fi
+if helm template test-release "${CHART_DIR}" --set "peerAuth.enabled=notabool" >/dev/null 2>&1; then
+  echo "  FAIL  peerAuth.enabled accepts a non-boolean"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+else
+  echo "  PASS  peerAuth.enabled must be a boolean (values.schema.json)"; PASSED=$((PASSED + 1))
+fi
+
 # A pod finds itself in the discovered ring by its IP and its name (the listen
 # address is not what service discovery lists): every Lakehouse pod of both
 # signals gets POD_NAME, POD_IP and POD_IPS from the downward API.

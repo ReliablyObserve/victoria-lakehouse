@@ -26,6 +26,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
@@ -236,6 +237,9 @@ func main() {
 
 	logger.Infof("starting lakehouse-logs; version=%s, role=%s, topology=%s, listen=%s, s3_bucket=%s, s3_prefix=%s",
 		buildinfo.Version, cfg.Role, cfg.Topology, addr, cfg.S3.Bucket, cfg.AutoPrefix())
+
+	peerauth.SetMaxBodyBytes(cfg.Peer.MaxRequestBodyBytes)
+	peerauth.Report(cfg.Peer.AuthEnabled, cfg.Peer.AuthKey != "", cfg.Discovery.PeerHeadlessService != "" || cfg.Role == config.RoleInsert || cfg.Role == config.RoleSelect)
 
 	run(cfg, addr)
 }
@@ -1190,17 +1194,14 @@ func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *sta
 
 // mountBufferQuery serves this insert pod's unflushed rows to the select pods'
 // buffer bridge at /internal/buffer/query: off with upstream's
-// -internalselect.disable (buffer.Gate), and behind peer.auth_key when one is
-// set (buffer.NewHandler; all_tenants=true needs it in any case).
-func mountBufferQuery(mux *http.ServeMux, src buffer.Source, authKey string) {
-	switch {
-	case buffer.InternalSelectDisabled():
+// -internalselect.disable (buffer.Gate), and behind the peer key when
+// peer.auth_enabled is set (buffer.NewHandler). all_tenants=true needs the key
+// in any case, enforced or only held (buffer.Handler.WithPeerKey).
+func mountBufferQuery(mux *http.ServeMux, src buffer.Source, peer config.PeerConfig) {
+	if buffer.InternalSelectDisabled() {
 		logger.Infof("%s is off (-internalselect.disable): select pods do not see this pod's unflushed rows until they are in object storage", buffer.Path)
-	case authKey == "":
-		logger.Infof("%s answers single-tenant reads of the insert buffer without a credential and refuses all_tenants=true; "+
-			"set peer.auth_key (or -lakehouse.peer.auth-key) on every pod to require one (docs/security.md)", buffer.Path)
 	}
-	mux.Handle(buffer.Path, buffer.Gate(buffer.Path, buffer.InternalSelectDisabled, buffer.NewHandler(src, authKey)))
+	mux.Handle(buffer.Path, buffer.Gate(buffer.Path, buffer.InternalSelectDisabled, buffer.NewHandler(src, peer.EnforcedKey()).WithPeerKey(peer.AuthKey)))
 }
 
 // newRequestHandler is the handler the HTTP server serves. -deleteAuthKey
@@ -1333,6 +1334,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		Compat:   vlCompat,
 		IsReady:  sm.IsReady,
 		Phase:    func() string { return sm.Phase().String() },
+		PeerAuth: PeerAuthInfo{Enabled: cfg.Peer.AuthEnabled, KeyConfigured: cfg.Peer.AuthKey != ""},
 	}))
 
 	if cfg.InsertEnabled() || cfg.SelectEnabled() {
@@ -1399,7 +1401,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mux.HandleFunc("/api/v1/validate", vlinsertHandler)
 		mux.HandleFunc("/services/collector/", vlinsertHandler)
 
-		mountBufferQuery(mux, parquets3.BridgeSource{Segments: segs}, cfg.Peer.AuthKey)
+		mountBufferQuery(mux, parquets3.BridgeSource{Segments: segs}, cfg.Peer)
 	}
 
 	if cfg.Delete.Enabled && tombstoneStore != nil {
@@ -1409,14 +1411,6 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		dh := delete.NewHandler(tombstoneStore, mq, detector, &cfg.Delete, "logs",
 			delete.WithGlobalReadAuthorizer(globalReadAuthorizer(cfg)))
 		dh.Register(mux)
-	}
-
-	mux.HandleFunc("/internal/cache/clear", HandleCacheClear(store, cfg.Peer.AuthKey))
-
-	mux.HandleFunc("/internal/cache/stats", HandleCacheStats(store, cfg.Peer.AuthKey))
-
-	if ph := store.PeerHandler(); ph != nil {
-		mux.Handle("/internal/cache/", ph)
 	}
 
 	// Cross-signal handlers
@@ -1440,21 +1434,17 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		csHandler.Register(mux)
 	}
 
-	mux.HandleFunc("/internal/manifest/update", HandleManifestUpdate(store, cfg.Peer.AuthKey))
-
-	// Stats sync handler
+	// The pods' internal endpoints: cache, manifest push, stats and tenant sync.
+	peerDeps := peerEndpoints{Cache: store, Manifest: store, PeerCache: store.PeerHandler(), Resolver: resolver}
 	if cfg.Stats.Enabled {
-		syncHandler := stats.NewSyncHandler(registry, cfg.Peer.AuthKey)
-		mux.Handle("/internal/stats/sync", syncHandler)
+		peerDeps.Stats = registry
 	}
+	mountPeerEndpoints(mux, cfg.Peer, peerDeps)
 
 	// Tenant alias handler
 	if resolver != nil {
-		aliasHandler := tenant.NewHandler(resolver, nil, cfg.Peer.AuthKey).WithRegistry(aliasRegistry)
+		aliasHandler := tenant.NewHandler(resolver, nil, cfg.Peer.EnforcedKey()).WithRegistry(aliasRegistry)
 		aliasHandler.Register(mux)
-
-		syncHandler := tenant.NewSyncHandler(resolver, cfg.Peer.AuthKey)
-		mux.Handle("/internal/tenant/sync", syncHandler)
 	}
 
 	// Admin: tenant bucket migration. Gated by the same global-read
@@ -1807,12 +1797,29 @@ func applyFlags(cfg *config.Config) {
 // /metrics (VictoriaMetrics' flagutil.IsSecretFlag hides every flag whose name
 // contains "key"), and upstream's envflag expands %{ENV_VAR} in it, so a
 // Kubernetes Secret reaches it through an environment variable.
-var peerAuthKey = flag.String("lakehouse.peer.auth-key", "", "The key the pods present to each other's internal endpoints and require on their own: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: those endpoints take no credential and /internal/buffer/query refuses all_tenants=true. See docs/security.md")
+var peerAuthKey = flag.String("lakehouse.peer.auth-key", "", "The key the pods present to each other's internal endpoints (/internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync) whenever it is set, and require on their own with -lakehouse.peer.auth-enabled. Overrides peer.auth_key from the config file; pass a Secret as -lakehouse.peer.auth-key=%{ENV_VAR}. Empty: nothing is sent and /internal/buffer/query refuses all_tenants=true. See docs/security.md")
 
-// applyPeerFlags applies -lakehouse.peer.auth-key over peer.auth_key.
+// peerAuthEnabled turns on enforcement of the peer key (peer.auth_enabled).
+// Off by default; a pod sends the key on its own peer calls whenever one is
+// set, so roll the key out first, then switch this on.
+var peerAuthEnabled = flag.Bool("lakehouse.peer.auth-enabled", false, "Require the peer key (-lakehouse.peer.auth-key) on this pod's internal endpoints: /internal/buffer/query, /internal/cache/*, /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync and the tenant alias admin writes. Off (default): they take requests without a credential, as before, and /internal/buffer/query still refuses all_tenants=true to a caller that does not present the key. Needs -lakehouse.peer.auth-key; the process refuses to start without it. Overrides peer.auth_enabled only to true. See docs/security.md")
+
+// peerMaxRequestBodyBytes caps the request bodies of the internal endpoints.
+var peerMaxRequestBodyBytes = flag.Int64("lakehouse.peer.max-request-body-bytes", 0, "Cap on the request body of the internal endpoints that read one (/internal/manifest/update, /internal/stats/sync, /internal/tenant/sync), and on the size a compressed stats sync body expands to; a larger one is refused with 413. 0 uses peer.max_request_body_bytes (default 64 MiB). Always on, whatever -lakehouse.peer.auth-enabled says")
+
+// applyPeerFlags applies -lakehouse.peer.auth-key over peer.auth_key,
+// -lakehouse.peer.auth-enabled over peer.auth_enabled (an unset flag never
+// turns the config file's true off) and -lakehouse.peer.max-request-body-bytes
+// over peer.max_request_body_bytes.
 func applyPeerFlags(c *config.PeerConfig) {
 	if k := *peerAuthKey; k != "" {
 		c.AuthKey = k
+	}
+	if *peerAuthEnabled {
+		c.AuthEnabled = true
+	}
+	if n := *peerMaxRequestBodyBytes; n > 0 {
+		c.MaxRequestBodyBytes = n
 	}
 }
 

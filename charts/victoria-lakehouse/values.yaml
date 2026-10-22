@@ -353,10 +353,12 @@ lakehouseConfig:
   # ---------------------------------------------------------------------------
   peer:
     # -- Key of the pods' internal endpoints (/internal/buffer/query, the
-    # peer cache, manifest, stats and tenant sync), sent and required as
-    # Authorization: Bearer. Empty: they take no credential and insert pods
+    # peer cache, manifest, stats and tenant sync), sent as Authorization:
+    # Bearer on the pod's own peer calls whenever it is set, and required only
+    # with peerAuth.enabled. Empty: they take no credential and insert pods
     # refuse all_tenants reads of their buffer. Rendered into the ConfigMap in
-    # plain text; prefer peerAuth.existingSecret. See docs/security.md.
+    # plain text; prefer peerAuth.existingSecret (peerAuth.enabled refuses this
+    # route). See docs/security.md.
     auth_key: ""
     # -- Timeout for peer cache fetch requests.
     timeout: 5s
@@ -1261,16 +1263,32 @@ vmauth:
 # -- The peer key (peer.auth_key) from an existing Secret instead of the
 # ConfigMap. Every Lakehouse pod gets it as LAKEHOUSE_PEER_AUTH_KEY and passes
 # -lakehouse.peer.auth-key=%{LAKEHOUSE_PEER_AUTH_KEY} (VictoriaMetrics expands
-# %{ENV_VAR} in flags and hides flags named *key* from /flags). Insert pods then
-# require it on /internal/buffer/query and select pods present it, so the
-# buffer bridge is authenticated. Create the Secret first, e.g.
+# %{ENV_VAR} in flags and hides flags named *key* from /flags). A pod sends the
+# key on its own peer calls (buffer bridge, peer cache, manifest, stats and
+# tenant sync) whenever it is set; whether the pods REQUIRE it is peerAuth.enabled.
+# Create the Secret first, e.g.
 #   kubectl create secret generic lakehouse-peer --from-literal=peer-auth-key="$(openssl rand -hex 32)"
-# Rotate by updating the Secret and restarting every pod.
+#
+# Peer authentication is OFF by default. Off means any client that can reach a
+# pod's port can call its internal endpoints (/internal/manifest/update,
+# /internal/cache/clear, /internal/stats/sync, /internal/tenant/sync and the
+# read-only /internal/cache/*, /internal/buffer/query), as upstream
+# VictoriaLogs/VictoriaTraces internals are protected by the network only.
+# Keep the pods on a protected network (networkPolicy, vmauth in front), or turn
+# it on in two steps so a rolling restart never refuses a pod:
+#   1. set existingSecret (enabled: false) and roll every pod: they all send the key;
+#   2. set enabled: true and roll every pod: they now refuse requests without it.
+# Rotate by updating the Secret and restarting every pod. See docs/security.md.
 peerAuth:
   # -- Name of a Secret in the release namespace; empty: not used.
   existingSecret: ""
   # -- Key inside the Secret that holds the peer key.
   secretKey: peer-auth-key
+  # -- Require the peer key on the pods' internal endpoints
+  # (-lakehouse.peer.auth-enabled). false (default): they take requests without
+  # a credential. true needs existingSecret (a plain key in lakehouseConfig is
+  # refused) and fails the render without it.
+  enabled: false
 
 networkPolicy:
   enabled: false

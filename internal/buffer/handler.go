@@ -2,7 +2,6 @@ package buffer
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -130,6 +130,10 @@ const (
 type Handler struct {
 	store   Source
 	authKey string
+	// peerKey is the peer key this pod holds when it does not enforce it
+	// (peer.auth_enabled is false): a request that presents it is a proven
+	// peer for all_tenants=true, the rest of the endpoint stays open.
+	peerKey string
 }
 
 // NewHandler creates a handler backed by the given Querier.
@@ -143,6 +147,17 @@ func NewHandler(store Source, authKey string) *Handler {
 	return &Handler{store: store, authKey: authKey}
 }
 
+// WithPeerKey sets the peer key a pod holds while it does not enforce it
+// (authKey empty, peer.auth_enabled false: the first step of a rollout, where
+// pods already send their key but do not yet refuse requests without one). A
+// request that presents it is a proven peer, so all_tenants=true is served to
+// it as it would be with the key enforced; every other request is answered as
+// without a key. With authKey set the peer key is that key and this is a no-op.
+func (h *Handler) WithPeerKey(key string) *Handler {
+	h.peerKey = key
+	return h
+}
+
 // authorized checks the peer key. It writes the refusal and returns false when
 // the request may not be served.
 func (h *Handler) authorized(w http.ResponseWriter, r *http.Request) bool {
@@ -154,7 +169,7 @@ func (h *Handler) authorized(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, MissingKeyMessage, http.StatusUnauthorized)
 		return false
 	}
-	if subtle.ConstantTimeCompare([]byte(got), []byte(h.authKey)) != 1 {
+	if !peerauth.Equal(got, h.authKey) {
 		http.Error(w, WrongKeyMessage, http.StatusUnauthorized)
 		return false
 	}
@@ -210,9 +225,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Every tenant's rows go only to a caller that proved it is a peer. With
-	// a key configured, authorized has checked it above; without one, nobody
-	// can prove it.
-	if sel.all && h.authKey == "" {
+	// the key enforced, authorized has checked it above; with it held but not
+	// enforced (WithPeerKey), the request must present it; without a key,
+	// nobody can prove it.
+	if sel.all && h.authKey == "" && !peerauth.BearerPresented(r, h.peerKey) {
 		http.Error(w, AllTenantsRefusedMessage, http.StatusForbidden)
 		return
 	}
