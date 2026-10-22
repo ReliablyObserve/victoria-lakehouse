@@ -11,7 +11,6 @@ rules:
   # Listed per file, so a new workflow file is still checked.
   artipacked:
     ignore:
-      - auto-release.yaml
       - badges.yaml
       - changelog-pr.yaml
       - ci.yaml
@@ -31,17 +30,6 @@ rules:
       - s3-compat.yaml
       - security.yaml
       - verification-matrix-check.yaml
-
-  # Expressions inside the release job's `run:` scripts. The release workflow is
-  # restructured as its own change (build / publish / metadata split); these go with it.
-  template-injection:
-    ignore:
-      - auto-release.yaml:234
-      - auto-release.yaml:272
-      - auto-release.yaml:332
-      - auto-release.yaml:341
-      - auto-release.yaml:399
-      - auto-release.yaml:406
 
   # Intentional triggers. `badges.yaml` follows the CI run on main and only reads the
   # checked-out main branch; `registry-gate-base.yaml` checks the pull request out as

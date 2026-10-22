@@ -40,7 +40,7 @@ def load_workflow() -> dict:
 
 
 def bump_script() -> str:
-    for step in load_workflow()["jobs"]["release"]["steps"]:
+    for step in load_workflow()["jobs"]["decide"]["steps"]:
         if step.get("name") == "Determine version bump":
             return step["run"]
     raise AssertionError("step 'Determine version bump' not found")
@@ -50,7 +50,11 @@ class WorkflowShapeTests(unittest.TestCase):
     def test_release_runs_are_serialized(self):
         concurrency = load_workflow().get("concurrency")
         self.assertIsNotNone(concurrency, "auto-release must declare a concurrency group")
-        self.assertEqual(concurrency.get("group"), "auto-release")
+        # A real run (push, or a manual run without dry_run) is in the group "auto-release";
+        # only a dry run has a group of its own, so it can never replace a queued release.
+        group = concurrency.get("group")
+        self.assertTrue(group.endswith("|| 'auto-release' }}"), group)
+        self.assertIn("inputs.dry_run &&", group)
         self.assertFalse(concurrency.get("cancel-in-progress"))
 
 

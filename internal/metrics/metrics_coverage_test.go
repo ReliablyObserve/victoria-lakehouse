@@ -5,7 +5,7 @@ import (
 )
 
 func TestGauge_Add(t *testing.T) {
-	g := NewGauge("test_gauge_add_cov")
+	g := NewGauge(benchMetricName("test_gauge_add_cov"))
 	g.Set(10)
 	g.Add(5)
 	if got := g.Get(); got != 15 {
@@ -18,7 +18,7 @@ func TestGauge_Add(t *testing.T) {
 }
 
 func TestCounterVec_Add(t *testing.T) {
-	cv := NewCounterVec("test_vec_add_cov", "op")
+	cv := NewCounterVec(benchMetricName("test_vec_add_cov"), "op")
 	cv.Add("read", 5)
 	cv.Add("read", 3)
 	if got := cv.Get("read"); got != 8 {
@@ -32,7 +32,7 @@ func TestCounterVec_Add(t *testing.T) {
 
 // TestGaugeVec_SetGet exercises GaugeVec.Set and GaugeVec.Get (previously 0%).
 func TestGaugeVec_SetGet(t *testing.T) {
-	gv := NewGaugeVec("test_gaugevec_setget_cov", "tenant")
+	gv := NewGaugeVec(benchMetricName("test_gaugevec_setget_cov"), "tenant")
 
 	gv.Set("prod", 42)
 	if got := gv.Get("prod"); got != 42 {
@@ -53,7 +53,7 @@ func TestGaugeVec_SetGet(t *testing.T) {
 
 // TestFloatGaugeVec_SetGet exercises FloatGaugeVec.Set and FloatGaugeVec.Get (previously 0%).
 func TestFloatGaugeVec_SetGet(t *testing.T) {
-	fgv := NewFloatGaugeVec("test_floatgaugevec_setget_cov", "region")
+	fgv := NewFloatGaugeVec(benchMetricName("test_floatgaugevec_setget_cov"), "region")
 
 	fgv.Set("us-east-1", 0.75)
 	if got := fgv.Get("us-east-1"); got != 0.75 {

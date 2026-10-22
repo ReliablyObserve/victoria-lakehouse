@@ -10,7 +10,7 @@ import (
 )
 
 func TestMemLeak_Counter_IncAddCycles(t *testing.T) {
-	c := NewCounter("test_memleak_counter_inc_total")
+	c := NewCounter(benchMetricName("test_memleak_counter_inc_total"))
 
 	runtime.GC()
 	runtime.GC()
@@ -42,7 +42,7 @@ func TestMemLeak_Counter_IncAddCycles(t *testing.T) {
 }
 
 func TestMemLeak_Gauge_SetIncDecCycles(t *testing.T) {
-	g := NewGauge("test_memleak_gauge_ops")
+	g := NewGauge(benchMetricName("test_memleak_gauge_ops"))
 
 	runtime.GC()
 	runtime.GC()
@@ -77,7 +77,7 @@ func TestMemLeak_Gauge_SetIncDecCycles(t *testing.T) {
 }
 
 func TestMemLeak_Histogram_ObserveCycles(t *testing.T) {
-	h := NewHistogram("test_memleak_histogram_obs", DefBuckets)
+	h := NewHistogram(benchMetricName("test_memleak_histogram_obs"), DefBuckets)
 
 	runtime.GC()
 	runtime.GC()
@@ -108,7 +108,7 @@ func TestMemLeak_Histogram_ObserveCycles(t *testing.T) {
 }
 
 func TestMemLeak_CounterVec_LabeledIncCycles(t *testing.T) {
-	cv := NewCounterVec("test_memleak_counter_vec_total", "op")
+	cv := NewCounterVec(benchMetricName("test_memleak_counter_vec_total"), "op")
 
 	const labels = 5
 	labelValues := make([]string, labels)
@@ -184,9 +184,9 @@ func TestMemLeak_WritePrometheus_Cycles(t *testing.T) {
 }
 
 func TestMemLeak_Metrics_ConcurrentOps(t *testing.T) {
-	c := NewCounter("test_memleak_metrics_concurrent_total")
-	g := NewGauge("test_memleak_metrics_concurrent_gauge")
-	h := NewHistogram("test_memleak_metrics_concurrent_hist", DefBuckets)
+	c := NewCounter(benchMetricName("test_memleak_metrics_concurrent_total"))
+	g := NewGauge(benchMetricName("test_memleak_metrics_concurrent_gauge"))
+	h := NewHistogram(benchMetricName("test_memleak_metrics_concurrent_hist"), DefBuckets)
 
 	runtime.GC()
 	runtime.GC()

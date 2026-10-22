@@ -1,29 +1,50 @@
 name: Auto Release
 
+# The release is four jobs with one write capability each, so that no job that builds
+# or runs repository code holds a token that can write:
+#
+#   decide   contents + pull requests read   skip decision, version (validated), outputs
+#   build    contents read, no secrets       binaries, images (OCI archives), chart, notes,
+#                                            release-metadata files -> workflow artifacts
+#   publish  packages + contents write       copies the artifacts: images and chart to GHCR,
+#                                            the GitHub release (a draft until the tag exists)
+#   metadata contents + pull requests write  tag, release published, release-metadata PR;
+#            + TOKEN_GITHUB, environment     the only job that reads the personal token
+#
+# Only decide and build compute anything; publish and metadata copy what build produced
+# and run no build tool (go, make, npm, pip, docker build). A manual run with
+# `dry_run: true` runs decide and build, pushes the images to a throwaway local registry
+# to prove the publish path, and prints what publish and metadata would do. See
+# docs/release-notes.md ("Dry run").
+
 on:
   push:
     branches: [main]
   # Manual release: the escape when the skip check cannot read a PR title.
   # Never skipped (not by [skip release], not by the docs-only check) and only on
   # main. `pr` is the merged pull request whose labels and size pick the bump.
+  # A dry run may start from any branch and never publishes anything.
   workflow_dispatch:
     inputs:
       pr:
         description: "Merged pull request number (labels and size choose the bump); empty for a patch"
         required: false
         type: string
+      dry_run:
+        description: "Dry run: build everything, push nothing (no images, chart, release, tag or pull request)"
+        required: false
+        default: false
+        type: boolean
 
-permissions:
-  contents: write
-  packages: write
-  pull-requests: write
+permissions: {}
 
 # Release runs are serialized. Two runs that start together read the same
 # latest tag and publish two releases from one base version (v0.121.1 and
 # v0.122.0 on 2026-09-14). A queued run fetches tags after the previous
-# run pushed its tag, so each release builds on the last one.
+# run pushed its tag, so each release builds on the last one. A dry run has its
+# own group per run: it never queues behind, replaces or delays a real release.
 concurrency:
-  group: auto-release
+  group: ${{ inputs.dry_run && format('auto-release-dry-run-{0}', github.run_id) || 'auto-release' }}
   cancel-in-progress: false
 
 env:
@@ -37,10 +58,19 @@ env:
   VT_VERSION: "v0.12.0"
 
 jobs:
-  release:
+  decide:
+    name: release-decide
     # A manual run may be started from any branch in the UI; only main releases.
-    if: github.ref == 'refs/heads/main'
+    # A dry run is the exception: it publishes nothing, so any branch may run it.
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release: ${{ steps.final.outputs.release }}
+      dry_run: ${{ steps.final.outputs.dry_run }}
+      next: ${{ steps.final.outputs.next }}
     steps:
       # `[skip release]` counts in the commit subject OR in the title of the PR
       # that produced the pushed commit (GitHub's default squash subject for a
@@ -51,31 +81,29 @@ jobs:
       # and the run turns red: start this workflow by hand (workflow_dispatch).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: scripts/ci
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Check skip release
         id: skip_release
+        # A dry run is a manual run, which is never skipped; the script would only refuse
+        # its branch.
+        if: inputs.dry_run != true
         run: python3 scripts/ci/release_skip.py
         env:
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: steps.skip_release.outputs.skip != 'true'
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.TOKEN_GITHUB || secrets.GITHUB_TOKEN }}
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        if: steps.skip_release.outputs.skip != 'true'
-        with:
-          go-version-file: go.mod
-
       - name: Determine version bump
         if: steps.skip_release.outputs.skip != 'true'
         id: version
         run: |
+          # Only tags of the exact form vMAJOR.MINOR.PATCH take part: a tag with
+          # anything else in its name is ignored (a warning counts them), so a stray
+          # or hostile tag can neither reach a script nor stop the releases.
+          TAG_RE='^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
+
           # `git describe` walks the commit graph from HEAD, so its
           # "latest tag" is the closest reachable tag — not the
           # highest version number in the global tag space. After
@@ -86,9 +114,14 @@ jobs:
           # failure mode this workflow hit on PR #122.
           git fetch --tags --force --quiet origin || true
           LATEST_TAG=$(git tag -l 'v[0-9]*' \
+                        | LC_ALL=C grep -E "$TAG_RE" \
                         | sort -V \
-                        | tail -1)
+                        | tail -1 || true)
           LATEST_TAG=${LATEST_TAG:-v0.0.0}
+          IGNORED=$(git tag -l 'v[0-9]*' | LC_ALL=C grep -c -v -E "$TAG_RE" || true)
+          if [ "${IGNORED:-0}" != "0" ]; then
+            echo "::warning::${IGNORED} tag(s) starting with v are not vMAJOR.MINOR.PATCH and are ignored"
+          fi
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
           # A manual run has no push event: the PR comes from its input and the
@@ -96,9 +129,16 @@ jobs:
           if [ "$EVENT_NAME" = workflow_dispatch ]; then
             PR_NUM="$PR_INPUT"
             COMMIT_MSG=$(git log -1 --format=%B)
+            if [ -n "$PR_NUM" ] && ! [[ "$PR_NUM" =~ ^[0-9]{1,9}$ ]]; then
+              echo "::error::the pr input must be a pull request number"
+              exit 1
+            fi
           else
             # Parse PR number from the merge commit subject.
             PR_NUM=$(echo "$COMMIT_MSG" | head -1 | grep -oP '#\K[0-9]+' | head -1 || true)
+            if [ -n "$PR_NUM" ] && ! [[ "$PR_NUM" =~ ^[0-9]{1,9}$ ]]; then
+              PR_NUM=""
+            fi
           fi
 
           # Pull PR size signals so big PRs auto-promote to a
@@ -187,6 +227,13 @@ jobs:
             NEXT="v${MAJOR}.${MINOR}.${PATCH}"
           done
 
+          # The version is the one value every later job turns into tag, image and
+          # file names: it must be a plain version before it is published.
+          if ! [[ "$NEXT" =~ $TAG_RE ]]; then
+            echo "::error::computed version is not vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
           echo "bump=$BUMP" >> $GITHUB_OUTPUT
           echo "next=$NEXT" >> $GITHUB_OUTPUT
           echo "pr_total=$PR_TOTAL" >> $GITHUB_OUTPUT
@@ -213,6 +260,60 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
 
+      # The one decision the other jobs read: release only when neither check skipped,
+      # and only with a plain version. dry_run is exactly true or false.
+      - name: Publish the decision
+        id: final
+        run: |
+          RELEASE=false
+          if [ "$SKIP_RELEASE" != true ] && [ "$SKIP_PRODUCT" != true ]; then
+            RELEASE=true
+          fi
+          DRY_RUN=false
+          if [ "$DRY_RUN_INPUT" = true ]; then
+            DRY_RUN=true
+          fi
+          if [ "$RELEASE" = true ] && ! [[ "$NEXT" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]]; then
+            echo "::error::no valid version to release"
+            exit 1
+          fi
+          {
+            echo "release=$RELEASE"
+            echo "dry_run=$DRY_RUN"
+            echo "next=$NEXT"
+          } >> "$GITHUB_OUTPUT"
+          echo "release=$RELEASE dry_run=$DRY_RUN next=$NEXT"
+        env:
+          SKIP_RELEASE: ${{ steps.skip_release.outputs.skip }}
+          SKIP_PRODUCT: ${{ steps.skip.outputs.skip }}
+          NEXT: ${{ steps.version.outputs.next }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+
+  build:
+    name: release-build
+    needs: decide
+    if: needs.decide.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    # Builds everything the release publishes and runs repository, dependency and
+    # upstream code to do it: no secret, no write permission, no pushed credential.
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.decide.outputs.next }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the version
+        run: |
+          [[ "$VERSION" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || { echo "::error::not a release version"; exit 1; }
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
       # Delegate to the Makefile — single source of truth for the
       # patch list. See ci.yaml deps job for the drift-prevention
       # rationale. The pins in the env block above exist only to pass the
@@ -220,21 +321,16 @@ jobs:
       # the Makefile itself, and TestDockerfilePinsMatchMakefile fails if the
       # Dockerfile defaults ever disagree with it.
       - name: Prepare VL deps (logs)
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: make deps-logs
 
       - name: Prepare VL deps (traces)
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: make deps-traces
 
       - name: Prepare VT deps (traces)
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: make deps-vt
 
       - name: Build binaries
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
-          VERSION=${{ steps.version.outputs.next }}
           LDFLAGS="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}"
           mkdir -p dist
 
@@ -242,13 +338,13 @@ jobs:
             for GOARCH in amd64 arm64; do
               echo "Building lakehouse-logs ${GOOS}/${GOARCH}..."
               CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
-                go build -ldflags "$LDFLAGS" \
+                go build -trimpath -buildvcs=false -ldflags "$LDFLAGS" \
                 -o "dist/lakehouse-logs-${GOOS}-${GOARCH}" ./cmd/lakehouse-logs
 
               echo "Building lakehouse-traces ${GOOS}/${GOARCH}..."
               cd lakehouse-traces
               CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
-                go build -ldflags "$LDFLAGS" \
+                go build -trimpath -buildvcs=false -ldflags "$LDFLAGS" \
                 -o "../dist/lakehouse-traces-${GOOS}-${GOARCH}" .
               cd ..
             done
@@ -256,38 +352,17 @@ jobs:
 
           cd dist && sha256sum lakehouse-* > checksums.txt
 
-      - name: Login to Docker Hub (optional)
-        # secrets.* cannot be used directly in `if:` expressions per
-        # https://docs.github.com/actions/security-guides/using-secrets-in-github-actions
-        # ; we instead gate on an env var that pulls from secrets and is empty
-        # when the secret is unset (forks, public CI).
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true' && env.DOCKERHUB_USERNAME != ''
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build images
         run: |
-          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
-          echo "DOCKERHUB_ENABLED=true" >> $GITHUB_ENV
-
-      - name: Build and push Docker images
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
-        run: |
-          VERSION=${{ steps.version.outputs.next }}
-          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
+          mkdir -p "$RUNNER_TEMP/release-images"
           docker buildx create --use
 
-          # We publish two variants per module:
-          # Canonical and legacy flat GHCR repositories get v-prefixed,
-          # unprefixed and latest aliases from the same multiarch build.
-          # Only this release is published; historical tags are not backfilled.
-          # Both go to ghcr.io always. Docker Hub mirroring is conditional
-          # on the DOCKERHUB_USERNAME secret being set so forks don't fail
-          # on missing creds.
+          # We build two variants per module (default and fips) as multi-arch OCI
+          # archives; the publish job copies them to the registries under their tags.
+          # zstd compression on image layers + OCI media types so
+          # registries serve the smaller streamed payload to clients.
+          # compression-level=3 is the GHA-runner-friendly default
+          # (~3% larger than -7 at ~5x the encode speed).
           for MODULE in logs traces; do
             for VARIANT in default fips; do
               TAG_SUFFIX=""
@@ -296,25 +371,7 @@ jobs:
                 TAG_SUFFIX="-fips"
                 FIPS_ARG="1"
               fi
-              GHCR_TAGS=()
-              for GHCR_REPO in "$REPO" "${REPO%%/*}"; do
-                for RELEASE_TAG in "$VERSION" "${VERSION#v}" latest; do
-                  GHCR_TAGS+=(-t "ghcr.io/${GHCR_REPO}/lakehouse-${MODULE}:${RELEASE_TAG}${TAG_SUFFIX}")
-                done
-              done
-              HUB_TAGS=()
-              if [[ "${DOCKERHUB_ENABLED:-false}" == "true" && -n "$DOCKERHUB_USERNAME" ]]; then
-                # Use a configurable Docker Hub namespace (must match the
-                # secret's owner). Default to "reliablyobserve" if unset.
-                HUB_OWNER="${DOCKERHUB_NAMESPACE:-reliablyobserve}"
-                HUB_TAGS=(-t "docker.io/${HUB_OWNER}/lakehouse-${MODULE}:${VERSION}${TAG_SUFFIX}"
-                          -t "docker.io/${HUB_OWNER}/lakehouse-${MODULE}:latest${TAG_SUFFIX}")
-              fi
               echo "Building lakehouse-${MODULE} variant=${VARIANT} fips=${FIPS_ARG}..."
-              # zstd compression on image layers + OCI media types so
-              # registries serve the smaller streamed payload to clients.
-              # compression-level=3 is the GHA-runner-friendly default
-              # (~3% larger than -7 at ~5x the encode speed).
               docker buildx build \
                 --platform linux/amd64,linux/arm64 \
                 -f Dockerfile.${MODULE} \
@@ -323,33 +380,30 @@ jobs:
                 --build-arg VL_VERSION=${VL_VERSION_LOGS} \
                 --build-arg VL_COMMIT=${VL_COMMIT_TRACES} \
                 --build-arg VT_VERSION=${VT_VERSION} \
-                "${GHCR_TAGS[@]}" "${HUB_TAGS[@]}" \
-                --output type=image,compression=zstd,compression-level=3,oci-mediatypes=true,push=true \
+                --output "type=oci,dest=${RUNNER_TEMP}/release-images/lakehouse-${MODULE}${TAG_SUFFIX}.tar,compression=zstd,compression-level=3,oci-mediatypes=true" \
                 .
             done
           done
 
       - name: Package Helm chart
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
         run: |
-          VERSION=${{ steps.version.outputs.next }}
           # Update Chart.yaml version
           sed -i "s/^version:.*/version: ${VERSION#v}/" charts/victoria-lakehouse/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${VERSION#v}\"/" charts/victoria-lakehouse/Chart.yaml
           helm package charts/victoria-lakehouse/ -d dist/
 
-      - name: Create release
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
+      - name: Render release notes
         run: |
-          VERSION=${{ steps.version.outputs.next }}
-          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          # The tag is created by the metadata job once the release is complete; the notes
+          # need it here to find the previous release (this tag exists in this workspace only).
           git tag "$VERSION"
-          git push origin "$VERSION"
+          mkdir -p "$RUNNER_TEMP/release-notes"
 
           # Release notes in the VictoriaLogs style from [Unreleased] (this version's section exists only after the metadata PR)
           NOTES=$(python3 scripts/ci/release_notes.py --version Unreleased --after-tag "$(git describe --tags --abbrev=0 "$VERSION^" 2>/dev/null)" || echo "Released at $(date -u +%F)")
 
-          cat > /tmp/release-notes.md <<EOF
+          cat > "$RUNNER_TEMP/release-notes/release-notes.md" <<EOF
           ${NOTES}
 
           ## Release Artifacts
@@ -382,7 +436,7 @@ jobs:
 
           ### Helm Chart
           \`\`\`bash
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           helm install lakehouse-logs oci://ghcr.io/\${OWNER}/charts/victoria-lakehouse \\
             --set logs.enabled=true --set traces.enabled=false
           helm install lakehouse-traces oci://ghcr.io/\${OWNER}/charts/victoria-lakehouse \\
@@ -390,36 +444,18 @@ jobs:
           \`\`\`
           EOF
 
-          gh release create "$VERSION" dist/* \
-            --title "$VERSION" \
-            --notes-file /tmp/release-notes.md
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push Helm chart to GHCR
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
+      # The release-metadata pull request is prepared here, where running the repository's
+      # generators is safe, and only its four files travel to the metadata job as data.
+      - name: Prepare release metadata
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${OWNER}/charts
+          REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          META="$RUNNER_TEMP/release-meta"
+          mkdir -p "$META/files/docs" "$META/files/charts/victoria-lakehouse"
 
-      - name: Create release metadata PR
-        if: steps.skip_release.outputs.skip != 'true' && steps.skip.outputs.skip != 'true'
-        run: |
-          VERSION=${{ steps.version.outputs.next }}
-          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          BRANCH="chore/release-metadata-${VERSION}"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-
-          # 1. Chart.yaml is already updated from the package step — stage it
-          git add charts/victoria-lakehouse/Chart.yaml
+          # 1. Chart.yaml is already updated from the package step.
 
           # 2. Materialize [Unreleased] → [VERSION] - DATE in CHANGELOG
           bash scripts/ci/materialize_unreleased.sh "${VERSION#v}"
-          git add CHANGELOG.md
 
           # 2b. Regenerate docs/features.md. A feature that still has an
           # [Unreleased] bullet is named "the release after vX" there, so cutting
@@ -427,31 +463,28 @@ jobs:
           # the `make deps-*` steps above. Only docs/features.md belongs in a
           # release-metadata PR (its diff is version naming), so every other file
           # confgen writes is reverted. A failure does not stop the PR: it is
-          # opened with a loud note and this step fails after it exists.
+          # opened with a loud note and the metadata job fails after it exists.
           REGEN_NOTE=""
-          if GOWORK=off go run ./tests/conformance/cmd/confgen -write; then
-            git checkout -- README.md UPSTREAM_COVERAGE.md tests/conformance/inventory.generated.yaml
-            git add docs/features.md
-          else
+          if ! GOWORK=off go run ./tests/conformance/cmd/confgen -write; then
             REGEN_NOTE="**docs/features.md NOT regenerated — run \`make conformance-gen\` on this branch and push, or the registry checks will fail.**"
             echo "::error::confgen failed: docs/features.md NOT regenerated"
+            git checkout -- docs/features.md
+            : > "$META/regen-failed"
           fi
+          git checkout -- README.md UPSTREAM_COVERAGE.md tests/conformance/inventory.generated.yaml
 
           # 3. Update appVersion in README badge if present
           sed -i "s/appVersion-[0-9]*\.[0-9]*\.[0-9]*/appVersion-${VERSION#v}/" README.md 2>/dev/null || true
-          git add README.md 2>/dev/null || true
+
+          cp CHANGELOG.md "$META/files/CHANGELOG.md"
+          cp docs/features.md "$META/files/docs/features.md"
+          cp README.md "$META/files/README.md"
+          cp charts/victoria-lakehouse/Chart.yaml "$META/files/charts/victoria-lakehouse/Chart.yaml"
 
           # Extract release notes for PR body
           NOTES=$(bash scripts/ci/extract_changelog_section.sh "${VERSION#v}" 2>/dev/null || echo "See CHANGELOG.md")
 
-          git commit -m "chore: release metadata for ${VERSION} [skip release]"
-          git push origin "$BRANCH"
-
-          for ATTEMPT in 1 2 3 4 5; do
-            echo "Attempt $ATTEMPT: creating release metadata PR..."
-            PR_URL=$(gh pr create \
-              --title "chore: release metadata for ${VERSION} [skip release]" \
-              --body "$(cat <<EOF
+          cat > "$META/pr-body.md" <<EOF
           ## Release ${VERSION}
 
           Auto-generated after ${VERSION} release. Updates:
@@ -470,7 +503,218 @@ jobs:
 
           ${NOTES}
           EOF
-          )" \
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-images
+          path: ${{ runner.temp }}/release-images/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: ${{ runner.temp }}/release-notes/
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-meta
+          path: ${{ runner.temp }}/release-meta/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: release-publish
+    needs: [decide, build]
+    if: github.ref == 'refs/heads/main' && needs.decide.outputs.release == 'true' && needs.decide.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    # The only job that writes packages and the GitHub release. It runs no build tool: it
+    # copies what the build job produced, with skopeo, helm and gh and with the push
+    # script from the checked-out main commit (the commit being released, not a pull
+    # request). The release stays a draft until the metadata job has pushed the tag.
+    permissions:
+      contents: write
+      packages: write
+    env:
+      VERSION: ${{ needs.decide.outputs.next }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: Check the version
+        run: |
+          [[ "$VERSION" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || { echo "::error::not a release version"; exit 1; }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-images
+          path: images
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: release-notes
+
+      - name: Verify the downloaded release files
+        run: |
+          (cd dist && sha256sum -c checksums.txt)
+          ls -1 images release-notes
+
+      - name: Login to GHCR
+        run: |
+          # One auth file for skopeo (images) and helm; later steps read it from the env.
+          echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/registry-auth.json" >> "$GITHUB_ENV"
+          export REGISTRY_AUTH_FILE="$RUNNER_TEMP/registry-auth.json"
+          printf '%s' "$GHCR_TOKEN" | skopeo login ghcr.io -u "$GHCR_USER" --password-stdin
+          printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io -u "$GHCR_USER" --password-stdin
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub (optional)
+        # secrets.* cannot be used directly in `if:` expressions per
+        # https://docs.github.com/actions/security-guides/using-secrets-in-github-actions
+        # ; we instead gate on an env var that pulls from secrets and is empty
+        # when the secret is unset (forks, public CI).
+        if: env.DOCKERHUB_USERNAME != ''
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "$DOCKERHUB_TOKEN" | skopeo login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
+          echo "DOCKERHUB_ENABLED=true" >> $GITHUB_ENV
+
+      - name: Push Docker images
+        run: bash scripts/ci/release_push_images.sh
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+
+      - name: Push Helm chart to GHCR
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          helm push dist/victoria-lakehouse-*.tgz oci://ghcr.io/${OWNER}/charts
+
+      # A draft has no tag yet: the metadata job pushes the tag with the personal token
+      # (so tag rules apply to it) and then publishes the draft. The release never
+      # creates the tag itself.
+      - name: Create draft release
+        run: |
+          gh release create "$VERSION" dist/* \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --notes-file release-notes/release-notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  metadata:
+    name: release-metadata
+    needs: [decide, publish]
+    if: github.ref == 'refs/heads/main' && needs.decide.outputs.release == 'true' && needs.decide.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    # The only job that reads TOKEN_GITHUB. It pushes the tag, publishes the draft release
+    # and opens the release-metadata pull request with the files the build job prepared; it
+    # runs no repository code. `environment: release` lets the owner scope the secret to it.
+    # The built-in token keeps contents and pull-requests write only because the
+    # checkout and the pull request fall back to it when TOKEN_GITHUB is not set (forks).
+    environment: release
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.decide.outputs.next }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check the version
+        run: |
+          [[ "$VERSION" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || { echo "::error::not a release version"; exit 1; }
+
+      # Pushing needs the credential in the local git config; this is the only job that keeps it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: ${{ secrets.TOKEN_GITHUB || secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-meta
+          path: ${{ runner.temp }}/release-meta
+
+      - name: Push the tag
+        run: |
+          git tag "$VERSION" "$GITHUB_SHA"
+          git push origin "refs/tags/$VERSION"
+
+      - name: Publish the release
+        run: |
+          RELEASE_ID=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '[.[] | select(.draft and .tag_name == env.VERSION) | .id] | first')
+          if ! [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::no draft release for $VERSION"
+            exit 1
+          fi
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" -F draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create release metadata PR
+        run: |
+          META="$RUNNER_TEMP/release-meta"
+          BRANCH="chore/release-metadata-${VERSION}"
+
+          # Only these four files, as regular files, are taken from the build job's artifact.
+          ALLOWED="CHANGELOG.md docs/features.md README.md charts/victoria-lakehouse/Chart.yaml"
+          if [ "$(find "$META/files" \( -type f -o -type l \) | wc -l | tr -d ' ')" != "4" ]; then
+            echo "::error::the release-meta artifact does not hold exactly the four metadata files"
+            exit 1
+          fi
+          for F in $ALLOWED; do
+            if [ ! -f "$META/files/$F" ] || [ -L "$META/files/$F" ] || [ "$(wc -c < "$META/files/$F")" -gt 8388608 ]; then
+              echo "::error::release-meta file $F is missing, not a regular file or too large"
+              exit 1
+            fi
+          done
+          if [ ! -f "$META/pr-body.md" ] || [ -L "$META/pr-body.md" ] || [ "$(wc -c < "$META/pr-body.md")" -gt 60000 ]; then
+            echo "::error::release-meta pr-body.md is missing, not a regular file or too large"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          for F in $ALLOWED; do
+            cp -- "$META/files/$F" "$F"
+            git add -- "$F"
+          done
+
+          git commit -m "chore: release metadata for ${VERSION} [skip release]"
+          git push origin "$BRANCH"
+
+          for ATTEMPT in 1 2 3 4 5; do
+            echo "Attempt $ATTEMPT: creating release metadata PR..."
+            PR_URL=$(gh pr create \
+              --title "chore: release metadata for ${VERSION} [skip release]" \
+              --body-file "$META/pr-body.md" \
               --base main \
               --head "$BRANCH" \
               --label "release:patch" 2>&1) && break
@@ -486,9 +730,116 @@ jobs:
           done
 
           echo "Release metadata PR created: $PR_URL"
-          if [ -n "$REGEN_NOTE" ]; then
+          if [ -e "$META/regen-failed" ]; then
             echo "::error::docs/features.md was NOT regenerated; fix the metadata PR $PR_URL by hand"
             exit 1
           fi
         env:
           GH_TOKEN: ${{ secrets.TOKEN_GITHUB || secrets.GITHUB_TOKEN }}
+
+  dry-run:
+    name: release-dry-run
+    needs: [decide, build]
+    if: needs.decide.outputs.dry_run == 'true' && needs.decide.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    # Read-only and secret-free, and it has no environment, so it can run from any branch.
+    # It proves the publish path without touching a real registry: the archives the build
+    # job made are pushed with the real push script to a throwaway registry on this
+    # runner, and what publish and metadata would do is printed.
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.decide.outputs.next }}
+    services:
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+
+      - name: Check the version
+        run: |
+          [[ "$VERSION" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || { echo "::error::not a release version"; exit 1; }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-dist
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-images
+          path: images
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: release-notes
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-meta
+          path: release-meta
+
+      - name: Verify the artifacts and rehearse the image push
+        run: |
+          (cd dist && sha256sum -c checksums.txt)
+          test -s release-notes/release-notes.md
+          test -s release-meta/pr-body.md
+          for F in CHANGELOG.md docs/features.md README.md charts/victoria-lakehouse/Chart.yaml; do test -f "release-meta/files/$F"; done
+
+          # The real push script, a local registry instead of GHCR (no credentials, no Docker Hub).
+          GHCR_HOST=localhost:5000 SKOPEO_DEST_FLAGS=--dest-tls-verify=false DOCKERHUB_ENABLED=false \
+            bash scripts/ci/release_push_images.sh
+
+          REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "### Release dry run: ${VERSION}"
+            echo
+            echo "Nothing was pushed to GHCR, Docker Hub or GitHub. Publish and metadata did not run."
+            echo
+            echo "#### Images (rehearsed against a local registry, manifest digests compared with the build output)"
+            echo
+            echo "| Image | Platforms and attestations | Manifest digests equal |"
+            echo "|---|---|---|"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for MODULE in logs traces; do
+            for SUFFIX in "" -fips; do
+              # skopeo adds a zstd annotation to the index entries, so the index digest
+              # differs from the built one; the platform and attestation manifests must not.
+              BUILT=$(skopeo inspect --raw "oci-archive:images/lakehouse-${MODULE}${SUFFIX}.tar" | jq -r '.manifests[].digest' | sort)
+              RAW=$(skopeo inspect --raw --tls-verify=false "docker://localhost:5000/${REPO}/lakehouse-${MODULE}:${VERSION}${SUFFIX}")
+              PUSHED=$(printf '%s' "$RAW" | jq -r '.manifests[].digest' | sort)
+              ENTRIES=$(printf '%s' "$RAW" | jq -r '[.manifests[] | if .platform.os == "unknown" then "attestation" else "\(.platform.os)/\(.platform.architecture)" end] | join(", ")')
+              if [ -z "$BUILT" ] || [ "$BUILT" != "$PUSHED" ]; then
+                echo "::error::lakehouse-${MODULE}${SUFFIX}: pushed manifests differ from the built ones"
+                exit 1
+              fi
+              echo "| lakehouse-${MODULE}:${VERSION}${SUFFIX} | ${ENTRIES} | yes |" | tee -a "$GITHUB_STEP_SUMMARY"
+            done
+          done
+
+      - name: What publish and metadata would do
+        run: |
+          REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          {
+            echo
+            echo "#### publish would"
+            echo
+            echo "- copy the 4 image archives to ghcr.io/${REPO}/lakehouse-{logs,traces}[-fips] and ghcr.io/${REPO%%/*}/lakehouse-{logs,traces}[-fips] with the tags ${VERSION}, ${VERSION#v} and latest (plus Docker Hub when enabled)"
+            echo "- push the chart ($(ls dist/victoria-lakehouse-*.tgz | xargs -n1 basename)) to oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+            echo "- create the draft release ${VERSION} at ${GITHUB_SHA} with these assets: $(ls dist | tr '\n' ' ')"
+            echo
+            echo "#### metadata would"
+            echo
+            echo "- push the tag ${VERSION} at ${GITHUB_SHA}, publish the draft release"
+            echo "- open the pull request \"chore: release metadata for ${VERSION} [skip release]\" from branch chore/release-metadata-${VERSION} changing: $(cd release-meta/files && find . -type f | sed 's|^\./||' | sort | tr '\n' ' ')"
+            echo
+            echo "#### release notes that would be published"
+            echo
+            sed 's/^/    /' release-notes/release-notes.md
+          } | tee -a "$GITHUB_STEP_SUMMARY"
