@@ -806,7 +806,7 @@ jobs:
             echo
             echo "| Image | Platforms and attestations | Manifest digests equal |"
             echo "|---|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           for MODULE in logs traces; do
             for SUFFIX in "" -fips; do
               # skopeo adds a zstd annotation to the index entries, so the index digest
@@ -819,7 +819,7 @@ jobs:
                 echo "::error::lakehouse-${MODULE}${SUFFIX}: pushed manifests differ from the built ones"
                 exit 1
               fi
-              echo "| lakehouse-${MODULE}:${VERSION}${SUFFIX} | ${ENTRIES} | yes |" >> "$GITHUB_STEP_SUMMARY"
+              echo "| lakehouse-${MODULE}:${VERSION}${SUFFIX} | ${ENTRIES} | yes |" | tee -a "$GITHUB_STEP_SUMMARY"
             done
           done
 
