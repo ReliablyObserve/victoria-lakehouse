@@ -59,8 +59,8 @@
     - internal/config/peer_auth_enabled_test.go#TestPeerAuthEnabled_YAMLAndMerge
     - internal/config/peer_auth_enabled_test.go#TestValidate_PeerAuthEnabledNeedsAKey
     - internal/config/peer_auth_enabled_test.go#TestValidate_PeerBodyCapNotNegative
-    - internal/peerauth/peerauth_test.go#FuzzBearer
-    - internal/peerauth/peerauth_test.go#FuzzEqual
+    - internal/peerauth/peerauth_test.go#TestBearer_Property
+    - internal/peerauth/peerauth_test.go#TestEqual_Property
     - internal/peerauth/peerauth_test.go#TestBearer
     - internal/peerauth/peerauth_test.go#TestEqual
     - internal/peerauth/peerauth_test.go#TestHeader

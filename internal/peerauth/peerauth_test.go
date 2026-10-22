@@ -1,6 +1,7 @@
 package peerauth
 
 import (
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -38,15 +39,27 @@ func TestEqual(t *testing.T) {
 	}
 }
 
-func FuzzEqual(f *testing.F) {
-	f.Add("k", "k")
-	f.Add("", "x")
-	f.Add("a\x00b", "a")
-	f.Fuzz(func(t *testing.T, a, b string) {
+// randString draws from a small alphabet so equal and near-equal pairs are common.
+func randString(r *rand.Rand) string {
+	const alphabet = "ab\x00 Bearer"
+	n := r.Intn(6)
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = alphabet[r.Intn(len(alphabet))]
+	}
+	return string(b)
+}
+
+// Equal agrees with == on every pair (a property check with a fixed seed;
+// internal/buffer's FuzzBufferQueryAuth fuzzes the same check through the handler in CI).
+func TestEqual_Property(t *testing.T) {
+	r := rand.New(rand.NewSource(1))
+	for i := 0; i < 20000; i++ {
+		a, b := randString(r), randString(r)
 		if got := Equal(a, b); got != (a == b) {
 			t.Fatalf("Equal(%q, %q) = %v", a, b, got)
 		}
-	})
+	}
 }
 
 // Only exactly "Bearer <key>" is served; an empty key enforces nothing.
@@ -81,19 +94,24 @@ func TestBearer(t *testing.T) {
 	}
 }
 
-func FuzzBearer(f *testing.F) {
-	f.Add("Bearer k", "k")
-	f.Add("", "k")
-	f.Add("Bearer ", "")
-	f.Fuzz(func(t *testing.T, authz, key string) {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.Header["Authorization"] = []string{authz}
-		got := Bearer(r, key)
-		want := key == "" || (strings.HasPrefix(authz, "Bearer ") && authz == "Bearer "+key)
-		if got != want {
+// Bearer serves exactly "Bearer <key>" for a non-empty key, whatever else the header holds.
+func TestBearer_Property(t *testing.T) {
+	r := rand.New(rand.NewSource(2))
+	for i := 0; i < 20000; i++ {
+		authz, key := randString(r), randString(r)
+		if r.Intn(3) == 0 {
+			authz = "Bearer " + key
+		}
+		q := httptest.NewRequest(http.MethodGet, "/", nil)
+		q.Header["Authorization"] = []string{authz}
+		want := key == "" || authz == "Bearer "+key && strings.HasPrefix(authz, "Bearer ")
+		if got := Bearer(q, key); got != want {
 			t.Fatalf("Bearer(%q, key %q) = %v, want %v", authz, key, got, want)
 		}
-	})
+		if got := BearerPresented(q, key); got != (key != "" && authz == "Bearer "+key) {
+			t.Fatalf("BearerPresented(%q, key %q) = %v", authz, key, got)
+		}
+	}
 }
 
 func TestHeader(t *testing.T) {
