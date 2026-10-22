@@ -24,6 +24,15 @@ The job fails when any of the following is true:
 6. The number of passing tests dropped below the allowlist's recorded
    ``min-pass`` expectation — coverage went backwards even though nothing
    turned red (for example a test started skipping on missing data).
+   The same applies per signal: ``min-pass-logs`` and ``min-pass-traces``
+   hold a floor for each binary's results (a result belongs to a signal by the
+   rules of ``signal_of``), so one signal cannot lose its tests while the
+   other keeps the combined count up. A floor is declared, so a signal with a
+   floor and no results at all is reported as such.
+8. A test reported ``skip`` and the allowlist does not list it as an expected
+   skip. A skip never counts as a pass here: ``# expected-skip: <path>  #
+   <reason>`` is the only way to allow one, and an entry whose test stops
+   skipping is stale like any other.
 
 Results are keyed by ``(package, test)``, so the same test name in two
 packages is two results; an allowlist entry names a test path and covers that
@@ -72,6 +81,14 @@ from typing import Iterable
 TERMINAL_ACTIONS = ("pass", "fail", "skip")
 
 MIN_PASS_DIRECTIVE = "min-pass:"
+
+# One floor per signal, next to the combined one. `min-pass-logs:` does not start with
+# `min-pass:`, so the readers of the combined directive never see these.
+SIGNALS = ("logs", "traces")
+SIGNAL_MIN_PASS_DIRECTIVES = {"logs": "min-pass-logs:", "traces": "min-pass-traces:"}
+
+# `# expected-skip: <test path>  # <reason>`: a skip the suite is allowed to report.
+EXPECTED_SKIP_DIRECTIVE = "expected-skip:"
 
 # The allowlist separates a test path from its reason with a `#` that has
 # whitespace on its left and whitespace (or the end of the line) on its right.
@@ -128,6 +145,21 @@ class Allowlist:
 
     entries: dict[str, str] = field(default_factory=dict)
     min_pass: int | None = None
+    # signal -> minimum passes of that signal's results
+    signal_min_pass: dict[str, int] = field(default_factory=dict)
+    # test path -> reason: skips the suite may report
+    expected_skips: dict[str, str] = field(default_factory=dict)
+
+
+def _parse_floor(value: str, directive_name: str, lineno: int) -> int:
+    """The number after a floor directive: ASCII digits only."""
+    # ASCII digits only (int() also takes "+3", "3_41" and Arabic-Indic digits): the Go
+    # gate (registry.MinPassProblems) reads the directive the same way
+    if re.fullmatch(r"-[0-9]+", value):
+        raise ValueError(f"line {lineno}: {directive_name} must not be negative, got {value}")
+    if not re.fullmatch(r"[0-9]{1,15}", value):
+        raise ValueError(f"line {lineno}: invalid {directive_name} value {value!r}")
+    return int(value)
 
 
 def parse_allowlist(text: str) -> Allowlist:
@@ -135,38 +167,60 @@ def parse_allowlist(text: str) -> Allowlist:
 
     Each non-comment line is ``<test path>  # <reason>``: the path, then a
     ``#`` with whitespace on both sides, then the reason. The reason is
-    mandatory so every entry points at a tracked divergence. A single
-    ``# min-pass: N`` comment records the expected number of passing tests.
+    mandatory so every entry points at a tracked divergence. Comment lines can
+    carry directives, each at most once:
+
+    * ``# min-pass: N``: the expected number of passing tests;
+    * ``# min-pass-logs: N`` and ``# min-pass-traces: N``: the same per signal;
+    * ``# expected-skip: <test path>  # <reason>``: a test that may report
+      ``skip`` (any other skip fails the run); one line per test.
     """
     result = Allowlist()
-    min_pass_line: int | None = None
+    floor_lines: dict[str, int] = {}
     decode_parity_data(text.encode("utf-8", errors="surrogatepass"), "allowlist")
+    floors = {MIN_PASS_DIRECTIVE: None}
+    floors.update({d: sig for sig, d in SIGNAL_MIN_PASS_DIRECTIVES.items()})
     for lineno, raw in enumerate(text.split("\n"), start=1):
         line = raw.strip()
         if not line:
             continue
         if line.startswith("#"):
             directive = line.lstrip("#").strip()
-            if directive.startswith(MIN_PASS_DIRECTIVE):
-                if min_pass_line is not None:
+            if directive.startswith(EXPECTED_SKIP_DIRECTIVE):
+                body = directive[len(EXPECTED_SKIP_DIRECTIVE) :].strip()
+                parts = REASON_SEPARATOR.split(body, maxsplit=1)
+                name = parts[0].strip()
+                reason = parts[1].strip() if len(parts) == 2 else ""
+                if not name or any(ch.isspace() for ch in name):
                     raise ValueError(
-                        f"line {lineno}: duplicate min-pass directive (the first "
-                        f"is on line {min_pass_line}) — keep exactly one"
+                        f"line {lineno}: expected-skip needs one test path without whitespace, got {body!r}"
                     )
-                value = directive[len(MIN_PASS_DIRECTIVE) :].strip()
-                # ASCII digits only (int() also takes "+3", "3_41" and Arabic-Indic digits): the Go
-                # gate (registry.MinPassProblems) reads the directive the same way
-                if re.fullmatch(r"-[0-9]+", value):
+                if not reason:
                     raise ValueError(
-                        f"line {lineno}: min-pass must not be negative, got {value}"
+                        f"line {lineno}: expected-skip {name!r} has no ' # reason' — say why the test "
+                        "may skip and link the issue that tracks it"
                     )
-                if not re.fullmatch(r"[0-9]{1,15}", value):
+                if name in result.expected_skips:
+                    raise ValueError(f"line {lineno}: duplicate expected-skip entry {name!r}")
+                result.expected_skips[name] = reason
+                continue
+            for prefix, signal in floors.items():
+                if not directive.startswith(prefix):
+                    continue
+                if prefix in floor_lines:
+                    name = prefix.rstrip(":")
                     raise ValueError(
-                        f"line {lineno}: invalid min-pass value {value!r}"
+                        f"line {lineno}: duplicate {name} directive (the first "
+                        f"is on line {floor_lines[prefix]}) — keep exactly one"
                     )
-                min_pass = int(value)
-                result.min_pass = min_pass
-                min_pass_line = lineno
+                value = directive[len(prefix) :].strip()
+                number = _parse_floor(value, prefix.rstrip(":"), lineno)
+                if signal is None:
+                    result.min_pass = number
+                else:
+                    result.signal_min_pass[signal] = number
+                floor_lines[prefix] = lineno
+                break
             continue
         parts = REASON_SEPARATOR.split(line, maxsplit=1)
         name = parts[0].strip()
@@ -343,6 +397,98 @@ def count_by_action(results: dict[ResultKey, str]) -> dict[str, int]:
     return counts
 
 
+# A parity result belongs to the logs binary (VictoriaLogs vs lakehouse-logs) or the traces binary
+# (VictoriaTraces vs lakehouse-traces). The test name decides, so the ratchet needs nothing from the
+# test files: a family named below is logs or traces for itself and all its subtests; a family that
+# runs both signals names the signal in the first subtest segment (`Test.../logs/...`,
+# `Test.../traces/...`). Offline tests (harness, compose guard, tie-cut goldens) and the parents of
+# the both-signal families belong to no signal; they count in the combined floor only.
+# tests/parity names `TestParity_LogsQL_*` for LogsQL on the traces binary (they hit VT and
+# lakehouse-traces), so "LogsQL" in a name does not make a test a logs test.
+_LOGS_TESTS = re.compile(
+    r"^Test(?:Parity_(?:CrossValidation|EdgeCases|Endpoints|Fields|Filters|Pipes|Response|Stats|TimeRange"
+    r"|ColdRowFields|SeverityNumber_|PhrasePruning_Logs)|TenantIsolation_Logs_)"
+)
+_TRACES_TESTS = re.compile(
+    r"^Test(?:Parity_(?:Traces|Jaeger_|Tempo_|LogsQL_|ServiceGraph_|ForwardFence|PhrasePruning_Traces)"
+    r"|ServiceGraphParity_|TenantParity_|TenantIsolation_Traces_)"
+)
+# Families that run both signals: the first subtest segment names the signal.
+_BOTH_SIGNAL_TESTS = re.compile(r"^TestParity_(?:AllColumnSortTieOrder|FieldNames_|FieldValues_)")
+# Tests that run no signal. Kept here so a new test with a name no rule knows is visible
+# (test_parity_ratchet.py fails on the tests/parity functions that match none of the rules).
+_NO_SIGNAL_TESTS = re.compile(
+    r"^Test(?:Harness_|ComposeGuard_|TieCut|NumericHitsErrors|FieldNamesHitsTypeError_|OpenHourSpanTimeAt_)"
+)
+
+
+def signal_of(test_path: str) -> str | None:
+    """"logs", "traces" or None for the signal a test path belongs to."""
+    segments = test_path.split("/")
+    if _TRACES_TESTS.match(segments[0]):
+        return "traces"
+    if _LOGS_TESTS.match(segments[0]):
+        return "logs"
+    if len(segments) > 1 and segments[1] in SIGNALS and _BOTH_SIGNAL_TESTS.match(segments[0]):
+        return segments[1]
+    return None
+
+
+def classified(test_name: str) -> bool:
+    """True when a top-level test name matches a signal rule, a both-signal family or the no-signal list."""
+    return any(rx.match(test_name) for rx in (_TRACES_TESTS, _LOGS_TESTS, _BOTH_SIGNAL_TESTS, _NO_SIGNAL_TESTS))
+
+
+def counts_by_signal(results: dict[ResultKey, str]) -> dict[str, dict[str, int]]:
+    """{signal: {action: n}} over every result (tests and subtests); `None` holds the unattributed."""
+    out: dict[str | None, dict[str, int]] = {sig: {a: 0 for a in TERMINAL_ACTIONS} for sig in (*SIGNALS, None)}
+    for (_, name), action in results.items():
+        out[signal_of(name)][action] += 1
+    return out
+
+
+def unexpected_skips(results: dict[ResultKey, str], expected: Iterable[str]) -> list[ResultKey]:
+    """Results that skipped although the allowlist does not list their test path as an expected skip."""
+    allowed = set(expected)
+    return sorted(key for key, action in results.items() if action == "skip" and key[1] not in allowed)
+
+
+def stale_expected_skips(results: dict[ResultKey, str], expected: Iterable[str]) -> list[tuple[str, str]]:
+    """Expected skips that no longer skip: delete the entry so the list only shrinks."""
+    actions_by_name: dict[str, set[str]] = {}
+    for (_, name), action in results.items():
+        actions_by_name.setdefault(name, set()).add(action)
+    stale = []
+    for name in sorted(expected):
+        actions = actions_by_name.get(name, set())
+        if "skip" in actions:
+            continue
+        stale.append((name, "did not run" if not actions else "now " + " and ".join(sorted(actions))))
+    return stale
+
+
+def signal_failures(results: dict[ResultKey, str], floors: dict[str, int]) -> list[str]:
+    """A signal whose results are gone, or whose passes fell below its floor."""
+    by_signal = counts_by_signal(results)
+    out = []
+    for signal in SIGNALS:
+        floor = floors.get(signal)
+        if floor is None:
+            continue
+        counts = by_signal[signal]
+        if sum(counts.values()) == 0:
+            out.append(
+                f"{signal}: no {signal} result at all (floor {floor}). The {signal} tests did not run, "
+                "were removed, or no longer match the name rules of signal_of in parity_ratchet.py."
+            )
+        elif counts["pass"] < floor:
+            out.append(
+                f"{signal}: only {counts['pass']} {signal} results passed ({counts['skip']} skipped, "
+                f"{counts['fail']} failed); the allowlist records a minimum of {floor}."
+            )
+    return out
+
+
 # Compare types that demand the same answer as hot VL/VT with no tolerance.
 EXACT_COMPARES = ("exact-json", "count", "trace", "ndjson-multiset")
 PARITY_PREFIX = "tests/parity/"
@@ -500,6 +646,9 @@ class Verdict:
     stale: list[tuple[str, str]] = field(default_factory=list)
     pass_regression: str | None = None
     lock_failures: list[str] = field(default_factory=list)
+    unexpected_skips: list[ResultKey] = field(default_factory=list)
+    stale_skips: list[tuple[str, str]] = field(default_factory=list)
+    signal_failures: list[str] = field(default_factory=list)
 
     @property
     def failed(self) -> bool:
@@ -511,6 +660,9 @@ class Verdict:
             or self.stale
             or self.pass_regression
             or self.lock_failures
+            or self.unexpected_skips
+            or self.stale_skips
+            or self.signal_failures
         )
 
 
@@ -523,6 +675,9 @@ def evaluate(run: GoTestRun, allowlist: Allowlist, locks: dict[str, list[str]] |
     verdict.panics = dict(run.panics)
     verdict.crashed_packages = unexplained_package_failures(run)
     verdict.stale = stale_entries(run.results, allowlist, verdict.aborted)
+    verdict.unexpected_skips = unexpected_skips(run.results, allowlist.expected_skips)
+    verdict.stale_skips = stale_expected_skips(run.results, allowlist.expected_skips)
+    verdict.signal_failures = signal_failures(run.results, allowlist.signal_min_pass)
     passes = count_by_action(run.results)["pass"]
     if allowlist.min_pass is not None and passes < allowlist.min_pass:
         verdict.pass_regression = (
@@ -551,6 +706,24 @@ def render_summary(run: GoTestRun, allowlist: Allowlist, verdict: Verdict, floor
     lines.append(f"| Known failures allowlisted | {len(allowlist.entries)} |")
     if allowlist.min_pass is not None:
         lines.append(f"| Minimum expected passes | {allowlist.min_pass} |")
+    lines.append(f"| Expected skips allowlisted | {len(allowlist.expected_skips)} |")
+    lines.append("")
+
+    by_signal = counts_by_signal(run.results)
+    lines.append("### Per signal (logs and traces side by side)")
+    lines.append("")
+    lines.append("| Signal | Passed | Failed | Skipped | Floor |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for signal in SIGNALS:
+        c = by_signal[signal]
+        floor = allowlist.signal_min_pass.get(signal)
+        lines.append(f"| {signal} | {c['pass']} | {c['fail']} | {c['skip']} | {floor if floor is not None else '-'} |")
+    c = by_signal[None]
+    lines.append(f"| unattributed | {c['pass']} | {c['fail']} | {c['skip']} | - |")
+    lines.append(
+        f"| total | {counts['pass']} | {counts['fail']} | {counts['skip']} | "
+        f"{allowlist.min_pass if allowlist.min_pass is not None else '-'} |"
+    )
     lines.append("")
 
     if verdict.aborted or verdict.panics or verdict.crashed_packages:
@@ -605,6 +778,35 @@ def render_summary(run: GoTestRun, allowlist: Allowlist, verdict: Verdict, floor
         lines.append("### Pass-count regression")
         lines.append("")
         lines.append(verdict.pass_regression)
+        lines.append("")
+
+    if verdict.signal_failures:
+        lines.append("### Per-signal floor")
+        lines.append("")
+        for item in verdict.signal_failures:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    if verdict.unexpected_skips:
+        lines.append("### Unexpected skips")
+        lines.append("")
+        lines.append(
+            "A skipped parity test proved nothing, so a skip fails the run unless "
+            "`tests/parity/known_failures.txt` lists the test as `# expected-skip: <test>  # <reason>`. "
+            "Fix the test or its data; do not add an entry to make the build green."
+        )
+        lines.append("")
+        for key in verdict.unexpected_skips:
+            lines.append(f"- `{_label(key, qualify)}`")
+        lines.append("")
+
+    if verdict.stale_skips:
+        lines.append("### Stale expected skips")
+        lines.append("")
+        lines.append("These no longer skip. Delete them from `tests/parity/known_failures.txt`.")
+        lines.append("")
+        for name, why in verdict.stale_skips:
+            lines.append(f"- `{name}` — {why}")
         lines.append("")
 
     if floors:

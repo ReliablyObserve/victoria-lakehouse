@@ -294,7 +294,10 @@ a comparison into a silent no-op or a result that depends on timing:
 line: the test path, then whitespace, `#`, whitespace and a reason naming a
 divergence id above (the whitespace is what lets a path such as `sub#01`
 contain a `#`). One `# min-pass: N` directive records how many tests passed
-when the list was last updated. `scripts/ci/parity_ratchet.py` reads
+when the list was last updated, and `# min-pass-logs: N` and
+`# min-pass-traces: N` do the same for each signal (the lowest pass count of
+the last five green runs on `main`; floors only go up). A result belongs to
+the logs or the traces binary by the name rules of `signal_of` in the ratchet. `scripts/ci/parity_ratchet.py` reads
 `go test -json` output, keyed by package and test, and fails the Parity Tests
 job when:
 
@@ -305,7 +308,14 @@ job when:
   can cover,
 - a listed test passes, skips, or no longer exists (stale entry — delete it),
 - the pass count drops below `min-pass` (coverage went backwards, typically
-  a test that started skipping on missing data).
+  a test that started skipping on missing data),
+- one signal's passes drop below its `min-pass-logs` / `min-pass-traces`
+  floor, or a signal with a floor reports no result at all (the other signal
+  cannot cover for it),
+- a test skips and is not listed as `# expected-skip: <test>  # <reason>`
+  (a skip proves nothing, so it fails the run; an expected skip whose test
+  stops skipping is stale). A parity test that finds no data waits a short,
+  bounded time and then fails with the evidence; it never skips.
 
 A parent test that fails only because a listed subtest failed is accepted
 without its own entry. `go test -json` does not say whether the parent's own

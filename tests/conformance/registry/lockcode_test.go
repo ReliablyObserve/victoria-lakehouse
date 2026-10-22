@@ -900,6 +900,78 @@ func TestMinPassProblems(t *testing.T) {
 	}
 }
 
+// The per-signal floors are held like the combined one, each by its own name.
+func TestMinPassProblems_PerSignalFloors(t *testing.T) {
+	const all = "# min-pass: 1192\n# min-pass-logs: 669\n# min-pass-traces: 418\n"
+	cases := []struct {
+		name       string
+		base, head string
+		want       []string // fragments, one per problem
+	}{
+		{"unchanged", all, all, nil},
+		{"all raised", all, "# min-pass: 1200\n# min-pass-logs: 670\n# min-pass-traces: 419\n", nil},
+		{"floors introduced where the base had none", "# min-pass: 460\n", all, nil},
+		{"logs lowered", all, "# min-pass: 1192\n# min-pass-logs: 668\n# min-pass-traces: 418\n", []string{"`# min-pass-logs:` lowered from 669 to 668"}},
+		{"traces lowered", all, "# min-pass: 1192\n# min-pass-logs: 669\n# min-pass-traces: 0\n", []string{"`# min-pass-traces:` lowered from 418 to 0"}},
+		{"traces removed", all, "# min-pass: 1192\n# min-pass-logs: 669\n", []string{"the `# min-pass-traces: 418` directive was removed"}},
+		{"both signal floors removed", all, "# min-pass: 1192\n", []string{"min-pass-logs: 669", "min-pass-traces: 418"}},
+		{"the combined floor lowered while the signal floors rise", all, "# min-pass: 1100\n# min-pass-logs: 700\n# min-pass-traces: 500\n", []string{"`# min-pass:` lowered from 1192 to 1100"}},
+		{"hidden behind more #", all, "# min-pass: 1192\n### min-pass-logs: 6\n# min-pass-traces: 418\n", []string{"min-pass-logs:` lowered"}},
+		{"an unreadable signal floor", all, "# min-pass: 1192\n# min-pass-logs: +700\n# min-pass-traces: 418\n", []string{"unreadable min-pass-logs value"}},
+		{"a duplicate signal floor", all, all + "# min-pass-traces: 1\n", []string{"duplicate min-pass-traces"}},
+		{"a signal floor in an entry line or in prose is no directive", all, all + "TestA  # min-pass-logs: 3\n# fewer than min-pass-traces: 3 tests\n", nil},
+	}
+	for _, c := range cases {
+		got := MinPassProblems("tests/parity/known_failures.txt", []byte(c.base), []byte(c.head))
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %d problems %v, want %d", c.name, len(got), got, len(c.want))
+			continue
+		}
+		for i, frag := range c.want {
+			if !strings.Contains(got[i], frag) {
+				t.Errorf("%s: problem %d %q lacks %q", c.name, i, got[i], frag)
+			}
+		}
+	}
+}
+
+// A skip fails the parity run unless the allowlist names it, so adding a name loosens the ratchet.
+func TestExpectedSkipProblems(t *testing.T) {
+	cases := []struct {
+		name       string
+		base, head string
+		want       []string
+	}{
+		{"none", "# min-pass: 1\n", "# min-pass: 1\n", nil},
+		{"unchanged", "# expected-skip: TestA/x  # optional endpoint, #1\n", "# expected-skip: TestA/x  # optional endpoint, #1\n", nil},
+		{"reason reworded", "# expected-skip: TestA/x  # one\n", "# expected-skip: TestA/x  # two\n", nil},
+		{"removed", "# expected-skip: TestA/x  # one\n", "", nil},
+		{"added", "", "# expected-skip: TestA/x  # one\n", []string{"expected skip added: TestA/x"}},
+		{"added next to an existing one", "# expected-skip: TestA  # one\n", "# expected-skip: TestA  # one\n#   expected-skip: TestB/y\t# two\n", []string{"expected skip added: TestB/y"}},
+		{"hidden behind more #", "", "### expected-skip: TestC  # three\n", []string{"expected skip added: TestC"}},
+		{"a sibling path of an existing entry is another skip", "# expected-skip: TestA  # one\n", "# expected-skip: TestA  # one\n# expected-skip: TestA/sub  # two\n", []string{"expected skip added: TestA/sub"}},
+		{"prose and entry lines are no directive", "", "# the expected-skip: list is empty\nTestA  # expected-skip: TestB\n", nil},
+		// the Python ratchet (parse_allowlist) names the same path: a tab before the reason, a '#' inside the path
+		{"a tab-separated reason", "", "# expected-skip: TestA/x\t# why\n", []string{"expected skip added: TestA/x"}},
+		{"a # inside the path stays in the path", "", "# expected-skip: TestA/sub#01  # why\n", []string{"expected skip added: TestA/sub#01"}},
+	}
+	for _, c := range cases {
+		got := ExpectedSkipProblems("tests/parity/known_failures.txt", []byte(c.base), []byte(c.head))
+		if len(got) != len(c.want) {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+			continue
+		}
+		for i, frag := range c.want {
+			if !strings.Contains(got[i], frag) {
+				t.Errorf("%s: %q lacks %q", c.name, got[i], frag)
+			}
+		}
+	}
+	if got := ExpectedSkipProblems("f", nil, nil); got != nil {
+		t.Errorf("a missing file is reported elsewhere: %v", got)
+	}
+}
+
 func TestVersionBefore_Overflow(t *testing.T) {
 	for _, c := range []struct {
 		a, b           string

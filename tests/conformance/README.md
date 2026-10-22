@@ -693,8 +693,10 @@ and made the toolchain bump #491 unmergeable, with no way to turn it green; it i
   not a deletion. A link elsewhere (`docs/`) is free. The modes come from `git diff --raw`, and a linked path never
   reaches the Go parsers (a symlinked `_test.go` is a Rule 3 failure, not a tool error);
 - adds an `init()`, `import "C"` or a native source file to a **lock-adjacent package** (below);
-- lowers or removes `# min-pass: N` in `tests/parity/known_failures.txt` (raising it is free; the directive is read
-  as the Python ratchet reads it, with an ASCII-digit value, and a duplicate or unreadable one fails closed);
+- lowers or removes `# min-pass: N`, `# min-pass-logs: N` or `# min-pass-traces: N` in `tests/parity/known_failures.txt`
+  (raising one is free; the directives are read as the Python ratchet reads them, with an ASCII-digit value, and a
+  duplicate or unreadable one fails closed), or adds a `# expected-skip: <test>  # <reason>` line there (a skipped
+  parity test fails the run unless the allowlist names it, so an added name loosens the ratchet);
 - leaves a control byte other than LF and TAB, a NEL, U+2028, U+2029, a BOM or invalid UTF-8 in the parity
   allowlist or in `tests/parity/lock_cells.txt`. The Go gate splits these files on `\n`; Python's
   `splitlines()` also splits on a lone CR, VT, FF, FS/GS/RS, NEL, U+2028 and U+2029, so a separator inside an existing

@@ -94,13 +94,11 @@ func TestServiceGraphParity_DependenciesAPI(t *testing.T) {
 // this directly — if any edge is self-referential, the generator is back
 // to its old behavior.
 func TestServiceGraphParity_GeneratorProducesCrossServiceEdges(t *testing.T) {
-	hot := fetch(t, vtBaseURL, "/select/jaeger/api/dependencies", url.Values{"lookback": {"1800000"}})
-	if hot.StatusCode != 200 {
-		t.Fatalf("hot Jaeger dependencies: %d", hot.StatusCode)
-	}
-	resp := parseDependenciesResponse(t, hot.Body)
+	resp := waitForServiceGraphEdges(t, vtBaseURL, url.Values{"lookback": {"1800000"}}, serviceGraphFirstTickTimeout)
 	if resp.Total == 0 {
-		t.Skip("no edges yet")
+		t.Fatalf("hot VT produced no service-graph edges within %s — the servicegraph task "+
+			"is not running on victoriatraces or the generator wrote no cross-service calls "+
+			"(see TestServiceGraphParity_HotTaskMustBeEnabled)", serviceGraphFirstTickTimeout)
 	}
 	for _, e := range resp.Data {
 		if e.Parent == e.Child {

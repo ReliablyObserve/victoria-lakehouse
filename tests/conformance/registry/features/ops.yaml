@@ -152,6 +152,8 @@
     - tests/conformance/registry/lockcode_test.go#TestLockAdjacent
     - tests/conformance/registry/lockcode_test.go#TestLockCodeChangeList_KeepsPathAndReasonApart
     - tests/conformance/registry/lockcode_test.go#TestMinPassProblems
+    - tests/conformance/registry/lockcode_test.go#TestMinPassProblems_PerSignalFloors
+    - tests/conformance/registry/lockcode_test.go#TestExpectedSkipProblems
     - tests/conformance/registry/lockcode_test.go#TestVersionBefore_Overflow
     - tests/conformance/registry/lockcode_test.go#TestParityParse_SharedFixture
     - tests/conformance/registry/paritygate_test.go#TestParityCheck_FlipIsTheOnlyTrigger

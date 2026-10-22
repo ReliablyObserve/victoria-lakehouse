@@ -8,6 +8,12 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from scripts.ci.parity_ratchet import (
     Allowlist,
+    classified,
+    counts_by_signal,
+    signal_failures,
+    signal_of,
+    stale_expected_skips,
+    unexpected_skips,
     decode_parity_data,
     helper_line,
     GoTestRun,
@@ -18,6 +24,7 @@ from scripts.ci.parity_ratchet import (
     lock_failures,
     lock_tests,
     parse_lock_cells,
+    read_parity_data,
     main,
     parse_allowlist,
     parse_go_test_json,
@@ -686,7 +693,10 @@ class RegistryLockTests(unittest.TestCase):
         out = render_summary(run, Allowlist(), verdict)
         self.assertIn("Registry locks that did not pass", out)
         self.assertIn("TestLockA was skipped (lock for lh.lock.exact)", out)
-        self.assertFalse(evaluate(run, Allowlist()).failed, "without a registry or floors the check is off")
+        self.assertFalse(
+            evaluate(run, Allowlist(expected_skips={"TestLockA": "fixture"})).failed,
+            "without a registry or floors the check is off",
+        )
 
     def test_the_summary_tabulates_observed_cells_against_the_floors(self):
         run = GoTestRun(results={(PKG, "TestLockA"): "pass"})
@@ -908,6 +918,309 @@ class ParityDataBytesTests(unittest.TestCase):
         # a U+2028 in the helper must not shift the line the ratchet expects go test to print
         src = 'package parity\n// note\u2028still line 2\nfunc f(t *testing.T) {\n\tt.Logf("lock-cells x")\n}\n'
         self.assertEqual(helper_line(src), 4)
+
+
+LOGS_TEST = "TestParity_Filters"
+TRACES_TEST = "TestParity_Traces_Jaeger"
+FLOORS = "# min-pass: 10\n# min-pass-logs: 4\n# min-pass-traces: 3\n"
+
+
+def signal_run(logs=("pass",) * 4, traces=("pass",) * 3, other=("pass",) * 3):
+    """A parsed run: one logs family, one traces family and tests that belong to neither signal."""
+    pairs = [(f"{LOGS_TEST}/case{i}", a) for i, a in enumerate(logs)]
+    pairs += [(f"{TRACES_TEST}/case{i}", a) for i, a in enumerate(traces)]
+    pairs += [(f"TestHarness_Offline/case{i}", a) for i, a in enumerate(other)]
+    return parse_go_test_json(events(*pairs))
+
+
+class SignalOfTests(unittest.TestCase):
+    def test_families_and_subtests(self):
+        for path, want in (
+            ("TestParity_Filters", "logs"),
+            ("TestParity_Filters/f/x", "logs"),
+            ("TestParity_TimeRangeExtended/a", "logs"),
+            ("TestTenantIsolation_Logs_PerTenantCounts/VL/account_3", "logs"),
+            ("TestParity_PhrasePruning_Logs/a", "logs"),
+            ("TestParity_Traces_Jaeger/jaeger_services", "traces"),
+            ("TestParity_TracesExtended/a", "traces"),
+            ("TestServiceGraphParity_DependenciesAPI", "traces"),
+            ("TestTenantParity_TenantCountsSumToTotal", "traces"),
+            ("TestTenantIsolation_Traces_PerTenantParity/a", "traces"),
+            ("TestParity_PhrasePruning_Traces/a", "traces"),
+            # LogsQL on the traces binary: hits VT and lakehouse-traces, so a traces test
+            ("TestParity_LogsQL_FieldNamesSuperset", "traces"),
+            ("TestParity_Jaeger_Services_NonEmpty", "traces"),
+            # both-signal families name the signal in the first subtest segment
+            ("TestParity_FieldNames_Layers/logs/buffer/numeric/field_names", "logs"),
+            ("TestParity_FieldNames_Layers/traces/buffer", "traces"),
+            ("TestParity_FieldValues_MapAttributes/traces/a/b", "traces"),
+            ("TestParity_AllColumnSortTieOrder/logs/buffer", "logs"),
+            # the parent of a both-signal family and the offline tests belong to neither
+            ("TestParity_FieldNames_Layers", None),
+            ("TestParity_FieldValues_MapAttributes/other", None),
+            ("TestHarness_JudgeCounts/equal_counts_pass", None),
+            ("TestComposeGuard_Refuses/x", None),
+            ("TestTieCutGoldenDecisions/x", None),
+            # a segment named like a signal does not turn an offline or logs test into a traces one
+            ("TestHarness_JudgeCounts/traces", None),
+            ("TestParity_Filters/traces", "logs"),
+        ):
+            with self.subTest(path):
+                self.assertEqual(signal_of(path), want)
+
+    def test_counts_by_signal(self):
+        run = signal_run(logs=("pass", "pass", "skip", "fail"), traces=("pass",), other=("pass", "skip"))
+        got = counts_by_signal(run.results)
+        self.assertEqual(got["logs"], {"pass": 2, "fail": 1, "skip": 1})
+        self.assertEqual(got["traces"], {"pass": 1, "fail": 0, "skip": 0})
+        self.assertEqual(got[None], {"pass": 1, "fail": 0, "skip": 1})
+
+    def test_every_parity_test_function_has_a_signal_rule(self):
+        """A new tests/parity test no rule names would count for no signal floor: fail until it is classified.
+
+        Also pins the file naming the rules rely on: tests in logs_*_test.go are logs, tests in the traces,
+        cold-hot and service-graph files are traces (except the offline ones the rules list)."""
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        parity = os.path.join(root, "tests", "parity")
+        if not os.path.isdir(parity):
+            self.skipTest("tests/parity is not part of this checkout")
+        import re
+
+        unclassified, wrong = [], []
+        for name in sorted(os.listdir(parity)):
+            if not name.endswith("_test.go"):
+                continue
+            with open(os.path.join(parity, name), encoding="utf-8") as fh:
+                funcs = re.findall(r"^func (Test\w+)\(", fh.read(), re.M)
+            for func in funcs:
+                if func == "TestMain":
+                    continue
+                if not classified(func):
+                    unclassified.append(f"{name}: {func}")
+                    continue
+                want = (
+                    "logs" if name.startswith("logs_")
+                    else "traces" if name.startswith(("traces_", "coldhot_", "servicegraph_", "service_graph_", "tenant_scope_"))
+                    else "any"
+                )
+                got = signal_of(func)
+                if want != "any" and got != want and func != "TestOpenHourSpanTimeAt_NoWaitOneHour":
+                    wrong.append(f"{name}: {func} is {got}, its file says {want}")
+        self.assertEqual(unclassified, [], "add the test to _LOGS_TESTS, _TRACES_TESTS, _BOTH_SIGNAL_TESTS or _NO_SIGNAL_TESTS in scripts/ci/parity_ratchet.py")
+        self.assertEqual(wrong, [])
+
+
+class SignalDirectiveParseTests(unittest.TestCase):
+    def test_parses_the_floors_and_expected_skips(self):
+        al = parse_allowlist(
+            "# min-pass: 9\n# min-pass-logs: 4\n#   min-pass-traces: 3\n"
+            "# expected-skip: TestParity_Traces_X/y  # optional endpoint absent in the pinned VT, #123\n"
+            "TestA  # B1: reason\n"
+        )
+        self.assertEqual((al.min_pass, al.signal_min_pass), (9, {"logs": 4, "traces": 3}))
+        self.assertEqual(al.expected_skips, {"TestParity_Traces_X/y": "optional endpoint absent in the pinned VT, #123"})
+        self.assertEqual(sorted(al.entries), ["TestA"], "the new directives are comments, not entries")
+
+    def test_a_floor_directive_is_not_the_combined_floor(self):
+        al = parse_allowlist("# min-pass-logs: 4\n")
+        self.assertIsNone(al.min_pass)
+        self.assertEqual(al.signal_min_pass, {"logs": 4})
+
+    def test_rejects_bad_floors_and_skips(self):
+        for bad, fragment in (
+            ("# min-pass-logs: 1\n# min-pass-logs: 2\n", "duplicate min-pass-logs"),
+            ("# min-pass-traces: many\n", "invalid min-pass-traces"),
+            ("# min-pass-traces: -3\n", "must not be negative"),
+            ("# expected-skip: TestA\n", "no ' # reason'"),
+            ("# expected-skip: TestA  #\n", "no ' # reason'"),
+            ("# expected-skip: \n", "one test path"),
+            ("# expected-skip: Test A  # why\n", "one test path"),
+            ("# expected-skip: TestA  # one\n# expected-skip: TestA  # two\n", "duplicate expected-skip"),
+        ):
+            with self.subTest(bad), self.assertRaises(ValueError) as ctx:
+                parse_allowlist(bad)
+            self.assertIn(fragment, str(ctx.exception))
+
+    def test_the_path_is_what_the_go_gate_reads(self):
+        """registry.ExpectedSkipProblems takes the first white-space separated word after the directive
+        (TestExpectedSkipProblems pins the same inputs): the ratchet must name the same path."""
+        for text, want in (
+            ("# expected-skip: TestA/x\t# why\n", "TestA/x"),
+            ("# expected-skip: TestA/sub#01  # why\n", "TestA/sub#01"),
+        ):
+            with self.subTest(text):
+                self.assertEqual(list(parse_allowlist(text).expected_skips), [want])
+
+    def test_a_mention_in_prose_is_not_a_directive(self):
+        al = parse_allowlist("# a `# min-pass-logs: 3` mention\n# the expected-skip: list is empty\n")
+        self.assertEqual((al.signal_min_pass, al.expected_skips), ({}, {}))
+
+
+class PerSignalGateTests(unittest.TestCase):
+    """The scenarios of #646: a whole signal's results skipped or gone while the combined floor holds."""
+
+    def verdict(self, run, extra=""):
+        return evaluate(run, parse_allowlist(FLOORS + extra))
+
+    def test_a_healthy_run_passes(self):
+        self.assertFalse(self.verdict(signal_run()).failed)
+
+    def test_every_logs_result_skipped_fails(self):
+        run = signal_run(logs=("skip",) * 4, other=("pass",) * 8)  # the combined count (11) is above min-pass
+        self.assertGreaterEqual(count_by_action(run.results)["pass"], 10)
+        v = self.verdict(run)
+        self.assertTrue(v.failed)
+        self.assertEqual(len(v.unexpected_skips), 4)
+        self.assertTrue(any(f.startswith("logs: only 0 logs results passed") for f in v.signal_failures), v.signal_failures)
+        self.assertFalse(any(f.startswith("traces") for f in v.signal_failures))
+
+    def test_every_traces_result_skipped_fails(self):
+        run = signal_run(traces=("skip",) * 3, other=("pass",) * 8)
+        v = self.verdict(run)
+        self.assertTrue(v.failed)
+        self.assertEqual(len(v.unexpected_skips), 3)
+        self.assertTrue(any(f.startswith("traces: only 0 traces results passed") for f in v.signal_failures), v.signal_failures)
+
+    def test_the_floor_alone_catches_skips_a_reviewer_listed(self):
+        listed = "".join(f"# expected-skip: {TRACES_TEST}/case{i}  # listed for the test\n" for i in range(3))
+        v = self.verdict(signal_run(traces=("skip",) * 3, other=("pass",) * 8), listed)
+        self.assertEqual(v.unexpected_skips, [])
+        self.assertTrue(v.failed)
+        self.assertTrue(any(f.startswith("traces: only 0") for f in v.signal_failures))
+
+    def test_a_signal_with_no_result_at_all_fails_on_its_own(self):
+        for dropped in ("logs", "traces"):
+            with self.subTest(dropped):
+                run = signal_run(**{dropped: ()}, other=("pass",) * 12)
+                v = self.verdict(run)
+                self.assertTrue(v.failed)
+                self.assertEqual(v.unexpected_skips, [])
+                self.assertEqual(v.pass_regression, None, "the combined floor still holds")
+                self.assertTrue(any(f.startswith(f"{dropped}: no {dropped} result at all") for f in v.signal_failures), v.signal_failures)
+
+    def test_one_signal_losing_a_pass_fails_while_the_combined_floor_holds(self):
+        for signal in ("logs", "traces"):
+            with self.subTest(signal):
+                kwargs = {signal: ("pass",) * (3 if signal == "logs" else 2), "other": ("pass",) * 6}
+                v = self.verdict(signal_run(**kwargs))
+                self.assertIsNone(v.pass_regression)
+                self.assertTrue(v.failed)
+                self.assertEqual(len(v.signal_failures), 1)
+                self.assertIn(f"{signal}: only", v.signal_failures[0])
+
+    def test_a_failed_result_does_not_count_as_a_pass(self):
+        v = self.verdict(signal_run(traces=("pass", "pass", "fail")), "TestParity_Traces_Jaeger/case2  # B1: known\n")
+        self.assertTrue(v.failed)
+        self.assertIn("traces: only 2", v.signal_failures[0])
+
+    def test_one_unexpected_skip_fails_with_every_floor_met(self):
+        run = signal_run(traces=("pass",) * 3 + ("skip",))
+        v = self.verdict(run)
+        self.assertEqual(v.signal_failures, [])
+        self.assertEqual(v.unexpected_skips, [(PKG, f"{TRACES_TEST}/case3")])
+        self.assertTrue(v.failed)
+
+    def test_an_offline_test_that_skips_fails_too(self):
+        self.assertTrue(self.verdict(signal_run(other=("pass", "pass", "skip"))).failed)
+
+    def test_an_expected_skip_is_allowed_and_a_stale_one_is_not(self):
+        listed = f"# expected-skip: {TRACES_TEST}/case3  # the optional endpoint is absent in the pinned VT, #1\n"
+        self.assertFalse(self.verdict(signal_run(traces=("pass",) * 3 + ("skip",)), listed).failed)
+        v = self.verdict(signal_run(traces=("pass",) * 4), listed)
+        self.assertTrue(v.failed)
+        self.assertEqual(v.stale_skips, [(f"{TRACES_TEST}/case3", "now pass")])
+        v = self.verdict(signal_run(), listed)
+        self.assertEqual(v.stale_skips, [(f"{TRACES_TEST}/case3", "did not run")])
+
+    def test_an_expected_skip_covers_that_path_only(self):
+        listed = f"# expected-skip: {TRACES_TEST}/case3  # reason\n"
+        run = signal_run(traces=("pass",) * 3 + ("skip", "skip"))
+        self.assertEqual(self.verdict(run, listed).unexpected_skips, [(PKG, f"{TRACES_TEST}/case4")])
+
+    def test_without_a_declared_floor_the_signal_checks_are_off(self):
+        run = signal_run(logs=(), traces=())
+        v = evaluate(run, parse_allowlist("# min-pass: 1\n"))
+        self.assertFalse(v.failed)
+        self.assertEqual(signal_failures(run.results, {}), [])
+
+    def test_helpers(self):
+        run = signal_run(traces=("pass", "skip"))
+        self.assertEqual(unexpected_skips(run.results, [f"{TRACES_TEST}/case1"]), [])
+        self.assertEqual(stale_expected_skips(run.results, [f"{TRACES_TEST}/case0"]), [(f"{TRACES_TEST}/case0", "now pass")])
+
+
+class PerSignalMainTests(unittest.TestCase):
+    """The whole script on files, with the repository's own allowlist, over the same scenarios."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+
+    def run_main(self, run_pairs, allowlist=FLOORS):
+        results = os.path.join(self.dir.name, "r.json")
+        with open(results, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(events(*run_pairs)) + "\n")
+        allow = os.path.join(self.dir.name, "a.txt")
+        with open(allow, "w", encoding="utf-8") as fh:
+            fh.write(allowlist)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = main(["--results", results, "--allowlist", allow])
+        return code, out.getvalue(), err.getvalue()
+
+    def pairs(self, logs=4, traces=3, other=3, logs_action="pass", traces_action="pass"):
+        return (
+            [(f"{LOGS_TEST}/c{i}", logs_action) for i in range(logs)]
+            + [(f"{TRACES_TEST}/c{i}", traces_action) for i in range(traces)]
+            + [(f"TestHarness_Offline/c{i}", "pass") for i in range(other)]
+        )
+
+    def test_a_healthy_run_exits_zero_and_prints_logs_and_traces_side_by_side(self):
+        code, out, err = self.run_main(self.pairs())
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn("| logs | 4 | 0 | 0 | 4 |", out)
+        self.assertIn("| traces | 3 | 0 | 0 | 3 |", out)
+        self.assertIn("| unattributed | 3 | 0 | 0 | - |", out)
+        self.assertIn("| total | 10 | 0 | 0 | 10 |", out)
+
+    def test_every_logs_result_skipped_exits_one(self):
+        # the combined count stays above min-pass: only the per-signal rules can see it
+        code, out, _ = self.run_main(self.pairs(logs_action="skip", other=8))
+        self.assertEqual(code, 1)
+        self.assertIn("### Per-signal floor", out)
+        self.assertIn("### Unexpected skips", out)
+        self.assertIn("`TestParity_Filters/c0`", out)
+
+    def test_every_traces_result_skipped_exits_one(self):
+        code, out, _ = self.run_main(self.pairs(traces_action="skip", other=8))
+        self.assertEqual(code, 1)
+        self.assertIn("traces: only 0 traces results passed (3 skipped", out)
+
+    def test_no_logs_result_at_all_exits_one(self):
+        code, out, _ = self.run_main(self.pairs(logs=0, other=12))
+        self.assertEqual(code, 1)
+        self.assertIn("logs: no logs result at all (floor 4)", out)
+
+    def test_no_traces_result_at_all_exits_one(self):
+        code, out, _ = self.run_main(self.pairs(traces=0, other=12))
+        self.assertEqual(code, 1)
+        self.assertIn("traces: no traces result at all (floor 3)", out)
+
+    def test_one_signal_losing_a_pass_exits_one_while_the_total_holds(self):
+        code, out, _ = self.run_main(self.pairs(traces=2, other=4))
+        self.assertEqual(code, 1)
+        self.assertIn("traces: only 2 traces results passed", out)
+
+    def test_the_repository_allowlist_declares_both_floors(self):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        path = os.path.join(root, "tests", "parity", "known_failures.txt")
+        if not os.path.isfile(path):
+            self.skipTest("tests/parity is not part of this checkout")
+        al = parse_allowlist(read_parity_data(path))
+        self.assertEqual(sorted(al.signal_min_pass), ["logs", "traces"])
+        self.assertGreater(al.signal_min_pass["logs"], 0)
+        self.assertGreater(al.signal_min_pass["traces"], 0)
+        self.assertGreaterEqual(al.min_pass, al.signal_min_pass["logs"] + al.signal_min_pass["traces"])
 
 
 if __name__ == "__main__":
