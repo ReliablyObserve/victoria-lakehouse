@@ -2,7 +2,7 @@
 # TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids
 # the QEMU `git clone` "cannot pread pack file: Bad address" failure on large
 # repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:7fd63dd7c37f5ddaef15bd8fd3f3e4f90f0d50cd9cae255c7cf73887a494d8df AS builder
 RUN apk add --no-cache git
 WORKDIR /app
 ARG VERSION=dev
@@ -69,7 +69,7 @@ RUN cd lakehouse-traces && \
     go build -trimpath -ldflags="-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}" -o /lakehouse-traces .
 RUN mkdir -p /data/lakehouse/cache
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces
 COPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse
 USER nonroot

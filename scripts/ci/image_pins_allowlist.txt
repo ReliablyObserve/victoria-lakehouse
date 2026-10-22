@@ -2,17 +2,6 @@
 #   <path> | <rule> | <substring of the offending line> | <one-line reason>
 # An entry that matches nothing fails the test, so remove an entry as soon as its reason is gone.
 #
-# Go builder image: the toolchain-only classifier (scripts/ci/pr_classify.py golang_image_bump_only and its Go twin) reads golang image lines without a digest; pin these together with that classifier
-Dockerfile.logs | from | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
-Dockerfile.traces | from | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
-Dockerfile.datagen | from | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
-tests/parity/docker-compose.yml | compose-image | golang: | pin together with the toolchain-only classifier, which reads tag-only golang lines
-#
-# Release Dockerfiles, pinned in the follow-up image change
-Dockerfile.logs | from | gcr.io/distroless/static-debian12:nonroot | pinned in the follow-up image PR
-Dockerfile.traces | from | gcr.io/distroless/static-debian12:nonroot | pinned in the follow-up image PR
-Dockerfile.datagen | from | gcr.io/distroless/static-debian12:nonroot | pinned in the follow-up image PR
-#
 # Hot-tier VictoriaLogs/VictoriaTraces: the image comes from a build arg that compose sets to the pin the upstream sync probe rewrites by tag
 deployment/docker/Dockerfile.bench-shaped | from | ${UPSTREAM} | build arg set by compose to the VictoriaLogs/VictoriaTraces tag that the upstream sync probe rewrites
 deployment/docker/Dockerfile.upstream-probe | from | ${UPSTREAM} | build arg set by compose to the VictoriaLogs/VictoriaTraces tag that the upstream sync probe rewrites
