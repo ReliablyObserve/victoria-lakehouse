@@ -41,7 +41,9 @@
   area: security
   surfaces: [api, flag, cli]
   tests:
-    - cmd/lakehouse-logs/peer_auth_multiinstance_test.go#TestMainWiresPeerAuth
+    - cmd/lakehouse-logs/peer_wiring_test.go#TestPeerWiring_InitAndInfo
+    - cmd/lakehouse-logs/peer_wiring_test.go#TestPeerWiring_PushersPresentTheKey
+    - cmd/lakehouse-logs/peer_wiring_test.go#TestPeerWiring_StoreEndpointsFollowThePeerConfig
     - cmd/lakehouse-logs/peer_auth_multiinstance_test.go#TestPeerAuthMultiInstance_AllKeyedAndEnforcing
     - cmd/lakehouse-logs/peer_auth_multiinstance_test.go#TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps
     - cmd/lakehouse-logs/peer_auth_test.go#TestLakehouseInfo_ReportsPeerAuth
@@ -80,7 +82,9 @@
     - lakehouse-traces/internal/storage/parquets3/buffer_bridge_rollout_test.go#TestBridgeRollout_HeldKeyServesAGlobalReadToAKeyedSelectPod
     - lakehouse-traces/internal/storage/parquets3/buffer_bridge_rollout_test.go#TestBridgeRollout_KeylessSelectPodKeepsSingleTenantReads
     - lakehouse-traces/internal/storage/parquets3/storage_peer_az_auth_test.go#TestStorage_FetchPeerAZ_KeyInBothForms
-    - lakehouse-traces/peer_auth_multiinstance_test.go#TestMainWiresPeerAuth
+    - lakehouse-traces/peer_wiring_test.go#TestPeerWiring_InitAndInfo
+    - lakehouse-traces/peer_wiring_test.go#TestPeerWiring_PushersPresentTheKey
+    - lakehouse-traces/peer_wiring_test.go#TestPeerWiring_StoreEndpointsFollowThePeerConfig
     - lakehouse-traces/peer_auth_multiinstance_test.go#TestPeerAuthMultiInstance_AllKeyedAndEnforcing
     - lakehouse-traces/peer_auth_multiinstance_test.go#TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps
     - lakehouse-traces/peer_auth_test.go#TestLakehouseInfo_ReportsPeerAuth

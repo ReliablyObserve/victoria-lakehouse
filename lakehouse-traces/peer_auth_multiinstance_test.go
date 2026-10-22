@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -352,34 +351,6 @@ func TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps(t *testing.T) {
 					t.Errorf("a push without the key reached the manifest of %s", p.name)
 				}
 			}
-		}
-	}
-}
-
-// main.go wires the setting: the pieces this test file cannot reach by calling
-// them are kept in place by reading the source (as the -deleteAuthKey wiring is).
-func TestMainWiresPeerAuth(t *testing.T) {
-	src, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(src)
-	for _, want := range []string{
-		"mountPeerEndpoints(mux, cfg.Peer, peerDeps)",
-		"mountBufferQuery(mux, parquets3.BridgeSource{Segments: segs}, cfg.Peer)",
-		"peerauth.SetMaxBodyBytes(cfg.Peer.MaxRequestBodyBytes)",
-		"peerauth.Report(cfg.Peer.AuthEnabled, cfg.Peer.AuthKey != \"\"",
-		"PeerAuth: PeerAuthInfo{Enabled: cfg.Peer.AuthEnabled, KeyConfigured: cfg.Peer.AuthKey != \"\"}",
-		"AuthSecret: cfg.Peer.AuthKey",
-		"AuthKey:  cfg.Peer.AuthKey",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("main.go no longer contains %q: peer authentication would stop being wired", want)
-		}
-	}
-	for _, bad := range []string{"HandleCacheClear(store, cfg.Peer.AuthKey)", "HandleManifestUpdate(store, cfg.Peer.AuthKey)", "stats.NewSyncHandler(registry, cfg.Peer.AuthKey)"} {
-		if strings.Contains(s, bad) {
-			t.Errorf("main.go mounts %q: it would enforce the key whenever one is set, ignoring peer.auth_enabled", bad)
 		}
 	}
 }

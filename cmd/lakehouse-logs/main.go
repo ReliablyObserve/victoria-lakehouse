@@ -26,7 +26,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/prefetch"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/retention"
@@ -238,8 +237,7 @@ func main() {
 	logger.Infof("starting lakehouse-logs; version=%s, role=%s, topology=%s, listen=%s, s3_bucket=%s, s3_prefix=%s",
 		buildinfo.Version, cfg.Role, cfg.Topology, addr, cfg.S3.Bucket, cfg.AutoPrefix())
 
-	peerauth.SetMaxBodyBytes(cfg.Peer.MaxRequestBodyBytes)
-	peerauth.Report(cfg.Peer.AuthEnabled, cfg.Peer.AuthKey != "", cfg.Discovery.PeerHeadlessService != "" || cfg.Role == config.RoleInsert || cfg.Role == config.RoleSelect)
+	initPeerAuth(cfg)
 
 	run(cfg, addr)
 }
@@ -285,11 +283,7 @@ func run(cfg *config.Config, addr string) {
 	var pusher *manifest.Pusher
 	if cfg.Discovery.PeerHeadlessService != "" {
 		disc := store.Discovery()
-		pusher = manifest.NewPusher(manifest.PusherConfig{
-			GetPeers:   func() []string { return disc.GetPeers() },
-			AuthSecret: cfg.Peer.AuthKey,
-			SelfAddr:   addr,
-		})
+		pusher = newManifestPusher(cfg.Peer, func() []string { return disc.GetPeers() }, addr)
 	}
 
 	// tenantPolicyHolder is set further down (line ~410) after the
@@ -990,13 +984,7 @@ func startTenantAliasSync(cfg *config.Config, store *parquets3.Storage, resolver
 		return nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	pusher := tenant.NewSyncPusher(tenant.SyncPusherConfig{
-		Resolver: resolver,
-		GetPeers: func() []string { return disc.GetPeers() },
-		AuthKey:  cfg.Peer.AuthKey,
-		SelfAddr: addr,
-		Interval: cfg.Tenant.AliasSyncInterval,
-	})
+	pusher := newTenantAliasPusher(cfg.Peer, resolver, func() []string { return disc.GetPeers() }, addr, cfg.Tenant.AliasSyncInterval)
 	pusher.Start(ctx)
 	logger.Infof("tenant alias sync started; interval=%v", cfg.Tenant.AliasSyncInterval)
 	return cancel
@@ -1104,20 +1092,7 @@ func applyTenantStorageOverrides(store *parquets3.Storage, policy *tenant.Policy
 func startStatsLoops(cfg *config.Config, store *parquets3.Storage, registry *stats.TenantRegistry, resolver *tenant.TenantResolver, addr string, stopCh chan struct{}) {
 	var syncPusher *stats.SyncPusher
 	if disc := store.Discovery(); disc != nil {
-		syncPusher = stats.NewSyncPusher(stats.SyncPusherConfig{
-			Registry: registry,
-			GetPeers: func() []string {
-				peers := disc.GetPeers()
-				urls := make([]string, len(peers))
-				for i, p := range peers {
-					urls[i] = "http://" + p + "/internal/stats/sync"
-				}
-				return urls
-			},
-			AuthKey:  cfg.Peer.AuthKey,
-			SelfAddr: addr,
-			Compress: cfg.Stats.PushCompression,
-		})
+		syncPusher = newStatsPusher(cfg.Peer, registry, func() []string { return disc.GetPeers() }, addr, cfg.Stats.PushCompression)
 	}
 
 	go func() {
@@ -1334,7 +1309,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		Compat:   vlCompat,
 		IsReady:  sm.IsReady,
 		Phase:    func() string { return sm.Phase().String() },
-		PeerAuth: PeerAuthInfo{Enabled: cfg.Peer.AuthEnabled, KeyConfigured: cfg.Peer.AuthKey != ""},
+		PeerAuth: peerAuthInfoFor(cfg.Peer),
 	}))
 
 	if cfg.InsertEnabled() || cfg.SelectEnabled() {
@@ -1435,11 +1410,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 	}
 
 	// The pods' internal endpoints: cache, manifest push, stats and tenant sync.
-	peerDeps := peerEndpoints{Cache: store, Manifest: store, PeerCache: store.PeerHandler(), Resolver: resolver}
-	if cfg.Stats.Enabled {
-		peerDeps.Stats = registry
-	}
-	mountPeerEndpoints(mux, cfg.Peer, peerDeps)
+	mountPeerEndpointsFor(mux, cfg, store, registry, resolver)
 
 	// Tenant alias handler
 	if resolver != nil {
