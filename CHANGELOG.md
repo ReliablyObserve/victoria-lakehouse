@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.157.7] - 2026-10-22
+### Changed
 
 - **Every GitHub release starts with release notes in the style of the VictoriaLogs releases, written from `CHANGELOG.md` (CI only; no change to the Lakehouse binaries or to runtime behaviour).** The release body used to hold only the artifact, Docker image and Helm chart instructions, because the job looked for the new version's section before the release-metadata pull request had created it. It now renders the `[Unreleased]` section with `scripts/ci/release_notes.py`: `Released at <date>`, one `**Update note:**` paragraph for each bullet of an `### Update notes` subsection, then `* SECURITY:`, `* FEATURE:` and `* BUGFIX:` bullets (`### Added`, `### Changed`, `### Removed`, `### Deprecated` and `### Performance` are `FEATURE`; `### Fixed` is `BUGFIX`), with `#123` links to this repository, leaves out the entries that the previous release already carried when its metadata pull request had not merged yet, and puts the artifacts section after it. A subsection the script does not know is rendered under `FEATURE` with a warning, and no text is dropped. Existing releases are not edited. See `docs/release-notes.md`.
 
 - **Pull requests that need no product checks no longer run the heavy non-required test jobs of the CI workflow (CI only; no change to the Lakehouse binaries or to runtime behaviour).** The `CI` workflow gets a `scope` job (the `ci-scope` action introduced for the fuzz workflow), and its heavy jobs that are not required checks (`test-parquets3-heavy`, `storage-health-compaction`, `parity-unit`, `field-metadata-perf`, `parquet-readback`, `security-logs`, `security-traces`, `benchmarks-logs`, `benchmarks-traces`) are skipped when the change is only documentation, CI scripts, workflow or stack files, except the jobs the change edits and the jobs that run a script it edits. The required checks (`helm`, `test-*`, `lint-*`, `build-*`, `docker-*`) are never gated and keep their names and matrix legs, `deps` always runs, and pushes to `main`, manual runs and `CI_SCOPE=full` run everything as before; the benchmark runs still run on pull requests only. A gated job runs (and fails on the missing tree) when `deps` fails, instead of being skipped. `scripts/ci/tests/test_ci_scope_workflows.py` now also checks the `needs:` chains around gated jobs (an ungated job never needs a gated one, an ancestor carries the same guard or is not gated), that each script a gated job runs is in the classifier's consumer map, that the required `ci.yaml` jobs stay ungated with their names and legs, and it records the known gap that a failing `deps` job skips the required jobs that need it. The classifier now treats `scripts/ci/tests/test_parity_ratchet.py` as parity tooling and an edit under `.github/codeql/` as a reason to run the Go analysis.
+
+## [0.157.7] - 2026-10-22
 
 ## [0.157.6] - 2026-10-22
 
