@@ -78,9 +78,17 @@ class ImageLineCases(unittest.TestCase):
 
     def test_every_case(self):
         for c in IMAGE_CASES:
-            rx = pc.IMAGE_GOLANG if c["kind"] == "compose" else pc.FROM_GOLANG
             with self.subTest(c["name"]):
-                self.assertEqual(pc.golang_image_bump_only(c["base"], c["head"], rx), c["want"])
+                if c["kind"] == "dockerfile-pin":  # the digest-pin rule of the release Dockerfiles
+                    got = pc.image_pin_only(c["base"], c["head"])
+                else:
+                    rx = pc.IMAGE_GOLANG if c["kind"] == "compose" else pc.FROM_GOLANG
+                    got = pc.golang_image_bump_only(c["base"], c["head"], rx)
+                self.assertEqual(got, c["want"])
+
+    def test_the_fixture_has_every_kind(self):
+        kinds = {c["kind"] for c in IMAGE_CASES}
+        self.assertEqual(kinds, {"compose", "dockerfile", "dockerfile-pin"})
 
 
 class GoMod(unittest.TestCase):
@@ -404,6 +412,118 @@ class Classified(unittest.TestCase):
         self.assertEqual(got["product"], "1")
         self.assertIn("a\\x0db.go", got["reason"])
         self.assertEqual(len(self.lines), 4 + len(got["gate_files"]), self.lines)
+
+
+    # --- digest pins of the release Dockerfiles (the shape of a base-image pinning change) ---
+
+    DIGEST_A = "sha256:" + "0123456789abcdef" * 4
+    DIGEST_B = "sha256:" + "fedcba9876543210" * 4
+    PIN_FILES = ("Dockerfile.logs", "Dockerfile.traces", "Dockerfile.datagen")
+
+    def pinned(self, text, digest=None):
+        """text with a digest on every FROM line of the release Dockerfile fixtures."""
+        digest = digest or self.DIGEST_A
+        out = []
+        for line in text.split("\n"):
+            if line.startswith("FROM ") and " AS " in line:
+                line = line.replace(" AS ", "@" + digest + " AS ")
+            elif line.startswith("FROM "):
+                line = line + "@" + digest
+            out.append(line)
+        return "\n".join(out)
+
+    def test_digests_added_to_the_three_release_dockerfiles_are_not_a_product_change(self):
+        change = {f: self.pinned(BASE_TREE[f]) for f in self.PIN_FILES}
+        for f in self.PIN_FILES:
+            self.assertIn("@sha256:", change[f])
+        got = self.classify(change)
+        self.assertEqual((got["exempt"], got["product"], got["reason"]), ("none", "0", ""))
+        for f in self.PIN_FILES:
+            self.assertIn(f, got["detail"])
+
+    def test_the_same_pins_plus_an_extra_run_line_stay_a_product_change(self):
+        change = {f: self.pinned(BASE_TREE[f]) for f in self.PIN_FILES}
+        change["Dockerfile.logs"] = change["Dockerfile.logs"].replace("RUN make", "RUN make FIPS=1")
+        got = self.classify(change)
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+        self.assertIn("Dockerfile.logs", got["reason"])
+
+    def test_a_tag_change_that_claims_to_be_a_pin_is_a_product_change(self):
+        pinned = self.pinned(BASE_TREE["Dockerfile.logs"]).replace("static-debian12:nonroot", "static-debian12:debug")
+        got = self.classify({"Dockerfile.logs": pinned})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_pin_in_a_shipped_dockerfile_cannot_hide_a_product_file(self):
+        got = self.classify({"Dockerfile.logs": self.pinned(BASE_TREE["Dockerfile.logs"]), "internal/x/a.go": "package x\n\nfunc F() {}\n"})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+        self.assertIn("internal/x/a.go", got["reason"])
+
+    def test_pins_ride_with_the_gate_files_they_need(self):
+        # the pinning change also edits scripts/ci files (an allowlist): not toolchain-only, but not product either
+        got = self.classify({"Dockerfile.logs": self.pinned(BASE_TREE["Dockerfile.logs"]), "scripts/ci/helper.sh": "echo 2\n"})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "0"))
+        self.assertEqual(got["gate_files"], ["scripts/ci/helper.sh"])
+
+    def test_a_malformed_digest_in_a_release_dockerfile_is_product(self):
+        for bad in ("sha256:abcd", "sha256:" + "0123456789ABCDEF" * 4, "sha512:" + "0123456789abcdef" * 8, "sha256:" + "a" * 65):
+            with self.subTest(bad):
+                git(self.d, "reset", "-q", "--hard", self.base)
+                got = self.classify({"Dockerfile.logs": self.pinned(BASE_TREE["Dockerfile.logs"], bad)})
+                self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_toolchain_bump_onto_a_pinned_base_keeps_the_old_digest_and_is_toolchain_only(self):
+        # the tree after the pinning change; the next Go bump moves the tag and may leave the digest behind
+        pinned = {f: self.pinned(BASE_TREE[f]) for f in self.PIN_FILES}
+        self.rebase_to(pinned)
+        change = dict(CHANGE_491)
+        change.update({f: bump(pinned[f]) for f in self.PIN_FILES})
+        got = self.classify(change)
+        self.assertEqual((got["exempt"], got["product"], got["reason"]), ("toolchain-only", "0", ""))
+
+    def test_a_toolchain_bump_whose_digest_also_moves_is_toolchain_only(self):
+        pinned = {f: self.pinned(BASE_TREE[f]) for f in self.PIN_FILES}
+        self.rebase_to(pinned)
+        change = dict(CHANGE_491)
+        change.update({f: bump(pinned[f]).replace(self.DIGEST_A, self.DIGEST_B, 1) for f in self.PIN_FILES})  # the golang line only
+        self.assertEqual(self.classify(change)["exempt"], "toolchain-only")
+
+    def test_a_toolchain_bump_plus_a_digest_change_of_another_image_is_product(self):
+        # fail closed: the toolchain rule reads golang lines only, the pin rule reads digest-only files only
+        pinned = {f: self.pinned(BASE_TREE[f]) for f in self.PIN_FILES}
+        self.rebase_to(pinned)
+        change = dict(CHANGE_491)
+        change.update({f: bump(pinned[f]).replace(self.DIGEST_A, self.DIGEST_B) for f in self.PIN_FILES})  # both lines
+        got = self.classify(change)
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_toolchain_bump_with_a_bad_digest_is_product(self):
+        pinned = {f: self.pinned(BASE_TREE[f]) for f in self.PIN_FILES}
+        self.rebase_to(pinned)
+        change = dict(CHANGE_491)
+        change.update({f: bump(pinned[f]) for f in self.PIN_FILES})
+        change["Dockerfile.logs"] = change["Dockerfile.logs"].replace(self.DIGEST_A, "sha256:abcd", 1)
+        got = self.classify(change)
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_crlf_release_dockerfile_pin_is_never_verified(self):
+        crlf = BASE_TREE["Dockerfile.logs"].replace("\n", "\r\n")
+        self.rebase_to({"Dockerfile.logs": crlf})
+        got = self.classify({"Dockerfile.logs": self.pinned(crlf.replace("\r\n", "\n")).replace("\n", "\r\n")})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_only_the_root_release_dockerfiles_are_pin_exempt(self):
+        # a Dockerfile of the same name elsewhere is judged by the path rules, not by the pin rule
+        self.rebase_to({"deployment/Dockerfile.logs": BASE_TREE["Dockerfile.logs"]})
+        got = self.classify({"deployment/Dockerfile.logs": self.pinned(BASE_TREE["Dockerfile.logs"])})
+        self.assertEqual((got["exempt"], got["product"]), ("none", "1"))
+
+    def test_a_digest_on_the_compose_golang_image_is_not_a_product_change_and_a_flag_is(self):
+        got = self.classify({"tests/parity/docker-compose.yml": COMPOSE.replace("golang:1.27.1", "golang:1.27.1@" + self.DIGEST_A)})
+        self.assertEqual(got["product"], "0")
+        self.assertEqual(got["exempt"], "toolchain-only")
+        git(self.d, "reset", "-q", "--hard", self.base)
+        got = self.classify({"tests/parity/docker-compose.yml": COMPOSE.replace("golang:1.27.1", "golang:1.27.1@" + self.DIGEST_A) + "    command: x\n"})
+        self.assertEqual(got["exempt"], "none")
 
 
 if __name__ == "__main__":

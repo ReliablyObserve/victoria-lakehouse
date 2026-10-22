@@ -327,7 +327,8 @@ file that is not a test under `internal/`, `cmd/` or `lakehouse-traces/` (Go, em
 SQL, YAML; only `README.md` and `RUNBOOK.md` are documentation), any file under `patches/` or
 `charts/` (their Markdown and text docs excepted, templates included), or a shipped build file:
 `Dockerfile`, `Dockerfile.logs`, `Dockerfile.traces`, and the root `go.mod` and `go.sum`
-(`lakehouse-traces/go.mod` is covered by its tree). That includes the config defaults:
+(`lakehouse-traces/go.mod` is covered by its tree; a root Dockerfile whose only change is the
+`@sha256:` digest of its `FROM` images is not product, see "Digest pins" below). That includes the config defaults:
 `internal/config/config.go` (`Default()`), `internal/config/profile.go`, the flag defaults in
 `cmd/*/main.go` and `charts/victoria-lakehouse/values*.yaml`. A test is `*_test.go`, anything under
 `testdata/`, and `test_*` / `*_test` shell and Python scripts. There is no generated-file
@@ -428,9 +429,9 @@ commit message):
   entries, none of them a critical module (see above); same set of modules, every other line equal),
   `go.work` (the `go` / `toolchain` lines), `go.sum` and `lakehouse-traces/go.sum` (well-formed hash
   lines, none for a storage-critical module), `Dockerfile`, `Dockerfile.logs`, `Dockerfile.traces` and
-  `Dockerfile.datagen` (`FROM [--platform=...] golang:<version>[-alpine[<ver>]] [AS name]` lines whose
-  version changes, the platform, the suffix shape and the stage name equal, every other line
-  byte-identical, same line count) and `tests/parity/docker-compose.yml` (`image: golang:<version>`
+  `Dockerfile.datagen` (`FROM [--platform=...] golang:<version>[-alpine[<ver>]][@sha256:<digest>] [AS name]` lines whose
+  version changes (either side may carry a digest, and the digests may differ), the platform, the suffix shape and the stage name equal, every other line
+  byte-identical, same line count) and `tests/parity/docker-compose.yml` (`image: golang:<version>[@sha256:<digest>]`
   lines, the same way). **A bump moves forward**: the `go` and `toolchain` directives, the Go version of a
   `golang:` image and its alpine release may not be older at head than at the merge base (compared
   numerically: `alpine3.9` is older than `alpine3.23`), and a `toolchain` line may not be dropped; a
@@ -442,6 +443,22 @@ commit message):
   The alpine release in a builder tag (`golang:1.27.2-alpine3.23`) is part of the toolchain: a PR
   that moves only `alpine3.23` to `alpine3.24` is `toolchain-only` by design (the Go version is
   unchanged but the builder image is a toolchain input, exactly like the Go tag).
+- **Digest pins of the release Dockerfiles.** Not an exempt kind: a PR whose only change to
+  `Dockerfile`, `Dockerfile.logs` or `Dockerfile.traces` is the `@sha256:` digest of its `FROM` lines
+  (`Dockerfile.datagen` is not a shipped build file) is not product-changing for Rule 1 (`exempt=none`,
+  `product=0`; Rules 2 and 3 still run). For every `FROM [--platform=...] <image>:<tag>[@sha256:<digest>] [AS name]`
+  line that differs, the platform, the image name, the tag and the stage name must be equal on both sides and
+  only the digest may be added, removed or changed, for any base image (golang, distroless, alpine, ...). The
+  digest is exactly 64 lowercase hex characters after `@sha256:`; a short, uppercase or other-algorithm digest,
+  an image with a digest but no tag, a `${VAR}` or `registry:port` reference, a lowercase `from`, an indented
+  line, extra blanks, a CR, an added or removed line, a heredoc or an `escape=` directive in the file, or a
+  line continuation in front of the changed line all keep the file a product change. The same file with a
+  version bump in the same PR is judged by the toolchain rule (golang lines only, digests optional), so a bump
+  that also changes the digest of another image is a product change (fail closed). Only the root files are
+  covered. (`pr_classify.py` `image_pin_only`; the shared fixture
+  `scripts/ci/tests/testdata/golang_image_cases.json` has the `dockerfile-pin` cases, Python only: the Go
+  twin `registry.GolangImageBumpOnly` reads the compose `golang` line of the lock suites' runtime
+  configuration, where a digest is optional on either side and may change on its own.)
 - **How the files are read (every kind above).** A classifier that reads a file differently from the tool
   that consumes it can be made to approve a change it never saw. So `pr_classify.py` reads each file as
   BYTES, decodes it as strict UTF-8 and splits lines only on `\n`, as Docker, Go and git do. Python's

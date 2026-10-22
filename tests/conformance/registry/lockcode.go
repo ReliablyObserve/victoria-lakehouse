@@ -1090,16 +1090,18 @@ func loadTimeAdditions(d string, inScope func(p string) bool, baseSrc, headSrc f
 	return out
 }
 
-// golangImageLine matches a compose `image: golang:<version>[-alpine[<ver>]]` line.
+// golangImageLine matches a compose `image: golang:<version>[-alpine[<ver>]][@sha256:<64 hex>]` line.
 // pre is everything before the version (indentation and key), so the two lines of a
-// pair must agree on it exactly.
-var golangImageLine = regexp.MustCompile(`^(?P<pre>[ \t]+image:[ \t]+golang:)(?P<ver>[0-9]+\.[0-9]+(?:\.[0-9]+)?)(?P<alp>-alpine(?:[0-9]+\.[0-9]+)?)?[ \t]*$`)
+// pair must agree on it exactly. The digest group does not capture: which digest a line
+// carries (or none) is not compared, and anything but 64 lowercase hex characters leaves
+// the line unmatched.
+var golangImageLine = regexp.MustCompile(`^(?P<pre>[ \t]+image:[ \t]+golang:)(?P<ver>[0-9]+\.[0-9]+(?:\.[0-9]+)?)(?P<alp>-alpine(?:[0-9]+\.[0-9]+)?)?(?:@sha256:[0-9a-f]{64})?[ \t]*$`)
 
 // GolangImageBumpOnly reports whether head differs from base only in the version of
 // `image: golang:<version>` lines: same line count, every differing line pair is such a
 // line in both revisions with the same indentation, the same image family and the same
-// suffix shape (`-alpine` stays `-alpine`, its optional version may change), and
-// every other line byte-identical. The Python classifier (scripts/ci/pr_classify.py)
+// suffix shape (`-alpine` stays `-alpine`, its optional version may change; either side may
+// carry a digest, and the digests may differ), and every other line byte-identical. The Python classifier (scripts/ci/pr_classify.py)
 // holds the same rule; both are tested against the same fixture.
 func GolangImageBumpOnly(base, head []byte) bool {
 	// A control byte (CR included) or a non-UTF-8 byte means the file is not read the way the
