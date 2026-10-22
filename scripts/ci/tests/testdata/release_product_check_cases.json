@@ -1,0 +1,1933 @@
+{
+ "comment": "File lists (git diff --no-renames --name-status) of real merged squash commits of ReliablyObserve/victoria-lakehouse; content only for the files the decision reads. Titles have the [skip release] marker stripped so that the marker cannot decide.",
+ "blobs": {
+  "2eb491779fff": "FROM golang:1.27.2-alpine3.23 AS builder\nRUN apk add --no-cache git\nWORKDIR /app\n# Must equal the Makefile's VL_VERSION_LOGS (asserted by\n# TestDockerfilePinsMatchMakefile in tests/conformance).\nARG VL_VERSION=v1.53.0\nCOPY go.mod go.sum ./\nRUN mkdir -p deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    go mod download\nCOPY . .\nRUN CGO_ENABLED=0 GOWORK=off go build -o /datagen ./cmd/datagen\n\nFROM gcr.io/distroless/static-debian12:nonroot\nCOPY --from=builder /datagen /usr/local/bin/datagen\nUSER nonroot\nENTRYPOINT [\"/usr/local/bin/datagen\"]\n",
+  "3d1bfa96977b": "FROM golang:1.27.3-alpine3.23 AS builder\nRUN apk add --no-cache git\nWORKDIR /app\n# Must equal the Makefile's VL_VERSION_LOGS (asserted by\n# TestDockerfilePinsMatchMakefile in tests/conformance).\nARG VL_VERSION=v1.53.0\nCOPY go.mod go.sum ./\nRUN mkdir -p deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    go mod download\nCOPY . .\nRUN CGO_ENABLED=0 GOWORK=off go build -o /datagen ./cmd/datagen\n\nFROM gcr.io/distroless/static-debian12:nonroot\nCOPY --from=builder /datagen /usr/local/bin/datagen\nUSER nonroot\nENTRYPOINT [\"/usr/local/bin/datagen\"]\n",
+  "68db483c5613": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.23 AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# VL_VERSION must equal the Makefile's VL_VERSION_LOGS: the patches applied\n# below are generated against that exact tree and a mismatch fails the build\n# with an unhelpful \"patch failed\" hunk error. Asserted by\n# TestDockerfilePinsMatchMakefile in tests/conformance.\nARG VL_VERSION=v1.53.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. The image is then tagged\n# `-fips` by the release workflow. GOFIPS140=v1.0.0 selects the certified\n# crypto module at build time; runtime activation also requires\n# GODEBUG=fips140=on, which the release manifests can set per deployment.\nARG FIPS=0\nENV GOWORK=off\nENV GOFIPS140=${FIPS:+v1.0.0}\nCOPY go.mod go.sum ./\nRUN mkdir -p deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    go mod download\nCOPY patches/vl-logs/ /tmp/patches/\nRUN cp /tmp/patches/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-export-streamtags-get.patch\nCOPY . .\nRUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/\n# The healthcheck binary (~3 MB) was previously COPY'd into the image as a\n# separate executable for HEALTHCHECK directives. PR #96 folded that probe\n# into the main binary as `lakehouse-logs healthcheck`, saving ~10% of image\n# size. The FIPS environment is propagated via ENV above so this RUN step\n# inherits it when --build-arg FIPS=1 is set.\nRUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-logs ./cmd/lakehouse-logs && \\\n    mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot\nCOPY --from=builder /lakehouse-logs /usr/local/bin/lakehouse-logs\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 9428\nENTRYPOINT [\"/usr/local/bin/lakehouse-logs\"]\n",
+  "9dd7625ac87d": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23 AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# VL_VERSION must equal the Makefile's VL_VERSION_LOGS: the patches applied\n# below are generated against that exact tree and a mismatch fails the build\n# with an unhelpful \"patch failed\" hunk error. Asserted by\n# TestDockerfilePinsMatchMakefile in tests/conformance.\nARG VL_VERSION=v1.53.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. The image is then tagged\n# `-fips` by the release workflow. GOFIPS140=v1.0.0 selects the certified\n# crypto module at build time; runtime activation also requires\n# GODEBUG=fips140=on, which the release manifests can set per deployment.\nARG FIPS=0\nENV GOWORK=off\nENV GOFIPS140=${FIPS:+v1.0.0}\nCOPY go.mod go.sum ./\nRUN mkdir -p deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    go mod download\nCOPY patches/vl-logs/ /tmp/patches/\nRUN cp /tmp/patches/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-export-streamtags-get.patch\nCOPY . .\nRUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/\n# The healthcheck binary (~3 MB) was previously COPY'd into the image as a\n# separate executable for HEALTHCHECK directives. PR #96 folded that probe\n# into the main binary as `lakehouse-logs healthcheck`, saving ~10% of image\n# size. The FIPS environment is propagated via ENV above so this RUN step\n# inherits it when --build-arg FIPS=1 is set.\nRUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-logs ./cmd/lakehouse-logs && \\\n    mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot\nCOPY --from=builder /lakehouse-logs /usr/local/bin/lakehouse-logs\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 9428\nENTRYPOINT [\"/usr/local/bin/lakehouse-logs\"]\n",
+  "85c16faea6e4": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.23 AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# The three upstream pins must equal the Makefile's VL_VERSION_LOGS,\n# VL_COMMIT_TRACES and VT_VERSION: the patches applied below are generated\n# against those exact trees and a mismatch fails the build with an unhelpful\n# \"patch failed\" hunk error. Asserted by TestDockerfilePinsMatchMakefile in\n# tests/conformance.\nARG VL_VERSION=v1.53.0\n# VictoriaLogs at commit c945d2949e98 (= VL v1.52.0), the commit\n# VictoriaTraces v0.12.0's own go.mod requires. Derived, never chosen.\nARG VL_COMMIT=c945d2949e98\nARG VT_VERSION=v0.12.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the\n# full activation matrix.\nARG FIPS=0\nENV GOWORK=off\nENV GOFIPS140=${FIPS:+v1.0.0}\nCOPY go.mod go.sum ./\nCOPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/\nRUN mkdir -p deps lakehouse-traces/deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src && \\\n    cd /tmp/vl-src && git checkout ${VL_COMMIT} && \\\n    cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs && \\\n    rm -rf /tmp/vl-src && \\\n    cd /app && \\\n    git clone --depth 1 --branch ${VT_VERSION} https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces && \\\n    cd /app && go mod download && \\\n    cd /app/lakehouse-traces && go mod download\nCOPY patches/ /tmp/patches/\nRUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch\nRUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch && \\\n    git apply /tmp/patches/vl-traces/vl-partition-close-order.patch && \\\n    git apply /tmp/patches/vl-traces/vl-allow-duplicate-stream-tags.patch && \\\n    git apply /tmp/patches/vl-traces/vl-math-keep-quoted-constants.patch && \\\n    git apply /tmp/patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch\nRUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go && \\\n    cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go && \\\n    cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \\\n    git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \\\n    git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch && \\\n    go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs\nCOPY . .\n# VictoriaTraces v0.12.0 replaced the log-based UI with VTUI; the traces binary serves\n# that (lakehouse-traces/internal/vtui), not VictoriaLogs' vmui. The directory is wiped\n# first so a stale bundle from the build context cannot survive.\nRUN rm -rf lakehouse-traces/internal/vtui/vmui && mkdir -p lakehouse-traces/internal/vtui/vmui && \\\n    cp -r lakehouse-traces/deps/VictoriaTraces/app/vtselect/vmui/. lakehouse-traces/internal/vtui/vmui/\n# The healthcheck binary (~3 MB) was folded into the main binary as\n# `lakehouse-traces healthcheck` in PR #96. Saves ~10% of image size.\nRUN cd lakehouse-traces && \\\n    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-traces .\nRUN mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot\nCOPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 10428\nENTRYPOINT [\"/usr/local/bin/lakehouse-traces\"]\n",
+  "a25bbaeb029d": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23 AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# The three upstream pins must equal the Makefile's VL_VERSION_LOGS,\n# VL_COMMIT_TRACES and VT_VERSION: the patches applied below are generated\n# against those exact trees and a mismatch fails the build with an unhelpful\n# \"patch failed\" hunk error. Asserted by TestDockerfilePinsMatchMakefile in\n# tests/conformance.\nARG VL_VERSION=v1.53.0\n# VictoriaLogs at commit c945d2949e98 (= VL v1.52.0), the commit\n# VictoriaTraces v0.12.0's own go.mod requires. Derived, never chosen.\nARG VL_COMMIT=c945d2949e98\nARG VT_VERSION=v0.12.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the\n# full activation matrix.\nARG FIPS=0\nENV GOWORK=off\nENV GOFIPS140=${FIPS:+v1.0.0}\nCOPY go.mod go.sum ./\nCOPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/\nRUN mkdir -p deps lakehouse-traces/deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src && \\\n    cd /tmp/vl-src && git checkout ${VL_COMMIT} && \\\n    cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs && \\\n    rm -rf /tmp/vl-src && \\\n    cd /app && \\\n    git clone --depth 1 --branch ${VT_VERSION} https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces && \\\n    cd /app && go mod download && \\\n    cd /app/lakehouse-traces && go mod download\nCOPY patches/ /tmp/patches/\nRUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch\nRUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch && \\\n    git apply /tmp/patches/vl-traces/vl-partition-close-order.patch && \\\n    git apply /tmp/patches/vl-traces/vl-allow-duplicate-stream-tags.patch && \\\n    git apply /tmp/patches/vl-traces/vl-math-keep-quoted-constants.patch && \\\n    git apply /tmp/patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch\nRUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go && \\\n    cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go && \\\n    cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \\\n    git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \\\n    git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch && \\\n    go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs\nCOPY . .\n# VictoriaTraces v0.12.0 replaced the log-based UI with VTUI; the traces binary serves\n# that (lakehouse-traces/internal/vtui), not VictoriaLogs' vmui. The directory is wiped\n# first so a stale bundle from the build context cannot survive.\nRUN rm -rf lakehouse-traces/internal/vtui/vmui && mkdir -p lakehouse-traces/internal/vtui/vmui && \\\n    cp -r lakehouse-traces/deps/VictoriaTraces/app/vtselect/vmui/. lakehouse-traces/internal/vtui/vmui/\n# The healthcheck binary (~3 MB) was folded into the main binary as\n# `lakehouse-traces healthcheck` in PR #96. Saves ~10% of image size.\nRUN cd lakehouse-traces && \\\n    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-traces .\nRUN mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot\nCOPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 10428\nENTRYPOINT [\"/usr/local/bin/lakehouse-traces\"]\n",
+  "5ee5f5e40355": "module github.com/ReliablyObserve/victoria-lakehouse\n\ngo 1.27.2\n\nrequire (\n\tgithub.com/VictoriaMetrics/VictoriaLogs v1.53.0\n\tgithub.com/VictoriaMetrics/VictoriaMetrics v1.152.1-0.20260924162003-018bc7808882\n\tgithub.com/VictoriaMetrics/metrics v1.44.0\n\tgithub.com/aws/aws-sdk-go-v2 v1.47.0\n\tgithub.com/aws/aws-sdk-go-v2/config v1.33.5\n\tgithub.com/aws/aws-sdk-go-v2/credentials v1.20.5\n\tgithub.com/aws/aws-sdk-go-v2/service/s3 v1.113.1\n\tgithub.com/aws/smithy-go v1.28.1\n\tgithub.com/cespare/xxhash/v2 v2.3.0\n\tgithub.com/golang/snappy v1.0.0\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/parquet-go/parquet-go v0.32.0\n\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0\n\tgo.opentelemetry.io/otel v1.46.0\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0\n\tgo.opentelemetry.io/otel/sdk v1.46.0\n\tgo.opentelemetry.io/otel/trace v1.46.0\n\tgo.opentelemetry.io/proto/otlp v1.11.0\n\tgo.uber.org/goleak v1.3.0\n\tgolang.org/x/sync v0.23.0\n\tgoogle.golang.org/grpc v1.83.2\n\tgoogle.golang.org/protobuf v1.36.12\n\tgopkg.in/yaml.v3 v3.0.1\n)\n\nrequire (\n\tgithub.com/VictoriaMetrics/easyproto v1.2.0 // indirect\n\tgithub.com/VictoriaMetrics/metricsql v0.87.4 // indirect\n\tgithub.com/andybalholm/brotli v1.1.1 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/configsources v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/v4a v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/signin v1.10.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sso v1.38.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sts v1.51.0 // indirect\n\tgithub.com/cenkalti/backoff/v5 v5.0.3 // indirect\n\tgithub.com/felixge/httpsnoop v1.1.0 // indirect\n\tgithub.com/go-logr/logr v1.4.4 // indirect\n\tgithub.com/go-logr/stdr v1.2.2 // indirect\n\tgithub.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect\n\tgithub.com/klauspost/compress v1.20.0 // indirect\n\tgithub.com/kr/text v0.2.0 // indirect\n\tgithub.com/parquet-go/bitpack v1.0.0 // indirect\n\tgithub.com/parquet-go/jsonlite v1.0.0 // indirect\n\tgithub.com/pierrec/lz4/v4 v4.1.30 // indirect\n\tgithub.com/twpayne/go-geom v1.6.1 // indirect\n\tgithub.com/valyala/bytebufferpool v1.0.0 // indirect\n\tgithub.com/valyala/fastjson v1.6.10 // indirect\n\tgithub.com/valyala/fastrand v1.1.0 // indirect\n\tgithub.com/valyala/fasttemplate v1.2.2 // indirect\n\tgithub.com/valyala/gozstd v1.26.0 // indirect\n\tgithub.com/valyala/histogram v1.2.0 // indirect\n\tgithub.com/valyala/quicktemplate v1.8.0 // indirect\n\tgo.opentelemetry.io/auto/sdk v1.2.1 // indirect\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect\n\tgo.opentelemetry.io/otel/metric v1.46.0 // indirect\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/oauth2 v0.37.0 // indirect\n\tgolang.org/x/sys v0.48.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n\tgoogle.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd // indirect\n\tgoogle.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd // indirect\n)\n\nreplace github.com/VictoriaMetrics/VictoriaLogs => ./deps/VictoriaLogs\n",
+  "a55d517f34ed": "module github.com/ReliablyObserve/victoria-lakehouse\n\ngo 1.27.3\n\nrequire (\n\tgithub.com/VictoriaMetrics/VictoriaLogs v1.53.0\n\tgithub.com/VictoriaMetrics/VictoriaMetrics v1.152.1-0.20260924162003-018bc7808882\n\tgithub.com/VictoriaMetrics/metrics v1.44.0\n\tgithub.com/aws/aws-sdk-go-v2 v1.47.0\n\tgithub.com/aws/aws-sdk-go-v2/config v1.33.5\n\tgithub.com/aws/aws-sdk-go-v2/credentials v1.20.5\n\tgithub.com/aws/aws-sdk-go-v2/service/s3 v1.113.1\n\tgithub.com/aws/smithy-go v1.28.1\n\tgithub.com/cespare/xxhash/v2 v2.3.0\n\tgithub.com/golang/snappy v1.0.0\n\tgithub.com/google/uuid v1.6.0\n\tgithub.com/parquet-go/parquet-go v0.32.0\n\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0\n\tgo.opentelemetry.io/otel v1.46.0\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0\n\tgo.opentelemetry.io/otel/sdk v1.46.0\n\tgo.opentelemetry.io/otel/trace v1.46.0\n\tgo.opentelemetry.io/proto/otlp v1.11.0\n\tgo.uber.org/goleak v1.3.0\n\tgolang.org/x/sync v0.23.0\n\tgoogle.golang.org/grpc v1.83.2\n\tgoogle.golang.org/protobuf v1.36.12\n\tgopkg.in/yaml.v3 v3.0.1\n)\n\nrequire (\n\tgithub.com/VictoriaMetrics/easyproto v1.2.0 // indirect\n\tgithub.com/VictoriaMetrics/metricsql v0.87.4 // indirect\n\tgithub.com/andybalholm/brotli v1.1.1 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/configsources v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/v4a v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/signin v1.10.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sso v1.38.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sts v1.51.0 // indirect\n\tgithub.com/cenkalti/backoff/v5 v5.0.3 // indirect\n\tgithub.com/felixge/httpsnoop v1.1.0 // indirect\n\tgithub.com/go-logr/logr v1.4.4 // indirect\n\tgithub.com/go-logr/stdr v1.2.2 // indirect\n\tgithub.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect\n\tgithub.com/klauspost/compress v1.20.0 // indirect\n\tgithub.com/kr/text v0.2.0 // indirect\n\tgithub.com/parquet-go/bitpack v1.0.0 // indirect\n\tgithub.com/parquet-go/jsonlite v1.0.0 // indirect\n\tgithub.com/pierrec/lz4/v4 v4.1.30 // indirect\n\tgithub.com/twpayne/go-geom v1.6.1 // indirect\n\tgithub.com/valyala/bytebufferpool v1.0.0 // indirect\n\tgithub.com/valyala/fastjson v1.6.10 // indirect\n\tgithub.com/valyala/fastrand v1.1.0 // indirect\n\tgithub.com/valyala/fasttemplate v1.2.2 // indirect\n\tgithub.com/valyala/gozstd v1.26.0 // indirect\n\tgithub.com/valyala/histogram v1.2.0 // indirect\n\tgithub.com/valyala/quicktemplate v1.8.0 // indirect\n\tgo.opentelemetry.io/auto/sdk v1.2.1 // indirect\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect\n\tgo.opentelemetry.io/otel/metric v1.46.0 // indirect\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/oauth2 v0.37.0 // indirect\n\tgolang.org/x/sys v0.48.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n\tgoogle.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd // indirect\n\tgoogle.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd // indirect\n)\n\nreplace github.com/VictoriaMetrics/VictoriaLogs => ./deps/VictoriaLogs\n",
+  "0a6019d2eead": "go 1.27.2\n\nuse (\n\t.\n\t./lakehouse-traces\n)\n",
+  "d325350c2a8a": "go 1.27.3\n\nuse (\n\t.\n\t./lakehouse-traces\n)\n",
+  "7cd9a2b121fa": "module github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces\n\ngo 1.27.2\n\n// VictoriaLogs at commit c945d2949e98 (= VL v1.52.0) \u2014 the commit VictoriaTraces\n// v0.12.0 pins in its own go.mod. Derived from VT, never chosen independently;\n// see the VL_COMMIT_TRACES comment in the Makefile.\nreplace github.com/VictoriaMetrics/VictoriaLogs => ./deps/VictoriaLogs\n\n// VictoriaTraces v0.12.0 with the ExternalStorage interface overlay (patches/vt-traces/)\nreplace github.com/VictoriaMetrics/VictoriaTraces => ./deps/VictoriaTraces\n\n// Shared internal packages from root module\nreplace github.com/ReliablyObserve/victoria-lakehouse => ../\n\nrequire (\n\tgithub.com/ReliablyObserve/victoria-lakehouse v0.0.0\n\tgithub.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260716015338-c945d2949e98\n\tgithub.com/VictoriaMetrics/VictoriaMetrics v1.152.1-0.20260924162003-018bc7808882\n\tgithub.com/VictoriaMetrics/VictoriaTraces v0.12.0\n\tgithub.com/VictoriaMetrics/metrics v1.44.0\n\tgithub.com/aws/aws-sdk-go-v2 v1.47.0\n\tgithub.com/aws/aws-sdk-go-v2/service/s3 v1.113.1\n\tgithub.com/cespare/xxhash/v2 v2.3.0\n\tgithub.com/parquet-go/parquet-go v0.32.0\n\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0\n\tgo.opentelemetry.io/otel v1.46.0\n\tgo.opentelemetry.io/otel/sdk v1.46.0\n)\n\nrequire (\n\tgithub.com/VictoriaMetrics/easyproto v1.2.0 // indirect\n\tgithub.com/VictoriaMetrics/metricsql v0.87.4 // indirect\n\tgithub.com/andybalholm/brotli v1.1.1 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/config v1.33.5 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/credentials v1.20.5 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/configsources v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/v4a v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/signin v1.10.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sso v1.38.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sts v1.51.0 // indirect\n\tgithub.com/aws/smithy-go v1.28.1 // indirect\n\tgithub.com/cenkalti/backoff/v5 v5.0.3 // indirect\n\tgithub.com/felixge/httpsnoop v1.1.0 // indirect\n\tgithub.com/go-logr/logr v1.4.4 // indirect\n\tgithub.com/go-logr/stdr v1.2.2 // indirect\n\tgithub.com/golang/snappy v1.0.0 // indirect\n\tgithub.com/google/uuid v1.6.0 // indirect\n\tgithub.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect\n\tgithub.com/klauspost/compress v1.20.0 // indirect\n\tgithub.com/parquet-go/bitpack v1.0.0 // indirect\n\tgithub.com/parquet-go/jsonlite v1.0.0 // indirect\n\tgithub.com/pierrec/lz4/v4 v4.1.30 // indirect\n\tgithub.com/twpayne/go-geom v1.6.1 // indirect\n\tgithub.com/valyala/bytebufferpool v1.0.0 // indirect\n\tgithub.com/valyala/fastjson v1.6.10 // indirect\n\tgithub.com/valyala/fastrand v1.1.0 // indirect\n\tgithub.com/valyala/fasttemplate v1.2.2 // indirect\n\tgithub.com/valyala/gozstd v1.26.0 // indirect\n\tgithub.com/valyala/histogram v1.2.0 // indirect\n\tgithub.com/valyala/quicktemplate v1.8.0 // indirect\n\tgo.opentelemetry.io/auto/sdk v1.2.1 // indirect\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0 // indirect\n\tgo.opentelemetry.io/otel/metric v1.46.0 // indirect\n\tgo.opentelemetry.io/otel/trace v1.46.0 // indirect\n\tgo.opentelemetry.io/proto/otlp v1.11.0 // indirect\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/oauth2 v0.37.0 // indirect\n\tgolang.org/x/sync v0.23.0 // indirect\n\tgolang.org/x/sys v0.48.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n\tgoogle.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd // indirect\n\tgoogle.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd // indirect\n\tgoogle.golang.org/grpc v1.83.2 // indirect\n\tgoogle.golang.org/protobuf v1.36.12 // indirect\n\tgopkg.in/yaml.v3 v3.0.1 // indirect\n)\n",
+  "d6dd169b4f2c": "module github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces\n\ngo 1.27.3\n\n// VictoriaLogs at commit c945d2949e98 (= VL v1.52.0) \u2014 the commit VictoriaTraces\n// v0.12.0 pins in its own go.mod. Derived from VT, never chosen independently;\n// see the VL_COMMIT_TRACES comment in the Makefile.\nreplace github.com/VictoriaMetrics/VictoriaLogs => ./deps/VictoriaLogs\n\n// VictoriaTraces v0.12.0 with the ExternalStorage interface overlay (patches/vt-traces/)\nreplace github.com/VictoriaMetrics/VictoriaTraces => ./deps/VictoriaTraces\n\n// Shared internal packages from root module\nreplace github.com/ReliablyObserve/victoria-lakehouse => ../\n\nrequire (\n\tgithub.com/ReliablyObserve/victoria-lakehouse v0.0.0\n\tgithub.com/VictoriaMetrics/VictoriaLogs v1.121.1-0.20260716015338-c945d2949e98\n\tgithub.com/VictoriaMetrics/VictoriaMetrics v1.152.1-0.20260924162003-018bc7808882\n\tgithub.com/VictoriaMetrics/VictoriaTraces v0.12.0\n\tgithub.com/VictoriaMetrics/metrics v1.44.0\n\tgithub.com/aws/aws-sdk-go-v2 v1.47.0\n\tgithub.com/aws/aws-sdk-go-v2/service/s3 v1.113.1\n\tgithub.com/cespare/xxhash/v2 v2.3.0\n\tgithub.com/parquet-go/parquet-go v0.32.0\n\tgo.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0\n\tgo.opentelemetry.io/otel v1.46.0\n\tgo.opentelemetry.io/otel/sdk v1.46.0\n)\n\nrequire (\n\tgithub.com/VictoriaMetrics/easyproto v1.2.0 // indirect\n\tgithub.com/VictoriaMetrics/metricsql v0.87.4 // indirect\n\tgithub.com/andybalholm/brotli v1.1.1 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.20 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/config v1.33.5 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/credentials v1.20.5 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/configsources v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/internal/v4a v1.5.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.19 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/checksum v1.11.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.20.3 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/signin v1.10.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sso v1.38.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.0 // indirect\n\tgithub.com/aws/aws-sdk-go-v2/service/sts v1.51.0 // indirect\n\tgithub.com/aws/smithy-go v1.28.1 // indirect\n\tgithub.com/cenkalti/backoff/v5 v5.0.3 // indirect\n\tgithub.com/felixge/httpsnoop v1.1.0 // indirect\n\tgithub.com/go-logr/logr v1.4.4 // indirect\n\tgithub.com/go-logr/stdr v1.2.2 // indirect\n\tgithub.com/golang/snappy v1.0.0 // indirect\n\tgithub.com/google/uuid v1.6.0 // indirect\n\tgithub.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect\n\tgithub.com/klauspost/compress v1.20.0 // indirect\n\tgithub.com/parquet-go/bitpack v1.0.0 // indirect\n\tgithub.com/parquet-go/jsonlite v1.0.0 // indirect\n\tgithub.com/pierrec/lz4/v4 v4.1.30 // indirect\n\tgithub.com/twpayne/go-geom v1.6.1 // indirect\n\tgithub.com/valyala/bytebufferpool v1.0.0 // indirect\n\tgithub.com/valyala/fastjson v1.6.10 // indirect\n\tgithub.com/valyala/fastrand v1.1.0 // indirect\n\tgithub.com/valyala/fasttemplate v1.2.2 // indirect\n\tgithub.com/valyala/gozstd v1.26.0 // indirect\n\tgithub.com/valyala/histogram v1.2.0 // indirect\n\tgithub.com/valyala/quicktemplate v1.8.0 // indirect\n\tgo.opentelemetry.io/auto/sdk v1.2.1 // indirect\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace v1.45.0 // indirect\n\tgo.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.45.0 // indirect\n\tgo.opentelemetry.io/otel/metric v1.46.0 // indirect\n\tgo.opentelemetry.io/otel/trace v1.46.0 // indirect\n\tgo.opentelemetry.io/proto/otlp v1.11.0 // indirect\n\tgolang.org/x/net v0.60.0 // indirect\n\tgolang.org/x/oauth2 v0.37.0 // indirect\n\tgolang.org/x/sync v0.23.0 // indirect\n\tgolang.org/x/sys v0.48.0 // indirect\n\tgolang.org/x/text v0.42.0 // indirect\n\tgoogle.golang.org/genproto/googleapis/api v0.0.0-20260911204522-f61a6ca850bd // indirect\n\tgoogle.golang.org/genproto/googleapis/rpc v0.0.0-20260911204522-f61a6ca850bd // indirect\n\tgoogle.golang.org/grpc v1.83.2 // indirect\n\tgoogle.golang.org/protobuf v1.36.12 // indirect\n\tgopkg.in/yaml.v3 v3.0.1 // indirect\n)\n",
+  "704ab96d853a": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:7fd63dd7c37f5ddaef15bd8fd3f3e4f90f0d50cd9cae255c7cf73887a494d8df AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# VL_VERSION must equal the Makefile's VL_VERSION_LOGS: the patches applied\n# below are generated against that exact tree and a mismatch fails the build\n# with an unhelpful \"patch failed\" hunk error. Asserted by\n# TestDockerfilePinsMatchMakefile in tests/conformance.\nARG VL_VERSION=v1.53.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. The image is then tagged\n# `-fips` by the release workflow. GOFIPS140=v1.0.0 selects the certified\n# crypto module at build time; runtime activation also requires\n# GODEBUG=fips140=on, which the release manifests can set per deployment.\nARG FIPS=0\nENV GOWORK=off\nENV GOFIPS140=${FIPS:+v1.0.0}\nCOPY go.mod go.sum ./\nRUN mkdir -p deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    go mod download\nCOPY patches/vl-logs/ /tmp/patches/\nRUN cp /tmp/patches/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-export-streamtags-get.patch\nCOPY . .\nRUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/\n# The healthcheck binary (~3 MB) was previously COPY'd into the image as a\n# separate executable for HEALTHCHECK directives. PR #96 folded that probe\n# into the main binary as `lakehouse-logs healthcheck`, saving ~10% of image\n# size. The FIPS environment is propagated via ENV above so this RUN step\n# inherits it when --build-arg FIPS=1 is set.\nRUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-logs ./cmd/lakehouse-logs && \\\n    mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab\nCOPY --from=builder /lakehouse-logs /usr/local/bin/lakehouse-logs\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 9428\nENTRYPOINT [\"/usr/local/bin/lakehouse-logs\"]\n",
+  "a9e353e23485": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:7fd63dd7c37f5ddaef15bd8fd3f3e4f90f0d50cd9cae255c7cf73887a494d8df AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# VL_VERSION must equal the Makefile's VL_VERSION_LOGS: the patches applied\n# below are generated against that exact tree and a mismatch fails the build\n# with an unhelpful \"patch failed\" hunk error. Asserted by\n# TestDockerfilePinsMatchMakefile in tests/conformance.\nARG VL_VERSION=v1.53.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. The image is then tagged\n# `-fips` by the release workflow. GOFIPS140=v1.0.0 selects the certified\n# crypto module at build time; runtime activation also requires\n# GODEBUG=fips140=on, which the release manifests can set per deployment.\nARG FIPS=0\n# Only the exact value 1 selects the module; the default (FIPS=0) and any other\n# value build with Go's standard crypto. The module is selected in the build RUN\n# below with an exact comparison: a shell-style \"is it set\" expansion in an ENV\n# would treat FIPS=0 as set and put the module into the default image too.\nENV GOWORK=off\nCOPY go.mod go.sum ./\nRUN mkdir -p deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    go mod download\nCOPY patches/vl-logs/ /tmp/patches/\nRUN cp /tmp/patches/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-export-streamtags-get.patch\nCOPY . .\nRUN cp -r deps/VictoriaLogs/app/vlselect/vmui/* internal/ui/vmui/\n# The healthcheck binary (~3 MB) was previously COPY'd into the image as a\n# separate executable for HEALTHCHECK directives. PR #96 folded that probe\n# into the main binary as `lakehouse-logs healthcheck`, saving ~10% of image\n# size. GOFIPS140 is exported here only when --build-arg FIPS=1 is set.\nRUN if [ \"$FIPS\" = \"1\" ]; then export GOFIPS140=v1.0.0; fi && \\\n    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-logs ./cmd/lakehouse-logs && \\\n    mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab\nCOPY --from=builder /lakehouse-logs /usr/local/bin/lakehouse-logs\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 9428\nENTRYPOINT [\"/usr/local/bin/lakehouse-logs\"]\n",
+  "86ab83dfee6f": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:7fd63dd7c37f5ddaef15bd8fd3f3e4f90f0d50cd9cae255c7cf73887a494d8df AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# The three upstream pins must equal the Makefile's VL_VERSION_LOGS,\n# VL_COMMIT_TRACES and VT_VERSION: the patches applied below are generated\n# against those exact trees and a mismatch fails the build with an unhelpful\n# \"patch failed\" hunk error. Asserted by TestDockerfilePinsMatchMakefile in\n# tests/conformance.\nARG VL_VERSION=v1.53.0\n# VictoriaLogs at commit c945d2949e98 (= VL v1.52.0), the commit\n# VictoriaTraces v0.12.0's own go.mod requires. Derived, never chosen.\nARG VL_COMMIT=c945d2949e98\nARG VT_VERSION=v0.12.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the\n# full activation matrix.\nARG FIPS=0\nENV GOWORK=off\nENV GOFIPS140=${FIPS:+v1.0.0}\nCOPY go.mod go.sum ./\nCOPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/\nRUN mkdir -p deps lakehouse-traces/deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src && \\\n    cd /tmp/vl-src && git checkout ${VL_COMMIT} && \\\n    cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs && \\\n    rm -rf /tmp/vl-src && \\\n    cd /app && \\\n    git clone --depth 1 --branch ${VT_VERSION} https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces && \\\n    cd /app && go mod download && \\\n    cd /app/lakehouse-traces && go mod download\nCOPY patches/ /tmp/patches/\nRUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch\nRUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch && \\\n    git apply /tmp/patches/vl-traces/vl-partition-close-order.patch && \\\n    git apply /tmp/patches/vl-traces/vl-allow-duplicate-stream-tags.patch && \\\n    git apply /tmp/patches/vl-traces/vl-math-keep-quoted-constants.patch && \\\n    git apply /tmp/patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch\nRUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go && \\\n    cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go && \\\n    cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \\\n    git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \\\n    git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch && \\\n    go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs\nCOPY . .\n# VictoriaTraces v0.12.0 replaced the log-based UI with VTUI; the traces binary serves\n# that (lakehouse-traces/internal/vtui), not VictoriaLogs' vmui. The directory is wiped\n# first so a stale bundle from the build context cannot survive.\nRUN rm -rf lakehouse-traces/internal/vtui/vmui && mkdir -p lakehouse-traces/internal/vtui/vmui && \\\n    cp -r lakehouse-traces/deps/VictoriaTraces/app/vtselect/vmui/. lakehouse-traces/internal/vtui/vmui/\n# The healthcheck binary (~3 MB) was folded into the main binary as\n# `lakehouse-traces healthcheck` in PR #96. Saves ~10% of image size.\nRUN cd lakehouse-traces && \\\n    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-traces .\nRUN mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab\nCOPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 10428\nENTRYPOINT [\"/usr/local/bin/lakehouse-traces\"]\n",
+  "827e2237d329": "# Builder runs on the native host arch (BUILDPLATFORM). Go cross-compiles to\n# TARGETOS/TARGETARCH via env vars below. Running the builder natively avoids\n# the QEMU `git clone` \"cannot pread pack file: Bad address\" failure on large\n# repos (VictoriaLogs is ~70 MB packed) when buildx targets a foreign arch.\nFROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.23@sha256:7fd63dd7c37f5ddaef15bd8fd3f3e4f90f0d50cd9cae255c7cf73887a494d8df AS builder\nRUN apk add --no-cache git\nWORKDIR /app\nARG VERSION=dev\n# The three upstream pins must equal the Makefile's VL_VERSION_LOGS,\n# VL_COMMIT_TRACES and VT_VERSION: the patches applied below are generated\n# against those exact trees and a mismatch fails the build with an unhelpful\n# \"patch failed\" hunk error. Asserted by TestDockerfilePinsMatchMakefile in\n# tests/conformance.\nARG VL_VERSION=v1.53.0\n# VictoriaLogs at commit c945d2949e98 (= VL v1.52.0), the commit\n# VictoriaTraces v0.12.0's own go.mod requires. Derived, never chosen.\nARG VL_COMMIT=c945d2949e98\nARG VT_VERSION=v0.12.0\nARG TARGETOS\nARG TARGETARCH\n# FIPS=1 enables Go 1.26+ native FIPS 140-3 mode. See Dockerfile.logs for the\n# full activation matrix. Only the exact value 1 selects the FIPS module, in the\n# build RUN below; FIPS=0 builds with Go's standard crypto.\nARG FIPS=0\nENV GOWORK=off\nCOPY go.mod go.sum ./\nCOPY lakehouse-traces/go.mod lakehouse-traces/go.sum ./lakehouse-traces/\nRUN mkdir -p deps lakehouse-traces/deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    git clone https://github.com/VictoriaMetrics/VictoriaLogs.git /tmp/vl-src && \\\n    cd /tmp/vl-src && git checkout ${VL_COMMIT} && \\\n    cp -r /tmp/vl-src /app/lakehouse-traces/deps/VictoriaLogs && \\\n    rm -rf /tmp/vl-src && \\\n    cd /app && \\\n    git clone --depth 1 --branch ${VT_VERSION} https://github.com/VictoriaMetrics/VictoriaTraces.git lakehouse-traces/deps/VictoriaTraces && \\\n    cd /app && go mod download && \\\n    cd /app/lakehouse-traces && go mod download\nCOPY patches/ /tmp/patches/\nRUN cp /tmp/patches/vl-logs/external.go.src deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-logs/external_query.go.src deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd deps/VictoriaLogs && git apply /tmp/patches/vl-logs/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-logs/vl-export-streamtags-get.patch\nRUN cp /tmp/patches/vl-traces/external.go.src lakehouse-traces/deps/VictoriaLogs/app/vlstorage/external.go && \\\n    cp /tmp/patches/vl-traces/external_query.go.src lakehouse-traces/deps/VictoriaLogs/lib/logstorage/external_query.go && \\\n    cd lakehouse-traces/deps/VictoriaLogs && git apply /tmp/patches/vl-traces/vlstorage-dispatch.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-severity.patch && \\\n    git apply /tmp/patches/vl-traces/vl-export-streamtags-get.patch && \\\n    git apply /tmp/patches/vl-traces/vl-partition-close-order.patch && \\\n    git apply /tmp/patches/vl-traces/vl-allow-duplicate-stream-tags.patch && \\\n    git apply /tmp/patches/vl-traces/vl-math-keep-quoted-constants.patch && \\\n    git apply /tmp/patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch\nRUN cp /tmp/patches/vt-traces/external.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/external.go && \\\n    cp /tmp/patches/vt-traces/flag_dedup.go.src lakehouse-traces/deps/VictoriaTraces/app/vtstorage/flag_dedup.go && \\\n    cd lakehouse-traces/deps/VictoriaTraces && git apply /tmp/patches/vt-traces/vtstorage-dispatch.patch && \\\n    git apply /tmp/patches/vt-traces/vtstorage-flag-dedup.patch && \\\n    git apply /tmp/patches/vt-traces/vtinsert-flag-dedup.patch && \\\n    go mod edit -replace github.com/VictoriaMetrics/VictoriaLogs=../VictoriaLogs\nCOPY . .\n# VictoriaTraces v0.12.0 replaced the log-based UI with VTUI; the traces binary serves\n# that (lakehouse-traces/internal/vtui), not VictoriaLogs' vmui. The directory is wiped\n# first so a stale bundle from the build context cannot survive.\nRUN rm -rf lakehouse-traces/internal/vtui/vmui && mkdir -p lakehouse-traces/internal/vtui/vmui && \\\n    cp -r lakehouse-traces/deps/VictoriaTraces/app/vtselect/vmui/. lakehouse-traces/internal/vtui/vmui/\n# The healthcheck binary (~3 MB) was folded into the main binary as\n# `lakehouse-traces healthcheck` in PR #96. Saves ~10% of image size.\nRUN cd lakehouse-traces && \\\n    if [ \"$FIPS\" = \"1\" ]; then export GOFIPS140=v1.0.0; fi && \\\n    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \\\n    go build -trimpath -ldflags=\"-s -w -X github.com/VictoriaMetrics/VictoriaMetrics/lib/buildinfo.Version=${VERSION}\" -o /lakehouse-traces .\nRUN mkdir -p /data/lakehouse/cache\n\nFROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab\nCOPY --from=builder /lakehouse-traces /usr/local/bin/lakehouse-traces\nCOPY --from=builder --chown=65532:65532 /data/lakehouse /data/lakehouse\nUSER nonroot\nEXPOSE 10428\nENTRYPOINT [\"/usr/local/bin/lakehouse-traces\"]\n",
+  "76805f85d576": "FROM golang:1.27.3-alpine3.23@sha256:7fd63dd7c37f5ddaef15bd8fd3f3e4f90f0d50cd9cae255c7cf73887a494d8df AS builder\nRUN apk add --no-cache git\nWORKDIR /app\n# Must equal the Makefile's VL_VERSION_LOGS (asserted by\n# TestDockerfilePinsMatchMakefile in tests/conformance).\nARG VL_VERSION=v1.53.0\nCOPY go.mod go.sum ./\nRUN mkdir -p deps && \\\n    git clone --depth 1 --branch ${VL_VERSION} https://github.com/VictoriaMetrics/VictoriaLogs.git deps/VictoriaLogs && \\\n    go mod download\nCOPY . .\nRUN CGO_ENABLED=0 GOWORK=off go build -o /datagen ./cmd/datagen\n\nFROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab\nCOPY --from=builder /datagen /usr/local/bin/datagen\nUSER nonroot\nENTRYPOINT [\"/usr/local/bin/datagen\"]\n"
+ },
+ "cases": [
+  {
+   "id": "pr-652",
+   "sha": "9d6ccc16bf6c",
+   "title": "fix(security): Go 1.27.3 for GO-2026-6809 (#652)",
+   "expect": "release",
+   "why": "Go toolchain bump: go.mod, go.work, lakehouse-traces/go.mod and the golang builder images rebuild the binaries",
+   "files": [
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "Dockerfile.datagen",
+     "status": "M",
+     "base": "2eb491779fff",
+     "head": "3d1bfa96977b"
+    },
+    {
+     "path": "Dockerfile.logs",
+     "status": "M",
+     "base": "68db483c5613",
+     "head": "9dd7625ac87d"
+    },
+    {
+     "path": "Dockerfile.traces",
+     "status": "M",
+     "base": "85c16faea6e4",
+     "head": "a25bbaeb029d"
+    },
+    {
+     "path": "go.mod",
+     "status": "M",
+     "base": "5ee5f5e40355",
+     "head": "a55d517f34ed"
+    },
+    {
+     "path": "go.work",
+     "status": "M",
+     "base": "0a6019d2eead",
+     "head": "d325350c2a8a"
+    },
+    {
+     "path": "lakehouse-traces/go.mod",
+     "status": "M",
+     "base": "7cd9a2b121fa",
+     "head": "d6dd169b4f2c"
+    },
+    {
+     "path": "tests/parity/docker-compose.yml",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-693",
+   "sha": "ce6aa6a6bae7",
+   "title": "fix(build): only FIPS=1 builds with the FIPS 140 module (#693)",
+   "expect": "release",
+   "why": "Dockerfile.logs/Dockerfile.traces logic change (FIPS build arg): the image content changes",
+   "files": [
+    {
+     "path": ".github/workflows/security.yaml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "Dockerfile.logs",
+     "status": "M",
+     "base": "704ab96d853a",
+     "head": "a9e353e23485"
+    },
+    {
+     "path": "Dockerfile.traces",
+     "status": "M",
+     "base": "86ab83dfee6f",
+     "head": "827e2237d329"
+    },
+    {
+     "path": "docs/features.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/security.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/check_fips_variant.sh",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/image_pins_allowlist.txt",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/test_fips_build_arg.py",
+     "status": "A"
+    },
+    {
+     "path": "tests/conformance/registry/features/security.yaml",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-687",
+   "sha": "4deaa7dce357",
+   "title": "ci: pin the release image bases by digest (#687)",
+   "expect": "skip",
+   "why": "digests added to FROM lines that had none: the image bytes are unchanged",
+   "files": [
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "Dockerfile.datagen",
+     "status": "M",
+     "base": "3d1bfa96977b",
+     "head": "76805f85d576"
+    },
+    {
+     "path": "Dockerfile.logs",
+     "status": "M",
+     "base": "9dd7625ac87d",
+     "head": "704ab96d853a"
+    },
+    {
+     "path": "Dockerfile.traces",
+     "status": "M",
+     "base": "a25bbaeb029d",
+     "head": "86ab83dfee6f"
+    },
+    {
+     "path": "scripts/ci/image_pins_allowlist.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/docker-compose.yml",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-686",
+   "sha": "1bb69ab3c2c4",
+   "title": "ci(gate): classify digest pins on release Dockerfile base images as non-product (#686)",
+   "expect": "skip",
+   "why": "gate classifier change: CI and tests only",
+   "files": [
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/pr_classify.py",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/test_pr_classify_toolchain.py",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/testdata/golang_image_cases.json",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/README.md",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/lockcode.go",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-659",
+   "sha": "24ddca94cc4e",
+   "title": "ci: pin container images by digest (#659)",
+   "expect": "skip",
+   "why": "test-stack images pinned by digest: compose files, deployment Dockerfiles, scripts",
+   "files": [
+    {
+     "path": ".github/workflows/s3-compat.yaml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/Dockerfile.bench-shaped",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/Dockerfile.grafana",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/Dockerfile.loki",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/Dockerfile.loki-vl-proxy",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/docker-compose-benchmark.yml",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/docker-compose-e2e.yml",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/docker-compose-proof.yml",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/minio-src/mc.Dockerfile",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/minio-src/minio.Dockerfile",
+     "status": "M"
+    },
+    {
+     "path": "scripts/bench/compaction/compose.yml",
+     "status": "M"
+    },
+    {
+     "path": "scripts/bench/restart-ab/compose.yml",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/image_pins_allowlist.txt",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/tests/pre1970_hot_compare.compose.yml",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/test_image_digest_pins.py",
+     "status": "A"
+    },
+    {
+     "path": "tests/parity/docker-compose.yml",
+     "status": "M"
+    },
+    {
+     "path": "tests/s3compat/compose/garage.yml",
+     "status": "M"
+    },
+    {
+     "path": "tests/s3compat/compose/minio.yml",
+     "status": "M"
+    },
+    {
+     "path": "tests/s3compat/compose/seaweedfs.yml",
+     "status": "M"
+    },
+    {
+     "path": "tests/s3compat/compose/versitygw.yml",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-658",
+   "sha": "8ca096e4dfc9",
+   "title": "ci: pin tool versions and verify downloads (#658)",
+   "expect": "skip",
+   "why": "CI tool pins",
+   "files": [
+    {
+     "path": ".github/workflows/changelog-pr.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/ci.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/gate-selftest.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/market-data.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/parity.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/parquet-readers.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/proof-metrics.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/security.yaml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/config-report/requirements.in",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/config-report/requirements.txt",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/parquet-readback/requirements.in",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/parquet-readback/requirements.txt",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/requirements.in",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/requirements.txt",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/tests/test_ci_tool_pins.py",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/tool_pins_allowlist.txt",
+     "status": "A"
+    },
+    {
+     "path": "scripts/proof/requirements.in",
+     "status": "A"
+    },
+    {
+     "path": "scripts/proof/requirements.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/readers/requirements.in",
+     "status": "A"
+    },
+    {
+     "path": "tests/readers/requirements.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/readers/test_harness.py",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-656",
+   "sha": "c34ed373de2a",
+   "title": "ci: pin third-party actions to commit SHAs and lint workflows (#656)",
+   "expect": "skip",
+   "why": "workflow action pins (CI only)",
+   "files": [
+    {
+     "path": ".github/workflow-lint-requirements.txt",
+     "status": "A"
+    },
+    {
+     "path": ".github/workflows/auto-release.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/badges.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/changelog-pr.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/ci.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/codeql.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/conformance.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/docs-site.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/e2e.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/fuzz-stress-memleak.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/loadtest.yml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/loki-vl-proxy-bump.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/market-data.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/minio-images.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/parity.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/parquet-readers.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/pr-labeler.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/proof-metrics.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/s3-compat.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/security.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/upstream-check.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/verification-matrix-check.yaml",
+     "status": "M"
+    },
+    {
+     "path": ".github/workflows/workflow-lint.yaml",
+     "status": "A"
+    },
+    {
+     "path": ".github/zizmor.yml",
+     "status": "A"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/test_workflow_action_pins.py",
+     "status": "A"
+    }
+   ]
+  },
+  {
+   "id": "pr-660",
+   "sha": "0a7b2d7d32f1",
+   "title": "ci: keep every dependency ecosystem updated with Dependabot (#660)",
+   "expect": "skip",
+   "why": "Dependabot configuration (CI only)",
+   "files": [
+    {
+     "path": ".github/dependabot.yml",
+     "status": "M"
+    },
+    {
+     "path": ".github/zizmor.yml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/dependabot_allowlist.txt",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/tests/test_dependabot_coverage.py",
+     "status": "A"
+    }
+   ]
+  },
+  {
+   "id": "pr-672",
+   "sha": "c2e558277efa",
+   "title": "ci: changelog-check exempts dependency-only Dependabot PRs (#672)",
+   "expect": "skip",
+   "why": "changelog gate script (CI only)",
+   "files": [
+    {
+     "path": ".github/workflows/changelog-pr.yaml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/check_changelog_pr.py",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/test_check_changelog_pr.py",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-673",
+   "sha": "87c6ef0ba836",
+   "title": "ci: Dependabot ignores curated reader-matrix engines and the probe base image (#673)",
+   "expect": "skip",
+   "why": "Dependabot configuration (CI only)",
+   "files": [
+    {
+     "path": ".github/dependabot.yml",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-678",
+   "sha": "233195e546ea",
+   "title": "deps: update thrift in the reader-matrix lock (#678)",
+   "expect": "skip",
+   "why": "reader-matrix tooling lock",
+   "files": [
+    {
+     "path": ".github/workflows/parquet-readers.yaml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "tests/readers/requirements-parquet-tools.txt",
+     "status": "A"
+    },
+    {
+     "path": "tests/readers/requirements.in",
+     "status": "M"
+    },
+    {
+     "path": "tests/readers/requirements.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/readers/test_harness.py",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-684",
+   "sha": "af6c79ddc0ea",
+   "title": "ci(security): make the vulnerability scan able to fail and scan the release images (#684)",
+   "expect": "skip",
+   "why": "security workflow (CI only)",
+   "files": [
+    {
+     "path": ".github/workflows/security.yaml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/test_trivy_gate.py",
+     "status": "A"
+    },
+    {
+     "path": "scripts/ci/trivy_fetch_db.sh",
+     "status": "A"
+    }
+   ]
+  },
+  {
+   "id": "pr-688",
+   "sha": "2b4eab7efa08",
+   "title": "ci(parity): per-signal pass floors, and a skipped parity test counts as a failure (#688)",
+   "expect": "skip",
+   "why": "parity ratchet tooling",
+   "files": [
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/features.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/parity-and-gaps.md",
+     "status": "M"
+    },
+    {
+     "path": "scripts/bench/ab/quality.py",
+     "status": "M"
+    },
+    {
+     "path": "scripts/bench/ab/tests/test_quality.py",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/parity_ratchet.py",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/test_parity_ratchet.py",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/tests/testdata/parity_data_parse.json",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/README.md",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/cmd/testlinks/main.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/features/ops.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/lockcode.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/lockcode_test.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/coldhot_endpoint_parity_test.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/known_failures.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/require_data_test.go",
+     "status": "A"
+    },
+    {
+     "path": "tests/parity/servicegraph_parity_test.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/traces_parity_test.go",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-653",
+   "sha": "94f1d8f7871c",
+   "title": "chore(deps): bump pillow from 12.3.0 to 13.0.0 in /scripts/proof in the pip group across 1 directory (#653)",
+   "expect": "skip",
+   "why": "Dependabot pip bump in scripts/proof (tooling lock); cut v0.157.3 on main",
+   "files": [
+    {
+     "path": "scripts/proof/requirements.txt",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-666",
+   "sha": "e93725c62a40",
+   "title": "chore(deps): bump the python-minor-patch group across 4 directories with 2 updates (#666)",
+   "expect": "skip",
+   "why": "Dependabot pip bumps of tooling locks; cut v0.157.5 on main",
+   "files": [
+    {
+     "path": "scripts/bench/ab/requirements.txt",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/config-report/requirements.txt",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/requirements.in",
+     "status": "M"
+    },
+    {
+     "path": "scripts/ci/requirements.txt",
+     "status": "M"
+    },
+    {
+     "path": "scripts/proof/requirements.in",
+     "status": "M"
+    },
+    {
+     "path": "scripts/proof/requirements.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/readers/requirements.in",
+     "status": "M"
+    },
+    {
+     "path": "tests/readers/requirements.txt",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-668",
+   "sha": "910c31607c7b",
+   "title": "chore(deps): bump pyflakes from 3.2.0 to 4.0.3 in /scripts/bench/ab (#668)",
+   "expect": "skip",
+   "why": "Dependabot pyflakes in scripts/bench/ab",
+   "files": [
+    {
+     "path": "scripts/bench/ab/requirements.txt",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-669",
+   "sha": "db68785ad00e",
+   "title": "chore(deps): bump pyflakes from 3.2.0 to 4.0.3 in /scripts/proof (#669)",
+   "expect": "skip",
+   "why": "Dependabot pyflakes in scripts/proof; cut v0.157.4 on main",
+   "files": [
+    {
+     "path": "scripts/proof/requirements.in",
+     "status": "M"
+    },
+    {
+     "path": "scripts/proof/requirements.txt",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-661",
+   "sha": "0a14ee0fd5fe",
+   "title": "chore(deps): bump alpine from 3.21 to 3.24 in /deployment/docker/minio-src in the docker-images group across 1 directory (#661)",
+   "expect": "skip",
+   "why": "Dependabot alpine in deployment/docker/minio-src (test stack image)",
+   "files": [
+    {
+     "path": "deployment/docker/minio-src/mc.Dockerfile",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/minio-src/minio.Dockerfile",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-663",
+   "sha": "b2dfd59b0947",
+   "title": "chore(deps): bump the npm-minor-patch group across 2 directories with 8 updates (#663)",
+   "expect": "skip",
+   "why": "Dependabot npm groups (website tooling)",
+   "files": [
+    {
+     "path": "tests/playwright/proof/package-lock.json",
+     "status": "M"
+    },
+    {
+     "path": "tests/playwright/proof/package.json",
+     "status": "M"
+    },
+    {
+     "path": "website/package.json",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-674",
+   "sha": "2b0ab008bcf9",
+   "title": "chore(deps): bump the docker-images group across 1 directory with 2 updates (#674)",
+   "expect": "skip",
+   "why": "Dependabot docker group in deployment/docker (test stack images)",
+   "files": [
+    {
+     "path": "deployment/docker/Dockerfile.bench-shaped",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/Dockerfile.loki",
+     "status": "M"
+    },
+    {
+     "path": "deployment/docker/Dockerfile.loki-vl-proxy",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-613",
+   "sha": "2bdefa0758ac",
+   "title": "feat(delete): write-once tombstones read from the bucket by every pod (#613)",
+   "expect": "release",
+   "why": "feature: product code and charts",
+   "files": [
+    {
+     "path": ".github/workflows/fuzz-stress-memleak.yaml",
+     "status": "M"
+    },
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "README.md",
+     "status": "M"
+    },
+    {
+     "path": "UPSTREAM_COVERAGE.md",
+     "status": "M"
+    },
+    {
+     "path": "alerts/alerts-lakehouse.yml",
+     "status": "M"
+    },
+    {
+     "path": "charts/victoria-lakehouse/values.schema.json",
+     "status": "M"
+    },
+    {
+     "path": "charts/victoria-lakehouse/values.yaml",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/delete_auth_key_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/delete_rewriter_test.go",
+     "status": "D"
+    },
+    {
+     "path": "cmd/lakehouse-logs/fake_s3_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/main.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/maintenance_gate_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/maintenance_inventory_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/public_delete_mount_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/public_delete_post_only_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/public_delete_tenant_forms_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/ring_multiinstance_test.go",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/testdata/config-surface.json",
+     "status": "M"
+    },
+    {
+     "path": "cmd/lakehouse-logs/tombstone_multiinstance_test.go",
+     "status": "A"
+    },
+    {
+     "path": "cmd/lakehouse-logs/tombstones.go",
+     "status": "A"
+    },
+    {
+     "path": "cmd/lakehouse-logs/tombstones_test.go",
+     "status": "A"
+    },
+    {
+     "path": "dashboards/victoria-lakehouse.json",
+     "status": "M"
+    },
+    {
+     "path": "docs/architecture/roles.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/configuration.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/cost-comparison.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/cost-estimates.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/deletion-strategy.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/durability.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/features.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/manifest-system.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/multi-tenancy.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/observability.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/open-parquet-format.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/operations.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/parity-and-gaps.md",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/compactor.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/delete_clean_marking_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/compaction/delete_property_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/compaction/delete_race_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/compaction/delete_refresh_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/compaction/fixtures_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/compaction/listed_helper_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/no_tombstone_view_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/compaction/orphan_sweep.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/orphan_sweep_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/review404_r4_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/review404_r5_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/scheduler.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/tierA_tombstones_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/compaction/tombstone_scope_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/tombstones.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/compaction/tombstones_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/compaction/trace_encoding_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/compaction/trace_id_hex_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/config/config.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/config/config_coverage_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/config/config_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/config/profile.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/config/profile_regression_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/config/profile_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/config/testdata/field-docs.json",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/backend.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/branches_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/cache.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/column_fence_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/coverage_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/delete_fuzz_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/deletetest/bucket.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/deletetest/bucket_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/deletetest/memstore/memstore.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/deletetest/memstore/memstore_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/docs_examples_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/durability_units_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/events_links_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/filtercache.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/fixtures_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/gc_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/handler.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/handler_leftovers.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/handler_leftovers_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/handler_scope.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/handler_scope_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/handler_tenant_forms_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/handler_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/handler_undelete_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/integration_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/intents.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/intents_resume_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/intents_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/keys.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/keys_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/listing_property_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/manifest_sync.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/memleak_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/multiinstance_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/protocol.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/protocol_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/review404_r4_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_crash_durability_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_crash_refresh_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_crash_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_durability_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_key_collision_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_manifest_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_publish_hook_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_refresh_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewrite_tenant_key_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewriter.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewriter_created_by_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rewriter_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rollback_compat_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/rowfields.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/s3backend.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/s3backend_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/scale_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/scheduler.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/scheduler_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/selfcheck.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/sparse_first_listing_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/store.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/tasks.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/tasks_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/tenant_scope.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/tenant_scope_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/tombstone.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/tombstone_durability_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/tombstone_persist.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/tombstone_removal_bounds_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/tombstone_removal_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/tombstone_removed.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/tombstone_restore_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/tombstone_sync_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/tombstone_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/trace_encoding_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/trace_id_hex_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/delete/trace_message_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/metrics/lakehouse.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/metrics/verify_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/retention/policy.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/s3reader/list_after.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/s3reader/list_after_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/delete_rewrite_catalog_test.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/storage/parquets3/fields_tombstones_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/pmeta_rows_removed.go",
+     "status": "D"
+    },
+    {
+     "path": "internal/storage/parquets3/storage_fields.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/storage_query.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_gate_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_scope.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_scope_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/telemetry/traced_storage.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/telemetry/traced_storage_tenant_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/vlstorage/internal_delete_gate_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/vlstorage/memleak_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/vlstorage/vlstorage.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/vlstorage/vlstorage_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/delete_rewriter_test.go",
+     "status": "D"
+    },
+    {
+     "path": "lakehouse-traces/fake_s3_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/httpauth_suffix_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/fields_tombstones_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/pmeta_rows_removed.go",
+     "status": "D"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/storage_fields.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/storage_query.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_scope.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/trace_index_lookup.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/vlstorage/memleak_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/vlstorage/traced_storage.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/vlstorage/traced_storage_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/vlstorage/vlstorage.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/vlstorage/vlstorage_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/main.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/maintenance_gate_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/maintenance_inventory_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/public_delete_post_only_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/public_delete_tenant_forms_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/public_delete_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/ring_multiinstance_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/testdata/config-surface.json",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/tombstone_multiinstance_test.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/tombstones.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/tombstones_test.go",
+     "status": "A"
+    },
+    {
+     "path": "tests/conformance/registry/features/deletion.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/features/deploy.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/features/ingest.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/features/tenancy.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/rows/lh/divergences.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/rows/lh/endpoints.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/rows/lh/tombstones.yaml",
+     "status": "A"
+    },
+    {
+     "path": "tests/conformance/registry/rows/vt/absent_fields.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/e2e/delete_test.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/e2e/metrics_verification_test.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/e2e/multitenancy_test.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/e2e/own_tombstone_test.go",
+     "status": "A"
+    },
+    {
+     "path": "tests/s3compat/lakehouse-smoke.sh",
+     "status": "M"
+    },
+    {
+     "path": "tests/s3compat/s3compat_test.go",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-624",
+   "sha": "a7e34111d565",
+   "title": "perf(query): a tombstone only turns off the metadata fast path for the files it can match (#624)",
+   "expect": "release",
+   "why": "perf change in internal/",
+   "files": [
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "UPSTREAM_COVERAGE.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/features.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/operations.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/read-path.md",
+     "status": "M"
+    },
+    {
+     "path": "internal/delete/proof.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/delete/proof_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/field_values_collect.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/storage.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/storage_query.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_gating_bench_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_gating_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_proof.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_proof_bench_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_proof_property_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_proof_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/tombstone_scope.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/field_values_collect.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/storage.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/storage_query.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_gating_test.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_proof.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_proof_property_test.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_proof_test.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/tombstone_scope.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/features/deletion.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/rows/lh/read_path.yaml",
+     "status": "M"
+    }
+   ]
+  },
+  {
+   "id": "pr-581",
+   "sha": "9bbbdfdec5ac",
+   "title": "fix(query): the time range of a request is exact to its unit and its end is inclusive on every layer (B7) (#581)",
+   "expect": "release",
+   "why": "fix in internal/manifest",
+   "files": [
+    {
+     "path": "CHANGELOG.md",
+     "status": "M"
+    },
+    {
+     "path": "UPSTREAM_COVERAGE.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/features.md",
+     "status": "M"
+    },
+    {
+     "path": "docs/parity-and-gaps.md",
+     "status": "M"
+    },
+    {
+     "path": "internal/manifest/manifest.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/manifest/manifest_bench_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/manifest/manifest_range_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/manifest/manifest_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/manifest/partition_stats.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/manifest/range_end_inclusive_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/manifest/stress_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/manifest/tenant_scoped_query_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/selectapi/coverage_hardening_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/selectapi/handler.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/selectapi/handler_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/selectapi/memleak_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/selectapi/time_range_params_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/selectapi/verify_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/coverage_medium_test.go",
+     "status": "M"
+    },
+    {
+     "path": "internal/storage/parquets3/range_end_http_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/range_end_inclusive_test.go",
+     "status": "A"
+    },
+    {
+     "path": "internal/storage/parquets3/storage_query.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/selectapi/handler.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/selectapi/handler_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/selectapi/memleak_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/selectapi/time_range_params_test.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/coverage_medium_test.go",
+     "status": "M"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/range_end_inclusive_test.go",
+     "status": "A"
+    },
+    {
+     "path": "lakehouse-traces/internal/storage/parquets3/storage_query.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/features/query.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/features/traces.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/rows/lh/divergences.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/rows/vl/select.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/conformance/registry/rows/vt/logsql.yaml",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/known_failures.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/lock_cells.txt",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/logs_timerange_test.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/rows_ties.go",
+     "status": "M"
+    },
+    {
+     "path": "tests/parity/traces_timerange_test.go",
+     "status": "A"
+    }
+   ]
+  }
+ ]
+}

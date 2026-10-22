@@ -201,17 +201,17 @@ jobs:
       - name: Check for skip conditions
         if: steps.skip_release.outputs.skip != 'true'
         id: skip
-        run: |
-          # Skip if only non-code files changed (docs, CI, website, release metadata)
-          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
-          if [ "$EVENT_NAME" = workflow_dispatch ] || echo "$CHANGED" | grep -vqE "^(docs/|\.github/|README\.md|CHANGELOG\.md|CONTRIBUTING\.md|SECURITY\.md|CODE_OF_CONDUCT\.md|LICENSE|website/|scripts/ci/|charts/victoria-lakehouse/Chart\.yaml|tests/verification/)"; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-          else
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Skipping release: only docs/CI/metadata changes"
-          fi
+        # A merge that changes nothing that ships is not released. The decision
+        # (scripts/ci/release_product_check.py) runs the registry gate's classifier
+        # on the pushed commit against its parent; Go module and toolchain files,
+        # a changed Dockerfile base-image digest or tag and the upstream pins still
+        # release, and so does every doubt (a manual run, several commits in one
+        # push, a classifier error). The script never exits non-zero: a failed
+        # step would stop the release job.
+        run: python3 scripts/ci/release_product_check.py
         env:
           EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
 
       # Delegate to the Makefile — single source of truth for the
       # patch list. See ci.yaml deps job for the drift-prevention

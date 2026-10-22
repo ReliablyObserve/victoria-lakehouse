@@ -904,13 +904,18 @@ Opted in so far: `fuzz-stress-memleak.yaml` (memleak, stress and fuzz jobs; `fuz
 Tests: `python -m unittest scripts/ci/tests/test_ci_scope_workflows.py` (the lint and its fixtures, the repository
 workflows, and the action's script run as the runner runs it in temporary git repositories).
 
-## Release skip (`[skip release]`)
+## Release skip (non-product merges and `[skip release]`)
 
-`auto-release.yaml` does not release a push whose commit subject, or whose merged pull request's
-title, contains `[skip release]` (`scripts/ci/release_skip.py`). The PR is looked up from the
-pushed commit (`GET /commits/{sha}/pulls`), so squash, merge and rebase merges all work; a job
-re-run re-reads the title. If the lookup fails three times the push is not released, the run
-summary says why and the run turns red; a manual `workflow_dispatch` run (main only, never
-skipped, optional `pr` input for labels and size) releases. The loki-vl-proxy sync probe commit
-carries the marker itself; a product follow-up commit pushed on that sync PR would not release
-either, so give such a PR its own title without the marker.
+A merge to `main` that changes nothing that ships is never released, so the marker below is no longer
+needed for it (it is still honoured). `scripts/ci/release_product_check.py` runs in the workflow's
+`skip` step and asks the registry gate's own classifier (`scripts/ci/pr_classify.py`, taken from the
+parent commit) about the pushed commit. Not released: docs, CI workflows, tests, scripts, test-stack
+compose files and Dockerfiles, tooling locks (pip, npm) and Dependabot bumps of them, release metadata.
+Released although the gate waives them, because they rebuild the binaries or images: `go.mod`, `go.sum`,
+`go.work` of the root and `lakehouse-traces` modules (Go toolchain and dependency bumps), a changed
+`FROM` digest or tag in `Dockerfile`, `Dockerfile.logs` or `Dockerfile.traces` (a digest *added* to a
+line that had none pins what the tag already resolves to and is not released; a digest that changes
+or goes away is), and the upstream pins in `auto-release.yaml`. Every doubt releases: a manual run, a
+push that is not exactly one commit on the previous head (a rebase merge), a merge commit, an empty
+diff, a classifier error. Known gap: other edits of the build steps in `auto-release.yaml` (not the
+pins) are treated as CI. Tests: `python -m unittest scripts.ci.tests.test_release_product_check`.
