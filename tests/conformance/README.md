@@ -789,7 +789,8 @@ change needs. It prints the five registry-gate keys exactly as before, then seve
 | `ci_detail` | what was verified |
 
 `skip_go=false` always comes with `skip_image=false` and `skip_parity=false`: a product change runs everything.
-Nothing skips a job yet; the workflows will read these keys in later changes.
+Workflows read these keys through the `ci-scope` action (see "Opting a workflow in" below); the workflows that have
+opted in so far are listed there.
 
 **Fail open.** A path that is not on the explicit infra list is a product path, so a new directory runs
 everything until someone adds it. Any error, an unreadable diff, a path that is not clean text, an empty
@@ -834,6 +835,74 @@ Dockerfile edits on temporary repositories, the unchanged registry-gate keys, an
 from their file lists), and `python scripts/ci/tests/ci_scope_replay_check.py` (the same 70 merges on the real
 git objects; it needs the full history and runs in `gate-selftest.yaml`). `scripts/ci/ci_scope_replay_gen.py`
 regenerates the recorded file; its header explains how.
+
+### Opting a workflow in
+
+`.github/actions/ci-scope` is a local composite action that runs the classifier of the **merge base** (never the
+one of the pull request, so a change to the classifier cannot decide its own scope) against the checked-out
+change, and exposes `skip_go`, `skip_image`, `skip_parity` and `force`. Any error, an unknown base, a classifier
+that predates the flag or prints something unexpected, a push to `main`, a schedule and a manual dispatch give a
+full run (all `skip_*` false). The repository variable `CI_SCOPE=full` also gives a full run for every pull request;
+it is read only as an environment variable, and there is no label or text override. The action checks nothing out and
+needs `contents: read` only.
+
+A workflow opts in with one `scope` job and one `if:` per job it lets the scope skip:
+
+```yaml
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      CI_SCOPE: ${{ vars.CI_SCOPE }}
+    outputs:
+      skip_go: ${{ steps.scope.outputs.skip_go }}
+      force: ${{ steps.scope.outputs.force }}
+    steps:
+      - uses: actions/checkout@<sha> # v7.0.1
+        with:
+          fetch-depth: 0          # the merge base needs the history
+          persist-credentials: false
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          author: ${{ github.event.pull_request.user.login }}
+
+  fuzz-logs:
+    needs: [scope]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',fuzz-stress-memleak.yaml:fuzz-logs,')) }}
+```
+
+Why this exact form (`test_ci_scope_workflows.py` fails on any other):
+
+- `!= 'true'` (never `== 'false'`): a job is skipped only on an explicit `true`, so an empty, missing or garbled
+  output runs it.
+- `!cancelled()` (never `always()`, never missing): a job whose `needs` failed or was skipped is skipped unless its
+  `if:` lets it continue, and a skipped job reads as passing; so a failed `scope` job must run the job, while a
+  cancelled run stays cancelled.
+- The comma-delimited `contains(format(',{0},', ...), ',<workflow file>:<job id>,')` matches whole `force` entries
+  (a substring such as `test-logs` inside `test-logs-x` does not match). The job id and the file name are the ones
+  the classifier prints in `force`.
+- The `image` and `parity` groups use the same form with `skip_image` or `skip_parity`.
+- A scope output is read only in a job-level `if:`: not in a step `if:`, `env`, `with` or `run`.
+
+Rules that keep the required checks working (also enforced by the test, with the required contexts listed in
+`scripts/ci/tests/testdata/required_checks.txt`, which mirrors the branch protection of `main`):
+
+- A job that reports a required check never gets a scope `if:` and never `needs` the `scope` job. A skipped job
+  reports success, so gating a required job would let it pass without running.
+- No `paths:` or `branches:` filter on a workflow that produces a required check or that is meant to run on every
+  pull request: a workflow skipped by a filter leaves its checks pending.
+- `force` lists jobs, not their `needs:` ancestors. A gated job that `needs` another gated job must list the same
+  guard on the ancestor (or the ancestor must not be gated): the ancestor's skip would otherwise skip the job.
+- Job names and matrix legs do not change.
+
+Opted in so far: `fuzz-stress-memleak.yaml` (memleak, stress and fuzz jobs; `fuzz-matrix-drift` always runs).
+Tests: `python -m unittest scripts/ci/tests/test_ci_scope_workflows.py` (the lint and its fixtures, the repository
+workflows, and the action's script run as the runner runs it in temporary git repositories).
 
 ## Release skip (`[skip release]`)
 

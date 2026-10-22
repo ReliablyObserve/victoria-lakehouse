@@ -51,10 +51,39 @@ env:
 
 jobs:
   # -------------------------------------------------------------------
+  # Scope — works out, from the changed files, whether a pull request
+  # needs the Go checks below (see .github/actions/ci-scope). Pushes to
+  # main, the nightly run and manual runs always run everything, and so
+  # does any error: a job is skipped only on an explicit `true`.
+  # -------------------------------------------------------------------
+  scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      CI_SCOPE: ${{ vars.CI_SCOPE }}
+    outputs:
+      skip_go: ${{ steps.scope.outputs.skip_go }}
+      force: ${{ steps.scope.outputs.force }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
+          author: ${{ github.event.pull_request.user.login }}
+
+  # -------------------------------------------------------------------
   # Memleak gates — heap-budget assertions on each *_memleak_test.go.
   # Runs WITHOUT -race so the heap inflation factor stays at 1x.
   # -------------------------------------------------------------------
   memleak-logs:
+    needs: [scope]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',fuzz-stress-memleak.yaml:memleak-logs,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -76,6 +105,8 @@ jobs:
             ./internal/...
 
   memleak-traces:
+    needs: [scope]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',fuzz-stress-memleak.yaml:memleak-traces,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -106,6 +137,8 @@ jobs:
   # detector.
   # -------------------------------------------------------------------
   stress-logs:
+    needs: [scope]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',fuzz-stress-memleak.yaml:stress-logs,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -123,6 +156,8 @@ jobs:
             ./internal/...
 
   stress-traces:
+    needs: [scope]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',fuzz-stress-memleak.yaml:stress-traces,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -150,6 +185,8 @@ jobs:
   # hide the rest.
   # -------------------------------------------------------------------
   fuzz-logs:
+    needs: [scope]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',fuzz-stress-memleak.yaml:fuzz-logs,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -325,6 +362,8 @@ jobs:
           retention-days: 7
 
   fuzz-traces:
+    needs: [scope]
+    if: ${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || contains(format(',{0},', needs.scope.outputs.force), ',fuzz-stress-memleak.yaml:fuzz-traces,')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
