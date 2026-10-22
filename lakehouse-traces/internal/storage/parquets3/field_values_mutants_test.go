@@ -126,7 +126,7 @@ func TestFieldValuesEmpty_MapAttrStraddlingWindow(t *testing.T) {
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())
 	s.cfg.Mode = fvPropMode()
-	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	base := fvHourSafeBase(time.Now())
 	var rows []fvPropRow
 	for i := 0; i < 10; i++ {
 		rows = append(rows, fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), level: "op", svc: "a",
@@ -188,6 +188,21 @@ func TestFieldValuesEmpty_TracesAggregateEqualsScan(t *testing.T) {
 }
 
 // fvEmptyValues answers field_values (or stream_field_values) as value -> hits.
+// fvHourSafeBase is the first timestamp of a fixture object whose rows run for up
+// to ten seconds. The fixtures register the whole object under the partition of
+// base's hour (the flusher never writes a row into another hour's partition), so
+// a base in the last seconds of an hour put the later rows, and a window over
+// them, in the next hour: the partition was pruned and the answer was empty
+// (#677, the same fixture in the logs module). It is the second of now-30m,
+// moved a minute back when that is in the last minute of an hour.
+func fvHourSafeBase(now time.Time) time.Time {
+	base := now.UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	if base.Truncate(time.Hour).Add(time.Hour).Sub(base) <= time.Minute {
+		base = base.Add(-time.Minute)
+	}
+	return base
+}
+
 func fvEmptyValues(t *testing.T, s *Storage, q string, lo, hi int64, field string, stream bool) map[string]uint64 {
 	t.Helper()
 	qq := mustParseQueryWithTime(t, q, lo, hi)
@@ -213,7 +228,7 @@ func TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount(t *testing.T
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())
 	s.cfg.Mode = fvPropMode()
-	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	base := fvHourSafeBase(time.Now())
 	rows := make([]fvPropRow, 10)
 	for i := range rows {
 		rows[i] = fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), svc: "a", maps: map[string]map[string]string{}, hasMap: map[string]bool{}}

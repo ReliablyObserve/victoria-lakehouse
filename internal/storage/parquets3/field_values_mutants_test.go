@@ -125,7 +125,7 @@ func TestFieldValuesEmpty_MissingColumnStraddlingWindowWithRowCount(t *testing.T
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())
 	s.cfg.Mode = fvPropMode()
-	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	base := fvHourSafeBase(time.Now())
 	rows := make([]fvPropRow, 10)
 	for i := range rows {
 		rows[i] = fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), svc: "a", maps: map[string]map[string]string{}, hasMap: map[string]bool{}}

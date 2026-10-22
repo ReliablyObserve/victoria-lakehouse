@@ -200,7 +200,7 @@ func TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow(t *testing.T) {
 	t.Cleanup(mock.close)
 	s := testStorageWithS3(t, mock.url())
 	s.cfg.Mode = fvPropMode()
-	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	base := fvHourSafeBase(time.Now())
 	var rows []fvPropRow
 	for i := 0; i < 10; i++ {
 		rows = append(rows, fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), svc: "a",
@@ -217,26 +217,53 @@ func TestFieldValuesEmpty_MissingColumnFile_StraddlingWindow(t *testing.T) {
 	}
 }
 
-// A MAP attribute over a window that cuts a file: only rows inside count.
-func TestFieldValuesEmpty_MapAttr_StraddlingWindow(t *testing.T) {
-	mock := newMockS3Server()
-	t.Cleanup(mock.close)
-	s := testStorageWithS3(t, mock.url())
-	s.cfg.Mode = fvPropMode()
-	base := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Second)
-	var rows []fvPropRow
-	for i := 0; i < 10; i++ {
-		rows = append(rows, fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), level: "INFO", svc: "a",
-			maps:   map[string]map[string]string{"log.attributes": {"lk": fmt.Sprintf("v%d", i)}},
-			hasMap: map[string]bool{"log.attributes": true}})
+// fvHourSafeBase is the first timestamp of a fixture file whose rows run for up
+// to ten seconds. The fixtures register the whole file under the partition of
+// base's hour (the flusher never writes a row into another hour's partition),
+// so a base in the last seconds of an hour put the later rows, and a window
+// over them, in the next hour: the partition was pruned and the answer was
+// empty (#677). It is the second of now-30m, moved a minute back when that is
+// in the last minute of an hour.
+func fvHourSafeBase(now time.Time) time.Time {
+	base := now.UTC().Add(-30 * time.Minute).Truncate(time.Second)
+	if base.Truncate(time.Hour).Add(time.Hour).Sub(base) <= time.Minute {
+		base = base.Add(-time.Minute)
 	}
-	data := fvPropFile(t, []string{"timestamp_unix_nano", "severity_text", "service.name", "resource.attributes", "log.attributes"}, rows, 4)
-	key := fmt.Sprintf("logs/dt=%s/hour=%02d/win.parquet", base.Format("2006-01-02"), base.Hour())
-	registerFileInMockS3(t, s, mock, key, data, base)
-	lo, hi := base.Add(3*time.Second).UnixNano(), base.Add(4*time.Second).UnixNano()
-	got := fvEmptyValues(t, s, "*", lo, hi, "lk", false)
-	if want := map[string]uint64{"v3": 1, "v4": 1}; fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("field_values(lk) window [3s,4s] = %v, want %v", got, want)
+	return base
+}
+
+// A MAP attribute over a window that cuts a file: only rows inside count. It
+// also runs with the clock at the instants where the unadjusted base fell in
+// the last seconds of an hour: the window [3s,4s] is then wholly in the next
+// hour, which made it fail in about 1 run of 1200 (3 seconds of 3600) (#677).
+func TestFieldValuesEmpty_MapAttr_StraddlingWindow(t *testing.T) {
+	hour := time.Now().UTC().Truncate(time.Hour)
+	nows := map[string]time.Time{"wall_clock": time.Now()}
+	for _, d := range []int{0, 1, 2, 3, 4, 5, 9, 10, 30, 59} {
+		nows[fmt.Sprintf("base_%ds_before_the_hour", d)] = hour.Add(30*time.Minute - time.Duration(d)*time.Second)
+	}
+	for name, now := range nows {
+		t.Run(name, func(t *testing.T) {
+			mock := newMockS3Server()
+			t.Cleanup(mock.close)
+			s := testStorageWithS3(t, mock.url())
+			s.cfg.Mode = fvPropMode()
+			base := fvHourSafeBase(now)
+			var rows []fvPropRow
+			for i := 0; i < 10; i++ {
+				rows = append(rows, fvPropRow{ts: base.Add(time.Duration(i) * time.Second).UnixNano(), level: "INFO", svc: "a",
+					maps:   map[string]map[string]string{"log.attributes": {"lk": fmt.Sprintf("v%d", i)}},
+					hasMap: map[string]bool{"log.attributes": true}})
+			}
+			data := fvPropFile(t, []string{"timestamp_unix_nano", "severity_text", "service.name", "resource.attributes", "log.attributes"}, rows, 4)
+			key := fmt.Sprintf("logs/dt=%s/hour=%02d/win.parquet", base.Format("2006-01-02"), base.Hour())
+			registerFileInMockS3(t, s, mock, key, data, base)
+			lo, hi := base.Add(3*time.Second).UnixNano(), base.Add(4*time.Second).UnixNano()
+			got := fvEmptyValues(t, s, "*", lo, hi, "lk", false)
+			if want := map[string]uint64{"v3": 1, "v4": 1}; fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("field_values(lk) window [3s,4s] = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
