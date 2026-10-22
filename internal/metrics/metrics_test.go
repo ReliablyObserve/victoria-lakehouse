@@ -8,10 +8,12 @@ import (
 	"testing"
 )
 
-// benchSeq gives every benchmark run its own metric name. testing calls a
-// benchmark function again for each b.N it tries (and once per -count), and
-// VictoriaMetrics/metrics panics when a name is registered twice, so a fixed
-// name made the first of these benchmarks abort the whole package's run.
+// benchSeq gives every benchmark run and every test run its own metric name.
+// testing calls a benchmark function again for each b.N it tries (and once per
+// -count), and VictoriaMetrics/metrics panics when a name is registered twice,
+// so a fixed name made the first of these benchmarks abort the whole package's
+// run, and a test that registers a fixed name could not be repeated with
+// -count>1 (#496).
 var benchSeq atomic.Int64
 
 func benchMetricName(base string) string {
@@ -19,7 +21,7 @@ func benchMetricName(base string) string {
 }
 
 func TestCounter(t *testing.T) {
-	c := NewCounter("test_counter_basic")
+	c := NewCounter(benchMetricName("test_counter_basic"))
 	c.Inc()
 	c.Inc()
 	c.Add(3)
@@ -30,7 +32,7 @@ func TestCounter(t *testing.T) {
 }
 
 func TestGauge(t *testing.T) {
-	g := NewGauge("test_gauge_basic")
+	g := NewGauge(benchMetricName("test_gauge_basic"))
 	g.Set(42)
 	if got := g.Get(); got != 42 {
 		t.Fatalf("expected 42, got %d", got)
@@ -45,7 +47,7 @@ func TestGauge(t *testing.T) {
 }
 
 func TestFloatGauge(t *testing.T) {
-	g := NewFloatGauge("test_float_gauge_basic")
+	g := NewFloatGauge(benchMetricName("test_float_gauge_basic"))
 	g.Set(3.14)
 	if got := g.Get(); got != 3.14 {
 		t.Fatalf("expected 3.14, got %f", got)
@@ -53,7 +55,7 @@ func TestFloatGauge(t *testing.T) {
 }
 
 func TestHistogram(t *testing.T) {
-	h := NewHistogram("test_hist_basic", DefBuckets)
+	h := NewHistogram(benchMetricName("test_hist_basic"), DefBuckets)
 	h.Observe(0.05)
 	h.Observe(0.3)
 	h.Observe(0.8)
@@ -69,7 +71,7 @@ func TestHistogram(t *testing.T) {
 }
 
 func TestCounterVec(t *testing.T) {
-	cv := NewCounterVec("test_vec_basic", "method")
+	cv := NewCounterVec(benchMetricName("test_vec_basic"), "method")
 	cv.Inc("GET")
 	cv.Inc("GET")
 	cv.Inc("POST")
@@ -86,20 +88,22 @@ func TestCounterVec(t *testing.T) {
 }
 
 func TestCounterVecPrometheusOutput(t *testing.T) {
-	cv := NewCounterVec("test_vec_prom", "op")
+	name := benchMetricName("test_vec_prom")
+	cv := NewCounterVec(name, "op")
 	cv.Inc("read")
 
 	var buf bytes.Buffer
 	WritePrometheus(&buf, false)
 	out := buf.String()
 
-	if !strings.Contains(out, `test_vec_prom{op="read"}`) {
+	if !strings.Contains(out, name+`{op="read"}`) {
 		t.Fatalf("missing counter vec in output:\n%s", out)
 	}
 }
 
 func TestInfoGauge(t *testing.T) {
-	NewInfoGauge("test_info_basic", map[string]string{
+	name := benchMetricName("test_info_basic")
+	NewInfoGauge(name, map[string]string{
 		"version": "0.7.0",
 		"mode":    "logs",
 	})
@@ -108,18 +112,19 @@ func TestInfoGauge(t *testing.T) {
 	WritePrometheus(&buf, false)
 	out := buf.String()
 
-	if !strings.Contains(out, `test_info_basic{mode="logs",version="0.7.0"}`) {
+	if !strings.Contains(out, name+`{mode="logs",version="0.7.0"}`) {
 		t.Fatalf("info gauge not in output:\n%s", out)
 	}
 }
 
 func TestGaugeFunc(t *testing.T) {
 	val := 99.0
-	NewGaugeFunc("test_gaugefunc_basic", func() float64 { return val })
+	name := benchMetricName("test_gaugefunc_basic")
+	NewGaugeFunc(name, func() float64 { return val })
 
 	var buf bytes.Buffer
 	WritePrometheus(&buf, false)
-	if !strings.Contains(buf.String(), "test_gaugefunc_basic 99") {
+	if !strings.Contains(buf.String(), name+" 99") {
 		t.Fatalf("gauge func not in output:\n%s", buf.String())
 	}
 }

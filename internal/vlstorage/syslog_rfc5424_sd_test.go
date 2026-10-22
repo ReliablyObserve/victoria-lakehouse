@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/app/vlinsert/syslog"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/flagutil"
 )
 
 // A syslog RFC5424 message whose structured data ends right after `name=`
@@ -29,10 +30,19 @@ func TestSyslogRFC5424_IncompleteStructuredDataDoesNotCrashTheListener(t *testin
 	addr := ln.Addr().String()
 	_ = ln.Close()
 
-	if err := flag.Set("syslog.listenAddr.tcp", addr); err != nil {
-		t.Fatal(err)
+	// -syslog.listenAddr.tcp is a flagutil.ArrayString and flag.Set APPENDS to
+	// it, there is no way to clear it through flag.Set (setting "" appends an
+	// empty entry). Replacing the value in place and restoring it afterwards
+	// keeps every run of the test, including -count=N, starting from the same
+	// flag state; with the append, run 2 re-listened on run 1's address and
+	// upstream panicked with its listener metric registered twice (#632).
+	listenAddrs, ok := flag.Lookup("syslog.listenAddr.tcp").Value.(*flagutil.ArrayString)
+	if !ok {
+		t.Fatalf("-syslog.listenAddr.tcp is %T, want *flagutil.ArrayString", flag.Lookup("syslog.listenAddr.tcp").Value)
 	}
-	t.Cleanup(func() { _ = flag.Set("syslog.listenAddr.tcp", "") })
+	prevAddrs := *listenAddrs
+	*listenAddrs = flagutil.ArrayString{addr}
+	t.Cleanup(func() { *listenAddrs = prevAddrs })
 
 	buf := &recordingBuffer{}
 	SetInsertStorage(buf, t.TempDir())
