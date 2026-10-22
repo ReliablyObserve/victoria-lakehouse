@@ -553,13 +553,14 @@ class Entrypoint(unittest.TestCase):
         import yaml
         text = (pathlib.Path(HERE).parents[2] / ".github" / "workflows" / "auto-release.yaml").read_text(encoding="utf-8")
         wf = yaml.safe_load(text)
-        steps = {s.get("id"): s for s in wf["jobs"]["release"]["steps"] if s.get("id")}
+        steps = {s.get("id"): s for s in wf["jobs"]["decide"]["steps"] if s.get("id")}
         step = steps["skip"]
         self.assertEqual(step["run"].strip(), "python3 scripts/ci/release_product_check.py")
         self.assertEqual(step["env"]["BEFORE_SHA"], "${{ github.event.before }}")
         self.assertEqual(step["if"], "steps.skip_release.outputs.skip != 'true'")
-        # the release steps still read the same output
-        self.assertIn("steps.skip.outputs.skip != 'true'", text)
+        # the release decision still reads the same output, and every later job follows it
+        self.assertIn("SKIP_PRODUCT: ${{ steps.skip.outputs.skip }}", text)
+        self.assertIn("needs.decide.outputs.release == 'true'", text)
 
 
 if __name__ == "__main__":
