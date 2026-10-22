@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A configured peer key is enforced again unless `peer.auth_enabled` is explicitly `false`.** Before v0.167.0 setting `peer.auth_key` (or the chart's `peerAuth.existingSecret`) made a pod require the key on its internal endpoints; v0.167.0 required the new `peer.auth_enabled: true` as well, so a deployment that already had a key and upgraded stopped enforcing it without any message beyond a startup warning. `peer.auth_enabled` is now a three-state setting: unset enforces a configured key (the behaviour before v0.167.0; with no key nothing is enforced), `false` only sends the key (step 1 of a rolling rollout, `-lakehouse.peer.auth-enabled=false`, the chart's `peerAuth.enabled: false`), `true` enforces and the process refuses to start without a key. The chart's `peerAuth.enabled` defaults to `null` (no flag is passed), the `lakehouse_peer_auth_enabled` gauge, the `peer_auth` field of `/lakehouse/info`, the startup warning and `helm install`'s notes report the effective state, and the default Helm render of the manifests is unchanged. A deployment that ran v0.167.0 with a key and no `peer.auth_enabled`, and wants to stay unenforced for now, sets `peer.auth_enabled: false` before upgrading (see docs/security.md).
+
 ## [0.167.0] - 2026-10-22
 
 ### Added

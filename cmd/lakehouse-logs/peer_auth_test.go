@@ -9,10 +9,15 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/envflag"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -23,12 +28,15 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 )
 
-// Optional peer authentication (peer.auth_enabled): off by default, so the
-// internal endpoints behave as they always did; on, every one of them refuses a
-// request without the key. The key is sent on the pod's own peer calls whenever
-// it is set, so it can be rolled out before enforcement is switched on.
+// Peer authentication of the internal endpoints (peer.auth_key, tri-state
+// peer.auth_enabled): with no key nothing is enforced; a configured key is
+// enforced unless peer.auth_enabled is explicitly false, in which case the key
+// is only sent (step 1 of a rolling rollout); true enforces and needs the key.
+// The key is sent on the pod's own peer calls whenever it is set.
 
 const peerKey = "cluster-gossip-secret"
+
+func boolPtr(v bool) *bool { return &v }
 
 // peerMux mounts the pod's internal endpoints the way the binary does.
 func peerMux(peer config.PeerConfig) (*http.ServeMux, *peerState) {
@@ -128,19 +136,56 @@ func (e peerEndpoint) request(t *testing.T, key string) *http.Request {
 	return r
 }
 
-// Off (the default): every internal endpoint takes a request without a
-// credential, also when a key is configured, exactly as before the setting existed.
-func TestPeerEndpoints_OffByDefaultServesWithoutKey(t *testing.T) {
-	for _, peer := range []config.PeerConfig{{}, {AuthKey: peerKey}} {
+// No key, or a key with peer.auth_enabled explicitly false (send-only): every
+// internal endpoint takes a request without a credential.
+func TestPeerEndpoints_NotEnforcedServesWithoutKey(t *testing.T) {
+	for name, peer := range map[string]config.PeerConfig{
+		"no key":                 {},
+		"no key, explicit false": {AuthEnabled: boolPtr(false)},
+		"key, explicit false":    {AuthKey: peerKey, AuthEnabled: boolPtr(false)},
+	} {
 		for _, e := range peerEndpointList() {
 			mux, st := peerMux(peer)
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, e.request(t, ""))
 			if w.Code != e.okCode {
-				t.Errorf("key %q off, %s without a key: %d %q, want %d", peer.AuthKey, e.name, w.Code, w.Body.String(), e.okCode)
+				t.Errorf("%s, %s without a key: %d %q, want %d", name, e.name, w.Code, w.Body.String(), e.okCode)
 			}
 			if e.name == "cache clear" && !st.cache.cleared {
-				t.Errorf("key %q off, cache clear did nothing", peer.AuthKey)
+				t.Errorf("%s, cache clear did nothing", name)
+			}
+		}
+	}
+}
+
+// A configuration written before peer.auth_enabled existed (a key and nothing
+// else) enforces the key on every protected endpoint, as it did then; the
+// explicit true is the same.
+func TestPeerEndpoints_KeyAloneEnforces(t *testing.T) {
+	for name, peer := range map[string]config.PeerConfig{
+		"key only":      {AuthKey: peerKey},
+		"explicit true": {AuthKey: peerKey, AuthEnabled: boolPtr(true)},
+	} {
+		for _, e := range peerEndpointList() {
+			for _, bad := range []string{"", "x" + peerKey[1:], peerKey + "x"} {
+				mux, st := peerMux(peer)
+				w := httptest.NewRecorder()
+				mux.ServeHTTP(w, e.request(t, bad))
+				if w.Code != http.StatusUnauthorized {
+					t.Errorf("%s, %s with key %q: %d, want 401", name, e.name, bad, w.Code)
+				}
+				if e.name == "cache clear" && st.cache.cleared {
+					t.Errorf("%s: a refused cache clear still cleared", name)
+				}
+				if e.name == "manifest update" && st.files() != 0 {
+					t.Errorf("%s: a refused manifest push merged files", name)
+				}
+			}
+			mux, _ := peerMux(peer)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, e.request(t, peerKey))
+			if w.Code != e.okCode {
+				t.Errorf("%s, %s with the key: %d, want %d", name, e.name, w.Code, e.okCode)
 			}
 		}
 	}
@@ -150,7 +195,7 @@ func TestPeerEndpoints_OffByDefaultServesWithoutKey(t *testing.T) {
 // credential are refused with 401 before anything is read or changed; the right
 // key is served. The state of a refused pod does not change.
 func TestPeerEndpoints_EnforcedRefusesWithoutTheKey(t *testing.T) {
-	peer := config.PeerConfig{AuthKey: peerKey, AuthEnabled: true}
+	peer := config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(true)}
 	for _, e := range peerEndpointList() {
 		for _, bad := range []string{"", "x" + peerKey[1:], peerKey + "x", peerKey[:3]} {
 			mux, st := peerMux(peer)
@@ -273,12 +318,13 @@ func TestLakehouseInfo_ReportsPeerAuth(t *testing.T) {
 		want PeerAuthInfo
 	}{
 		{config.PeerConfig{}, PeerAuthInfo{}},
-		{config.PeerConfig{AuthKey: peerKey}, PeerAuthInfo{KeyConfigured: true}},
-		{config.PeerConfig{AuthKey: peerKey, AuthEnabled: true}, PeerAuthInfo{Enabled: true, KeyConfigured: true}},
+		{config.PeerConfig{AuthKey: peerKey}, PeerAuthInfo{Enabled: true, KeyConfigured: true}},
+		{config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(false)}, PeerAuthInfo{KeyConfigured: true}},
+		{config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(true)}, PeerAuthInfo{Enabled: true, KeyConfigured: true}},
 	} {
 		h := HandleLakehouseInfo(LakehouseInfoConfig{
 			Version: "v", Mode: "logs", IsReady: func() bool { return true }, Phase: func() string { return "ready" },
-			PeerAuth: PeerAuthInfo{Enabled: tc.peer.AuthEnabled, KeyConfigured: tc.peer.AuthKey != ""},
+			PeerAuth: PeerAuthInfo{Enabled: tc.peer.EnforcedKey() != "", KeyConfigured: tc.peer.AuthKey != ""},
 		})
 		w := httptest.NewRecorder()
 		h(w, httptest.NewRequest(http.MethodGet, "/lakehouse/info", nil))
@@ -298,12 +344,96 @@ func TestLakehouseInfo_ReportsPeerAuth(t *testing.T) {
 	}
 }
 
-// -lakehouse.peer.auth-enabled: an unset flag never turns the config file's
-// true off, the flag turns it on, and enabled without a key is refused at
-// startup (after the flags and the key are applied).
+// -lakehouse.peer.auth-enabled is tri-state: not given leaves the config
+// file's value (and the unset state) alone, an explicit =false or =true wins,
+// also when the value reaches the flag through the environment (envflag sets
+// it with FlagSet.Set, the same call as the command line).
+func TestPeerAuthEnabledFlag_GivenOrNot(t *testing.T) {
+	f := flag.CommandLine.Lookup("lakehouse.peer.auth-enabled")
+	if f == nil {
+		t.Fatal("the binary no longer registers -lakehouse.peer.auth-enabled")
+	}
+	if f.Value != flag.Value(peerAuthEnabled) {
+		t.Fatal("-lakehouse.peer.auth-enabled is not the value applyPeerFlags reads")
+	}
+	// a fresh flag set with a flag of the same type as the binary registers
+	newFS := func() (*flag.FlagSet, *peerauth.TriBool) {
+		fs := flag.NewFlagSet("peer", flag.ContinueOnError)
+		tb := &peerauth.TriBool{}
+		fs.Var(tb, "lakehouse.peer.auth-enabled", "")
+		return fs, tb
+	}
+	apply := func(tb *peerauth.TriBool, file *bool) *bool {
+		c := config.PeerConfig{AuthEnabled: file}
+		tb.Apply(&c.AuthEnabled)
+		return c.AuthEnabled
+	}
+	same := func(a, b *bool) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+	files := []*bool{nil, boolPtr(true), boolPtr(false)}
+
+	fs, tb := newFS()
+	if err := fs.Parse(nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if got := apply(tb, file); !same(got, file) {
+			t.Errorf("flag not given, file %v: got %v, want the file value", file, got)
+		}
+	}
+	for arg, want := range map[string]bool{"-lakehouse.peer.auth-enabled=false": false, "-lakehouse.peer.auth-enabled=true": true, "-lakehouse.peer.auth-enabled": true} {
+		fs, tb := newFS()
+		if err := fs.Parse([]string{arg}); err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range files {
+			if got := apply(tb, file); got == nil || *got != want {
+				t.Errorf("%s, file %v: got %v, want %v", arg, file, got, want)
+			}
+		}
+	}
+}
+
+// The environment path: envflag reads its environment cache once at process
+// start, so a child process (this test binary) is started with the variable
+// set. The child parses a flag set the way envflag.Parse does and reports.
+func TestPeerAuthEnabledFlag_FromEnvironment(t *testing.T) {
+	if want := os.Getenv("PEER_AUTH_ENV_WANT"); want != "" {
+		if err := flag.Set("envflag.enable", "true"); err != nil {
+			t.Fatal(err)
+		}
+		fs := flag.NewFlagSet("peer", flag.ContinueOnError)
+		tb := &peerauth.TriBool{}
+		fs.Var(tb, "lakehouse.peer.auth-enabled", "")
+		envflag.ParseFlagSet(fs, nil)
+		c := config.PeerConfig{}
+		tb.Apply(&c.AuthEnabled)
+		got := "unset"
+		if c.AuthEnabled != nil {
+			got = strconv.FormatBool(*c.AuthEnabled)
+		}
+		if got != want {
+			t.Fatalf("lakehouse_peer_auth-enabled in the environment: got %s, want %s", got, want)
+		}
+		return
+	}
+	for _, tc := range []struct{ env, want string }{{"false", "false"}, {"true", "true"}, {"", "unset"}} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestPeerAuthEnabledFlag_FromEnvironment$", "-test.count=1")
+		cmd.Env = append(os.Environ(), "PEER_AUTH_ENV_WANT="+tc.want, "lakehouse_peer_auth-enabled="+tc.env)
+		if tc.env == "" {
+			cmd.Env = append(os.Environ(), "PEER_AUTH_ENV_WANT="+tc.want)
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("env %q: %v\n%s", tc.env, err, out)
+		}
+	}
+}
+
+// The flags with the config file and the startup validation: a key alone
+// enforces, =false is send-only, =true enforces and needs a key.
 func TestPeerAuthEnabled_FlagAndStartupValidation(t *testing.T) {
+	_ = flag.Set("lakehouse.peer.auth-enabled", "") // unset, whatever an earlier test left
 	t.Cleanup(func() {
-		_ = flag.Set("lakehouse.peer.auth-enabled", "false")
+		_ = flag.Set("lakehouse.peer.auth-enabled", "")
 		_ = flag.Set("lakehouse.peer.auth-key", "")
 		_ = flag.Set("lakehouse.peer.max-request-body-bytes", "0")
 	})
@@ -316,35 +446,24 @@ func TestPeerAuthEnabled_FlagAndStartupValidation(t *testing.T) {
 
 	c := newCfg()
 	applyPeerFlags(&c.Peer)
-	if c.Peer.AuthEnabled || c.Peer.EnforcedKey() != "" {
-		t.Fatalf("default: enabled=%v enforced key %q, want off", c.Peer.AuthEnabled, c.Peer.EnforcedKey())
+	if c.Peer.AuthEnabled != nil || c.Peer.EnforcedKey() != "" {
+		t.Fatalf("default: enabled=%v enforced key %q, want unset and nothing enforced", c.Peer.AuthEnabled, c.Peer.EnforcedKey())
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("the default config is invalid: %v", err)
 	}
 
-	c = newCfg()
-	c.Peer.AuthEnabled, c.Peer.AuthKey = true, "from-file"
-	applyPeerFlags(&c.Peer)
-	if !c.Peer.AuthEnabled {
-		t.Fatal("an unset -lakehouse.peer.auth-enabled turned peer.auth_enabled: true off")
-	}
-
+	// a key from the file, nothing else: enforced (the pre-setting behaviour)
 	c = newCfg()
 	c.Peer.AuthKey = "from-file"
-	if err := flag.Set("lakehouse.peer.auth-enabled", "true"); err != nil {
-		t.Fatal(err)
-	}
 	applyPeerFlags(&c.Peer)
-	if !c.Peer.AuthEnabled || c.Peer.EnforcedKey() != "from-file" {
-		t.Fatalf("flag on: enabled=%v enforced %q", c.Peer.AuthEnabled, c.Peer.EnforcedKey())
-	}
-	if err := c.Validate(); err != nil {
-		t.Fatalf("enabled with a key was refused: %v", err)
+	if err := c.Validate(); err != nil || c.Peer.EnforcedKey() != "from-file" {
+		t.Fatalf("key only: err %v, enforced %q, want from-file", err, c.Peer.EnforcedKey())
 	}
 
 	// enabled and no key anywhere: one plain message
 	c = newCfg()
+	c.Peer.AuthEnabled = boolPtr(true)
 	applyPeerFlags(&c.Peer)
 	err := c.Validate()
 	if err == nil || !strings.Contains(err.Error(), "peer.auth_enabled") || !strings.Contains(err.Error(), "peer.auth_key") {
@@ -352,6 +471,7 @@ func TestPeerAuthEnabled_FlagAndStartupValidation(t *testing.T) {
 	}
 	// ...also when the key is only whitespace
 	c = newCfg()
+	c.Peer.AuthEnabled = boolPtr(true)
 	_ = flag.Set("lakehouse.peer.auth-key", "  \n")
 	applyPeerFlags(&c.Peer)
 	if err := c.Validate(); err == nil {
@@ -359,10 +479,11 @@ func TestPeerAuthEnabled_FlagAndStartupValidation(t *testing.T) {
 	}
 	// a key set from the flag satisfies it
 	c = newCfg()
+	c.Peer.AuthEnabled = boolPtr(true)
 	_ = flag.Set("lakehouse.peer.auth-key", "k-from-flag")
 	applyPeerFlags(&c.Peer)
-	if err := c.Validate(); err != nil {
-		t.Fatalf("enabled with the key from the flag: %v", err)
+	if err := c.Validate(); err != nil || c.Peer.EnforcedKey() != "k-from-flag" {
+		t.Fatalf("enabled with the key from the flag: err %v, enforced %q", err, c.Peer.EnforcedKey())
 	}
 
 	// the body cap flag overrides the default, 0 keeps it
@@ -433,5 +554,45 @@ func TestOutgoingPeerCallsCarryTheKeyWhenConfigured(t *testing.T) {
 				t.Errorf("key %q: %s carried %q, want %q", key, path, got[path], w)
 			}
 		}
+	}
+}
+
+// The tenant alias admin writes take the same key as the internal endpoints:
+// a key alone or an explicit true enforces it, an explicit false or no key does not.
+func TestTenantAliasAPI_FollowsTheEnforcedKey(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		peer    config.PeerConfig
+		enforce bool
+	}{
+		{"no key", config.PeerConfig{}, false},
+		{"key only", config.PeerConfig{AuthKey: peerKey}, true},
+		{"explicit true", config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(true)}, true},
+		{"explicit false", config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(false)}, false},
+	} {
+		mux := http.NewServeMux()
+		mountTenantAliasAPI(mux, tc.peer, tenant.NewResolver(tenant.ResolverConfig{}), nil)
+		for _, r := range []struct{ method, path string }{
+			{http.MethodPost, "/lakehouse/api/v1/tenants/aliases"},
+			{http.MethodDelete, "/lakehouse/api/v1/tenants/aliases/org-x"},
+		} {
+			for _, key := range []string{"", "wrong-" + peerKey} {
+				w := httptest.NewRecorder()
+				req := httptest.NewRequest(r.method, r.path, strings.NewReader("{}"))
+				if key != "" {
+					req.Header.Set("Authorization", "Bearer "+key)
+				}
+				mux.ServeHTTP(w, req)
+				if refused := w.Code == http.StatusUnauthorized; refused != tc.enforce {
+					t.Errorf("%s: %s %s with key %q: %d, refused=%v want %v", tc.name, r.method, r.path, key, w.Code, refused, tc.enforce)
+				}
+			}
+		}
+	}
+	// a nil resolver mounts nothing
+	mux := http.NewServeMux()
+	mountTenantAliasAPI(mux, config.PeerConfig{AuthKey: peerKey}, nil, nil)
+	if _, pattern := mux.Handler(httptest.NewRequest(http.MethodPost, "/lakehouse/api/v1/tenants/aliases", nil)); pattern != "" {
+		t.Errorf("alias API mounted without a resolver: %q", pattern)
 	}
 }

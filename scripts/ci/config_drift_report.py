@@ -194,7 +194,9 @@ def type_ok(value: Any, kind: str) -> bool:
 
 def render(value: Any) -> str:
     """Spell a value the way the docs and the chart do."""
-    if value is None or value == "":
+    if value is None:
+        return "unset"
+    if value == "":
         return '""'
     if isinstance(value, bool):
         return "true" if value else "false"

@@ -80,8 +80,9 @@ type LakehouseInfoConfig struct {
 // PeerAuthInfo is the peer authentication state /lakehouse/info reports under
 // "peer_auth". It never carries the key.
 type PeerAuthInfo struct {
-	// Enabled is peer.auth_enabled: this pod refuses requests without the key
-	// on its internal endpoints.
+	// Enabled is the effective state: this pod refuses requests without the
+	// key on its internal endpoints (peer.auth_key is set and
+	// peer.auth_enabled is not false).
 	Enabled bool `json:"enabled"`
 	// KeyConfigured is whether peer.auth_key is set: this pod sends it on its
 	// own peer calls.
