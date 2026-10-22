@@ -166,3 +166,5 @@ func detectK8sNodeLabel(ctx context.Context, timeout time.Duration) (string, err
 	}
 	return node.Metadata.Labels["failure-domain.beta.kubernetes.io/zone"], nil
 }
+
+// scratch: scope proof
