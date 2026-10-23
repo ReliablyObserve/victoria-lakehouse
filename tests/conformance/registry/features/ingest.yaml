@@ -90,6 +90,30 @@
     - internal/storage/parquets3/buffer_flusher_segments_test.go#TestPlanSlices
     - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_GroupsAreBoundedInRows
     - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go#TestSegments_SealPolicy
+    - internal/storage/parquets3/drain_crowded_test.go#TestDrain_CrowdedSecondIsCutIntoBoundedGroups
+    - internal/storage/parquets3/drain_crowded_test.go#TestDrain_IdenticalRowsOfACrowdedSecondStayOneGroup
+    - internal/storage/parquets3/drain_crowded_test.go#TestCollectSlice_BucketsPartitionASecondAndLeaveNoHelperField
+    - internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_SamePlanAsPlanSlicesWithoutACrowdedSecond
+    - internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_HourBoundary
+    - internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_SummaryQueries
+    - internal/storage/parquets3/drain_crowded_test.go#TestDrain_CrowdedSecondResumesWithoutDuplicates
+    - internal/storage/parquets3/drain_crowded_test.go#TestDrain_ObjectsAreByteIdenticalToThePerSecondPlansWithoutACrowdedSecond
+    - internal/storage/parquets3/drain_crowded_test.go#TestDrain_TwoWritersCrowdedSecondOfOneTenant
+    - internal/storage/parquets3/drain_crowded_test.go#TestSplitSecond_BucketsDoNotDependOnTheBlockLayout
+    - internal/storage/parquets3/drain_crowded_test.go#TestHourEnd
+    - internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_QueryErrorsAreReturned
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_CrowdedSecondIsCutIntoBoundedGroups
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_IdenticalRowsOfACrowdedSecondStayOneGroup
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestCollectSlice_BucketsPartitionASecondAndLeaveNoHelperField
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_SamePlanAsPlanSlicesWithoutACrowdedSecond
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_HourBoundary
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_SummaryQueries
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_CrowdedSecondResumesWithoutDuplicates
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_ObjectsAreByteIdenticalToThePerSecondPlansWithoutACrowdedSecond
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_TwoWritersCrowdedSecondOfOneTenant
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestSplitSecond_BucketsDoNotDependOnTheBlockLayout
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestHourEnd
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_QueryErrorsAreReturned
     - internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn
     - lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn
   docs:
@@ -101,10 +125,11 @@
     **Adaptive file sizing**: a buffer segment is sealed early once its estimated size approaches `insert.target_file_size`, and is written in objects of at most that size, for optimal Parquet file sizes with bounded flush memory.
   description: >-
     The flusher seals a segment when its estimated size approaches the configured target (or
-    after the flush interval) and plans each tenant's objects from the segment's per-second row
-    counts, so files land in the size band that keeps S3 request counts and row-group geometry
-    sane instead of being dictated by wall-clock flush intervals alone, and one object is all
-    that is ever in memory.
+    after the flush interval) and plans each tenant's objects from bounded summaries of the
+    segment (rows per hour, per second of a crowded hour, per hash bucket of a crowded second),
+    so files land in the size band that keeps S3 request counts and row-group geometry sane
+    instead of being dictated by wall-clock flush intervals alone, one object is all that is
+    ever in memory, and a second that holds more rows than an object is written as several.
 
 - id: lh.feature.ingest.atomic_s3_writes
   title: Atomic single-PutObject Parquet writes
