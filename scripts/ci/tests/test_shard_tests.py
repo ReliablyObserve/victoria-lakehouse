@@ -133,6 +133,170 @@ def write_json(d, name, tests):
     return p
 
 
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+WEIGHTS_DIR = os.path.join(ROOT, "scripts", "ci", "shard_weights")
+
+
+def write_weights(d, default, tests, name="w.json"):
+    p = os.path.join(d, name)
+    with open(p, "w") as f:
+        json.dump({"default": default, "tests": tests}, f)
+    return p
+
+
+class WeightedTest(unittest.TestCase):
+    """--weights: shards balanced by cost; coverage guarantees unchanged."""
+
+    HEAVY = {"TestHeavy%d" % i: float(w) for i, w in enumerate((100, 60, 50, 40, 30, 20, 20, 10))}
+
+    def all_names(self, extra=200):
+        return names(extra) + list(self.HEAVY)
+
+    def test_weighted_assignment_is_a_partition_for_every_shard_count(self):
+        everything = self.all_names()
+        for n in (1, 2, 3, 5, 6):
+            shards = st.assign(everything, n, (0.1, self.HEAVY))
+            st.guard_partition(everything, shards)
+
+    def test_weighted_assignment_is_deterministic_and_input_order_independent(self):
+        a = st.assign(self.all_names(), 4, (0.1, self.HEAVY))
+        b = st.assign(list(reversed(self.all_names())), 4, (0.1, self.HEAVY))
+        self.assertEqual(a, b)
+
+    def test_unlisted_tests_stay_hash_placed_when_another_unlisted_test_appears(self):
+        before = st.assign(self.all_names(), 4, (0.1, self.HEAVY))
+        after = st.assign(self.all_names() + ["TestBrandNew"], 4, (0.1, self.HEAVY))
+        in_table = set(self.HEAVY)
+        for i in range(4):
+            self.assertEqual([t for t in after[i] if t not in in_table and t != "TestBrandNew"],
+                             [t for t in before[i] if t not in in_table])
+
+    def test_weights_balance_what_the_hash_cannot(self):
+        # 8 slow tests among 200 cheap ones: by count the hash balances the
+        # cheap ones and leaves the slow ones to luck; the weights place them.
+        everything = self.all_names()
+        weights = (0.1, self.HEAVY)
+        for n in (3, 4, 5):
+            loads = st.loads_of(st.assign(everything, n, weights), weights)
+            # no placement beats max(mean load, the biggest single test)
+            bound = max(sum(loads) / n, max(self.HEAVY.values()))
+            self.assertLess(max(loads), bound * 1.1, (n, loads))
+
+    def test_a_single_dominant_test_gets_a_shard_to_itself_when_it_must(self):
+        weights = (0.1, {"TestBig": 100.0, "TestA": 20.0, "TestB": 20.0, "TestC": 20.0})
+        shards = st.assign(["TestBig", "TestA", "TestB", "TestC"], 2, weights)
+        self.assertIn(["TestBig"], shards)
+
+    def test_missing_weights_only_cost_balance_never_coverage(self):
+        # the table names tests that no longer exist, and omits new ones
+        weights = (0.1, {"TestGone": 500.0, "TestHeavy0": 100.0})
+        everything = names(50) + ["TestHeavy0", "TestNewSlow"]
+        shards = st.assign(everything, 3, weights)
+        st.guard_partition(everything, shards)
+
+    def test_verify_with_weights_catches_a_test_that_ran_in_the_wrong_shard(self):
+        everything = self.all_names(40)
+        weights = (0.1, self.HEAVY)
+        shards = st.assign(everything, 3, weights)
+        with tempfile.TemporaryDirectory() as d:
+            files = [write_json(d, "s%d.json" % i, s) for i, s in enumerate(shards)]
+            self.assertEqual(st.verify(everything, 3, files, weights), [])
+            # the shards ran with hash placement but verify expects weights (or the file drifted)
+            hashed = st.assign(everything, 3)
+            files = [write_json(d, "h%d.json" % i, s) for i, s in enumerate(hashed)]
+            self.assertTrue(st.verify(everything, 3, files, weights))
+
+    def test_load_weights_rejects_bad_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            for bad in (
+                {"default": 0, "tests": {"TestA": 1.0}},
+                {"default": 0.1, "tests": {}},
+                {"default": 0.1, "tests": {"notATest": 1.0}},
+                {"default": 0.1, "tests": {"TestA": -1.0}},
+                {"default": 0.1, "tests": {"TestA": "slow"}},
+                {"default": 0.1},
+            ):
+                with open(os.path.join(d, "w.json"), "w") as f:
+                    json.dump(bad, f)
+                with self.assertRaises(ValueError, msg=str(bad)):
+                    st.load_weights(os.path.join(d, "w.json"))
+            self.assertEqual(st.load_weights(write_weights(d, 0.1, {"TestA": 2})), (0.1, {"TestA": 2.0}))
+
+    def test_build_weights_lists_slow_tests_and_averages_the_rest(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "r.json")
+            with open(p, "w") as f:
+                for t, el in (("TestSlow", 4.0), ("TestSlow/sub", 9.0), ("TestFast1", 0.2), ("TestFast2", 0.4)):
+                    f.write(json.dumps({"Action": "pass", "Test": t, "Elapsed": el}) + "\n")
+                f.write("not json\n")
+                f.write(json.dumps({"Action": "fail", "Test": "TestFailed", "Elapsed": 50}) + "\n")
+            default, table = st.build_weights([p], 1.0)
+            self.assertEqual(table, {"TestSlow": 4.0})
+            self.assertAlmostEqual(default, 0.3)
+
+    def test_cli_regex_reports_the_estimated_load(self):
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            w = write_weights(d, 0.1, {"TestHeavyA": 50.0})
+            with unittest.mock.patch.object(st, "list_tests", return_value=names(10) + ["TestHeavyA"]):
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(st.main(["regex", "--pkg", "p", "--shards", "2", "--index", "0",
+                                              "--weights", w]), 0)
+        self.assertIn("estimated load", err.getvalue())
+        self.assertIn("heaviest shard", err.getvalue())
+
+
+class CheckedInWeightsTest(unittest.TestCase):
+    """The weights files that CI uses: well formed and balanced. Deliberately
+    independent of the Go sources: a renamed test must not turn this red (a
+    stale entry only warns at run time, see StaleWeightsTest)."""
+
+    FILES = ("traces-parquets3.json", "traces-parquets3-heavy.json")
+
+    def test_files_load(self):
+        for fn in self.FILES:
+            default, table = st.load_weights(os.path.join(WEIGHTS_DIR, fn))
+            self.assertGreater(len(table), 10, fn)
+            self.assertLess(default, 1.0, fn)
+
+    def test_the_short_file_balances_a_package_of_its_size_six_ways(self):
+        # the listed tests plus ~1500 unlisted ones at the default cost, as CI sees the package
+        weights = st.load_weights(os.path.join(WEIGHTS_DIR, "traces-parquets3.json"))
+        everything = sorted(set(weights[1]) | {"TestOther%04d" % i for i in range(1500)})
+        shards = st.assign(everything, 6, weights)
+        st.guard_partition(everything, shards)
+        loads = st.loads_of(shards, weights)
+        self.assertLess(max(loads), sum(loads) / 6 * 1.1, loads)
+
+    def test_the_heavy_file_puts_its_dominant_test_alone_in_three_shards(self):
+        weights = st.load_weights(os.path.join(WEIGHTS_DIR, "traces-parquets3-heavy.json"))
+        top = max(weights[1], key=weights[1].get)
+        shards = st.assign(sorted(weights[1]), 3, weights)
+        self.assertEqual([s for s in shards if top in s], [[top]])
+
+
+class StaleWeightsTest(unittest.TestCase):
+    def test_stale_entries_warn_and_do_not_fail(self):
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            w = write_weights(d, 0.1, {"TestHeavyA": 50.0, "TestRenamedAway": 20.0})
+            with unittest.mock.patch.object(st, "list_tests", return_value=names(10) + ["TestHeavyA"]):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    self.assertEqual(st.main(["regex", "--pkg", "p", "--shards", "2", "--index", "0",
+                                              "--weights", w]), 0)
+        self.assertIn("::warning title=Shard weights::", err.getvalue())
+        self.assertIn("TestRenamedAway", err.getvalue())
+
+    def test_no_stale_entry_no_warning(self):
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            w = write_weights(d, 0.1, {"TestHeavyA": 50.0})
+            with unittest.mock.patch.object(st, "list_tests", return_value=names(10) + ["TestHeavyA"]):
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    st.main(["regex", "--pkg", "p", "--shards", "2", "--index", "0", "--weights", w])
+        self.assertNotIn("::warning", err.getvalue())
+
+
 class VerifyTest(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.TemporaryDirectory()
