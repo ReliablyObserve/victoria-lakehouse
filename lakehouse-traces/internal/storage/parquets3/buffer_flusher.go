@@ -290,7 +290,7 @@ func (f *BufferFlusher) load(now time.Time) error {
 			// the drain.
 			return fmt.Errorf("%s (backup %s) says a segment was being drained, but not with how many rows per group, so this release cannot resume it without risking its rows. Do NOT delete the state: start the release that wrote it, with the same insert.target_file_size as before, until the buffer is drained (lakehouse_buffer_segments{state=\"pending\"} is 0), then upgrade", f.statePath, f.prevPath())
 		default:
-			return fmt.Errorf("%s is unreadable (%v) and so is its backup %s (%v); delete both to drain every segment present (objects already uploaded from a segment being drained are then uploaded again)", f.statePath, err, f.prevPath(), perr)
+			return fmt.Errorf("%s is unreadable (%v) and so is its backup %s (%v); delete both to drain every segment present, and start with the insert.target_file_size the previous process had (objects already uploaded from a segment being drained are then uploaded again; with another value the groups are numbered differently and rows can be skipped, #748)", f.statePath, err, f.prevPath(), perr)
 		}
 	}
 	if st.DrainingSeq != 0 && st.DrainingPlan != planScheme {

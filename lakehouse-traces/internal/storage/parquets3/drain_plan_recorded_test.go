@@ -14,6 +14,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
@@ -25,6 +26,15 @@ import (
 // settled, and its rows are never written (#748). The flush state records the
 // maxRows of the draining segment; only a segment whose drain has not begun uses
 // the configured value.
+
+// mustNoInvariantViolation: the plan-versus-collect row count checks (planTenant,
+// collectSlice) never fired since inv0.
+func mustNoInvariantViolation(t *testing.T, inv0 uint64) {
+	t.Helper()
+	if now := metrics.BufferFlushErrors.Get("invariant"); now != inv0 {
+		t.Errorf("lakehouse_buffer_flush_errors_total{stage=\"invariant\"} went from %d to %d", inv0, now)
+	}
+}
 
 // planShape is where the rows of a test segment are in time.
 type planShape struct {
@@ -125,9 +135,14 @@ const (
 // seconds are normal and for ones with crowded seconds, and the next process has
 // the same maxRows, a bigger one or a smaller one. Every acknowledged row is
 // stored exactly once, and no key is stored twice.
-func TestDrainPlan_CrashRestartMatrix(t *testing.T) {
+func TestDrainPlan_CrashRestartMatrix_EveryRowInItsOwnSecond(t *testing.T) { crashRestartMatrix(t, 0) }
+func TestDrainPlan_CrashRestartMatrix_OneCrowdedSecond(t *testing.T)       { crashRestartMatrix(t, 1) }
+func TestDrainPlan_CrashRestartMatrix_TwoTenantsTwoHours(t *testing.T)     { crashRestartMatrix(t, 2) }
+
+// (one test for each shape, so that the sharded CI runs spread them)
+func crashRestartMatrix(t *testing.T, shapeIdx int) {
 	pairs := [][2]int64{{5, 5}, {5, 1000}, {1000, 5}, {3, 5}}
-	for _, shape := range planShapes() {
+	for _, shape := range planShapes()[shapeIdx : shapeIdx+1] {
 		for _, p := range pairs {
 			m1, m2 := p[0], p[1]
 			// how many data objects a complete drain with m1 stores
@@ -150,6 +165,8 @@ func TestDrainPlan_CrashRestartMatrix(t *testing.T) {
 					}
 					name := fmt.Sprintf("%s/maxRows %d then %d/kill %d/dies after %d of %d uploads", shape.name, m1, m2, kill, cut, full)
 					t.Run(name, func(t *testing.T) {
+						inv0 := metrics.BufferFlushErrors.Get("invariant")
+						defer func() { mustNoInvariantViolation(t, inv0) }()
 						e := newSegEnv(t)
 						ingestShape(e, shape)
 						g := e.seal()
@@ -182,6 +199,8 @@ func TestDrainPlan_CrashRestartMatrix(t *testing.T) {
 // Every process of a chain of restarts, each with its own maxRows, finishes the
 // drain with the first one's.
 func TestDrainPlan_ChainOfRestartsKeepsTheFirstPlan(t *testing.T) {
+	inv0 := metrics.BufferFlushErrors.Get("invariant")
+	defer func() { mustNoInvariantViolation(t, inv0) }()
 	e := newSegEnv(t)
 	shape := planShapes()[1]
 	ingestShape(e, shape)
@@ -266,6 +285,8 @@ func TestDrainPlan_PropertyRandomMaxRows(t *testing.T) {
 		cuts := []int{rng.Intn(6), rng.Intn(6)}
 		name := fmt.Sprintf("seed %d: %d rows, %d s, %d h, maxRows %v, cuts %v", seed, n, seconds, hours, ms, cuts)
 		t.Run(fmt.Sprint(seed), func(t *testing.T) {
+			inv0 := metrics.BufferFlushErrors.Get("invariant")
+			defer func() { mustNoInvariantViolation(t, inv0) }()
 			e := newSegEnv(t)
 			ingestShape(e, shape)
 			e.seal()

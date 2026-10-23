@@ -810,6 +810,9 @@ Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheF
    `lakehouse_buffer_segments{state="pending"}` is 0, then upgrade. (A state with no
    draining segment is read as before, so a node that is not in the middle of a drain
    upgrades without any action.)
+   A drain that keeps running out of memory keeps its recorded rows per group after a
+   restart too: raise the pod's memory limit until the segment commits; lowering
+   `insert.target_file_size` only applies to the segments drained after it.
 3. **Resuming without rewriting.** The segment being drained is found again; each
    group is settled by its mark, the manifest or a HEAD (§2.1); only absent groups
    are uploaded. Objects are never rewritten, so re-draining loses nothing and
