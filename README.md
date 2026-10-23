@@ -13,6 +13,7 @@
 [![Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ReliablyObserve/victoria-lakehouse/badges/tests.json)](#tests)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ReliablyObserve/victoria-lakehouse)](https://goreportcard.com/report/github.com/ReliablyObserve/victoria-lakehouse)
 [![License](https://img.shields.io/github/license/ReliablyObserve/victoria-lakehouse)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ReliablyObserve/victoria-lakehouse/badge)](https://scorecard.dev/viewer/?uri=github.com/ReliablyObserve/victoria-lakehouse)
 
 ## TL;DR
 
@@ -953,6 +954,7 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 - [Lifecycle & Readiness](docs/operations/lifecycle.md) — `/ready` semantics, warmup phases, restart timelines
 - [Sizing Guide](docs/operations/sizing.md) — memory/CPU/PVC/peer sizing from dev to PB scale
 - [Security](docs/security.md) — container hardening, auth, network policies, credentials
+- [Security posture](docs/security-posture.md) — the automated supply-chain checks (Scorecard, Semgrep, dependency review) and how to read them
 - [Observability](docs/observability.md) — ~110 metrics, Grafana dashboards, 10 alerting rules
 - [Telemetry](docs/telemetry.md) — OTel tracing configuration and span reference
 - [Performance](docs/performance.md) — benchmarks, tuning guides, p95 targets
