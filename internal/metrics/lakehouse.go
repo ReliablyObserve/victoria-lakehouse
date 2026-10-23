@@ -288,7 +288,7 @@ var (
 func init() {
 	ManifestRefreshIncomplete.Init("partial", "rejected", "head_unconfirmed")
 	DuplicateFileKeys.Init("manifest_refresh", "manifest_load", "compaction_input")
-	WriterTraceIdxOmittedTotal.Init("trace_id_too_long", "too_many_entries")
+	WriterTraceIdxOmittedTotal.Init("id_over_limit", "entries_over_cap")
 }
 
 // RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
@@ -571,7 +571,8 @@ var (
 	//                 skipped without a row scan
 	//   kept_match  — footer's _trace_idx KV listed at least one
 	//                 queried ID; file scanned
-	//   kept_unindexed — file lacks _trace_idx KV entirely; conservatively
+	//   kept_unindexed — file lacks _trace_idx KV entirely, or a queried id is
+	//                 longer than the index can list (65535 bytes); conservatively
 	//                 scanned (older parquets pre-date the index)
 	//   kept_error  — footer fetch failed; conservatively scanned
 	//   kept_unattested — the query names the trace only by a phrase
@@ -872,12 +873,15 @@ var (
 	WriterTraceIdxEntriesTotal = NewCounter(
 		"lakehouse_writer_trace_idx_entries_total")
 
-	// WriterTraceIdxOmittedTotal counts files flushed or compacted WITHOUT a
-	// `_trace_idx` footer because their entries cannot be encoded (#768).
-	// `reason` is:
-	//   trace_id_too_long — a trace ID above 65535 bytes (uint16 length)
-	//   too_many_entries  — more than 1<<20 distinct traces in one file
-	// Trace-by-ID then span-scans those files (always correct). Expected 0.
+	// WriterTraceIdxOmittedTotal counts what a `_trace_idx` footer could not
+	// list (#768). `reason` is:
+	//   id_over_limit    — trace IDs left out of the index because they are
+	//                      longer than 65535 bytes (counted per ID; the index
+	//                      still lists every other ID of the file)
+	//   entries_over_cap — files written without any index because more than
+	//                      1<<20 IDs would be listed (counted per file)
+	// Trace-by-ID scans a file for an ID its index cannot list (always
+	// correct, only slower). Expected 0.
 	WriterTraceIdxOmittedTotal = NewCounterVec(
 		"lakehouse_writer_trace_idx_omitted_total", "reason")
 

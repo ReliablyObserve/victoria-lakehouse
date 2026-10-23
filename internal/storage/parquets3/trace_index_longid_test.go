@@ -11,22 +11,32 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
 
-// longIDFooterIndex writes a trace file whose first trace ID is idLen bytes
-// long (it sorts before the normal one) and returns the file's `_trace_idx`
-// footer value, if any.
-func longIDFooterIndex(t *testing.T, idLen int) (string, bool) {
+// longIDPositions are the over-long trace IDs of the position tests, sorted
+// before ("0"), between ("m") and after ("z") the short IDs.
+func longIDFile(t *testing.T, longLen int) (rows []schema.TraceRow, wantShort map[string][2]int64) {
 	t.Helper()
-	mk := func(tid string, i int64) schema.TraceRow {
-		return schema.TraceRow{
-			TimestampUnixNano: 1_000 + i, StartTimeUnixNano: schema.Int64Ptr(1_000 + i), DurationNs: schema.Int64Ptr(10),
-			TraceID: tid, SpanID: "s1", SpanName: "op", ServiceName: "svc",
+	wantShort = map[string][2]int64{}
+	ids := []string{
+		strings.Repeat("0", longLen), "a-short", "b-short",
+		strings.Repeat("m", longLen), "n-short", "o-short",
+		strings.Repeat("z", longLen),
+	}
+	for i, id := range ids {
+		start := int64(1_000 + 10*i)
+		rows = append(rows, schema.TraceRow{
+			TimestampUnixNano: start, StartTimeUnixNano: schema.Int64Ptr(start), DurationNs: schema.Int64Ptr(5),
+			TraceID: id, SpanID: "s1", SpanName: "op", ServiceName: "svc",
+		})
+		if len(id) <= traceindex.MaxTraceIDLen {
+			wantShort[id] = [2]int64{start, start + 5}
 		}
 	}
-	res, err := writeTracesParquet([]schema.TraceRow{mk(strings.Repeat("0", idLen), 0), mk("abcdef0123456789", 1)}, 10, 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f, err := parquet.OpenFile(bytes.NewReader(res.Data), int64(len(res.Data)))
+	return rows, wantShort
+}
+
+func footerIndexOf(t *testing.T, data []byte) (string, bool) {
+	t.Helper()
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,23 +48,45 @@ func longIDFooterIndex(t *testing.T, idLen int) (string, bool) {
 	return "", false
 }
 
-// TestWriteTracesParquet_LongTraceIDLeavesNoWrappedIndex pins #768 for the
-// root module's trace writer: an ID above the uint16 limit leaves the file
-// without a `_trace_idx`; the longest representable ID is still indexed.
-func TestWriteTracesParquet_LongTraceIDLeavesNoWrappedIndex(t *testing.T) {
+// TestWriteTracesParquet_LongTraceIDsAreLeftOutOfTheIndexAndNothingElse pins
+// #768 for the root module's trace writer: IDs above the uint16 limit, at the
+// first, middle and last position of the file, are left out of `_trace_idx`;
+// the index still lists EVERY short ID with its exact bounds, and the file
+// never carries a wrapped index.
+func TestWriteTracesParquet_LongTraceIDsAreLeftOutOfTheIndexAndNothingElse(t *testing.T) {
 	for _, n := range []int{traceindex.MaxTraceIDLen + 1, traceindex.MaxTraceIDLen + 5, 1 << 17} {
-		if v, ok := longIDFooterIndex(t, n); ok {
-			entries, err := unmarshalTraceIndex([]byte(v))
-			t.Fatalf("a %d-byte trace ID produced an index (%d entries, decode err %v)", n, len(entries), err)
+		rows, want := longIDFile(t, n)
+		res, err := writeTracesParquet(rows, 10, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, ok := footerIndexOf(t, res.Data)
+		if !ok {
+			t.Fatalf("long IDs of %d bytes: the file has no index although it has short IDs", n)
+		}
+		entries, err := unmarshalTraceIndex([]byte(v))
+		if err != nil {
+			t.Fatalf("long IDs of %d bytes: index does not decode: %v", n, err)
+		}
+		if len(entries) != len(want) {
+			t.Fatalf("long IDs of %d bytes: index lists %d IDs, want every one of the %d short IDs", n, len(entries), len(want))
+		}
+		for _, e := range entries {
+			w, in := want[e.TraceID]
+			if !in || e.StartNs != w[0] || e.EndNs != w[1] {
+				t.Fatalf("long IDs of %d bytes: unexpected entry %q [%d,%d]", n, e.TraceID, e.StartNs, e.EndNs)
+			}
 		}
 	}
-	v, ok := longIDFooterIndex(t, traceindex.MaxTraceIDLen)
-	if !ok {
-		t.Fatal("a 65535-byte trace ID is representable and must be indexed")
+	// The longest representable ID is still listed.
+	rows, want := longIDFile(t, traceindex.MaxTraceIDLen)
+	res, err := writeTracesParquet(rows, 10, 3)
+	if err != nil {
+		t.Fatal(err)
 	}
-	entries, err := unmarshalTraceIndex([]byte(v))
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("decode: %d entries, err=%v", len(entries), err)
+	v, _ := footerIndexOf(t, res.Data)
+	if entries, err := unmarshalTraceIndex([]byte(v)); err != nil || len(entries) != len(want) {
+		t.Fatalf("65535-byte IDs: %d entries (err %v), want all %d listed", len(entries), err, len(want))
 	}
 }
 

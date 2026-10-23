@@ -531,23 +531,22 @@ func TestCompactor_PreservesTraceIndexFooter(t *testing.T) {
 	}
 }
 
-// TestCompactor_LongTraceIDLeavesNoWrappedIndex pins #768 on the compaction
-// path: two source files from two writers, one holding a trace ID above the
-// uint16 limit. The merged file must carry no `_trace_idx` (a wrapped index
-// would make trace-by-ID drop the normal trace stored next to it) and both
-// traces must survive the merge.
-func TestCompactor_LongTraceIDLeavesNoWrappedIndex(t *testing.T) {
+// TestCompactor_LongTraceIDsDoNotRemoveTheMergedIndex pins #768 on the
+// compaction path: two source files from two writers carry over-long trace IDs
+// at the first, middle and last position of the sort order. The merged file
+// keeps its `_trace_idx`, which lists EVERY short ID with its exact bounds and
+// none of the long ones, and no row is lost.
+func TestCompactor_LongTraceIDsDoNotRemoveTheMergedIndex(t *testing.T) {
 	pool := newMockPool()
 	m := manifest.New("test-bucket", "traces/")
 	const partition = "dt=2026-05-04/hour=10"
 	const fp = "trace-fp"
-	longID := strings.Repeat("0", traceindex.MaxTraceIDLen+5)
-	src1 := []schema.TraceRow{
-		{TimestampUnixNano: 1000, TraceID: longID, SpanID: "a1", SpanName: "op1", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(1000), DurationNs: schema.Int64Ptr(500)},
+	long := func(c string) string { return strings.Repeat(c, traceindex.MaxTraceIDLen+5) }
+	span := func(tid string, start int64) schema.TraceRow {
+		return schema.TraceRow{TimestampUnixNano: start, TraceID: tid, SpanID: "s", SpanName: "op", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(start), DurationNs: schema.Int64Ptr(100)}
 	}
-	src2 := []schema.TraceRow{
-		{TimestampUnixNano: 2000, TraceID: "trace-beta", SpanID: "b1", SpanName: "op2", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(2000), DurationNs: schema.Int64Ptr(750)},
-	}
+	src1 := []schema.TraceRow{span(long("0"), 1000), span("a-short", 1100), span(long("m"), 1200)}
+	src2 := []schema.TraceRow{span("n-short", 2000), span(long("z"), 2100), span("b-short", 2200)}
 	data1 := makeTestTraceParquet(t, src1)
 	data2 := makeTestTraceParquet(t, src2)
 	const key1 = "traces/dt=2026-05-04/hour=10/src-001.parquet"
@@ -557,12 +556,12 @@ func TestCompactor_LongTraceIDLeavesNoWrappedIndex(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	fi1 := manifest.FileInfo{Key: key1, Size: int64(len(data1)), RowCount: 1, MinTimeNs: 1000, MaxTimeNs: 1000, SchemaFingerprint: fp}
-	fi2 := manifest.FileInfo{Key: key2, Size: int64(len(data2)), RowCount: 1, MinTimeNs: 2000, MaxTimeNs: 2000, SchemaFingerprint: fp}
+	fi1 := manifest.FileInfo{Key: key1, Size: int64(len(data1)), RowCount: 3, MinTimeNs: 1000, MaxTimeNs: 1200, SchemaFingerprint: fp}
+	fi2 := manifest.FileInfo{Key: key2, Size: int64(len(data2)), RowCount: 3, MinTimeNs: 2000, MaxTimeNs: 2200, SchemaFingerprint: fp}
 	m.AddFile(partition, fi1)
 	m.AddFile(partition, fi2)
 
-	before := metrics.WriterTraceIdxOmittedTotal.Get("trace_id_too_long")
+	before := metrics.WriterTraceIdxOmittedTotal.Get("id_over_limit")
 	compactor := NewCompactor(CompactorConfig{
 		Pool: pool, Manifest: m, Prefix: "traces/", Mode: config.ModeTraces,
 		RowGroupSize: 1000, CompressionLevel: 7,
@@ -579,25 +578,38 @@ func TestCompactor_LongTraceIDLeavesNoWrappedIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parquet.OpenFile: %v", err)
 	}
+	var blob string
 	for _, kv := range pf.Metadata().KeyValueMetadata {
 		if kv.Key == traceindex.MetadataKey {
-			entries, derr := traceindex.Unmarshal([]byte(kv.Value))
-			t.Fatalf("the compacted file carries a %s index (%d entries, decode err %v) although a trace ID exceeds the uint16 limit", kv.Key, len(entries), derr)
+			blob = kv.Value
 		}
 	}
-	if d := metrics.WriterTraceIdxOmittedTotal.Get("trace_id_too_long") - before; d != 1 {
-		t.Fatalf("omission counted %d times, want 1", d)
+	if blob == "" {
+		t.Fatal("a long ID in a source removed the merged file's index; it must list the short IDs")
+	}
+	entries, err := traceindex.Unmarshal([]byte(blob))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	want := map[string][2]int64{"a-short": {1100, 1200}, "n-short": {2000, 2100}, "b-short": {2200, 2300}}
+	if len(entries) != len(want) {
+		t.Fatalf("index lists %d IDs, want exactly the %d short IDs", len(entries), len(want))
+	}
+	for _, e := range entries {
+		w, ok := want[e.TraceID]
+		if !ok || e.StartNs != w[0] || e.EndNs != w[1] {
+			t.Fatalf("unexpected entry %q [%d,%d]", e.TraceID, e.StartNs, e.EndNs)
+		}
+	}
+	if d := metrics.WriterTraceIdxOmittedTotal.Get("id_over_limit") - before; d != 3 {
+		t.Fatalf("omitted IDs counted %d, want 3", d)
 	}
 	rows, err := readTraceRows(out)
 	if err != nil {
 		t.Fatalf("readTraceRows: %v", err)
 	}
-	seen := map[string]bool{}
-	for _, r := range rows {
-		seen[r.TraceID] = true
-	}
-	if len(rows) != 2 || !seen[longID] || !seen["trace-beta"] {
-		t.Fatalf("merge lost rows: %d rows, long=%v beta=%v", len(rows), seen[longID], seen["trace-beta"])
+	if len(rows) != 6 {
+		t.Fatalf("merge lost rows: %d, want 6", len(rows))
 	}
 }
 

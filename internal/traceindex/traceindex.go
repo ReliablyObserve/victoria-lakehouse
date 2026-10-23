@@ -134,15 +134,27 @@ func Partition(traceID string) uint16 {
 	return uint16(xxhash.Sum64(tb[:]) % PartitionCount)
 }
 
+// Indexable reports whether a trace ID can be listed in the index: its
+// length must fit the uint16 prefix. Readers use it on the QUERIED id: an id
+// the writer cannot list is never in any index, so its absence from an index
+// proves nothing and the file must be scanned.
+func Indexable(traceID string) bool { return len(traceID) <= MaxTraceIDLen }
+
 // Marshal encodes index entries to binary.
 //
-// It returns nil, and writes no index, when the entries cannot be encoded
-// faithfully: a trace ID longer than MaxTraceIDLen (its uint16 length would
-// wrap and the payload would decode into other entries, #768) or more than
-// MaxEntries entries (the decoder refuses such a payload). Callers treat an
-// empty result as "no index for this file", which the read path serves with
-// a span scan: always correct, never narrower than the data. The omission is
-// counted in lakehouse_writer_trace_idx_omitted_total{reason} and logged.
+// The index lists every trace ID of at most MaxTraceIDLen bytes in the
+// file, and no other: an ID the uint16 length prefix cannot describe is left
+// out (its length would wrap and the payload would decode into other
+// entries, #768), and the rest are still listed. A reader may therefore
+// conclude that an Indexable ID absent from the index is absent from the
+// file; for an ID that is not Indexable it must scan the file.
+//
+// It returns nil, and writes no index, only when more than MaxEntries IDs
+// would be listed (the decoder refuses such a payload, and a prefix of the
+// IDs would break the rule above). Callers treat an empty result as "no index
+// for this file". Omissions are counted in
+// lakehouse_writer_trace_idx_omitted_total{reason} (ids over the length limit
+// are counted per id, a file over the entry cap once) and logged.
 //
 // Wire format:
 //
@@ -152,25 +164,34 @@ func Partition(traceID string) uint16 {
 //
 // Little-endian. Stable across releases so long as Version is honored.
 func Marshal(entries []Entry) []byte {
-	if len(entries) > MaxEntries {
-		metrics.WriterTraceIdxOmittedTotal.Inc("too_many_entries")
-		logger.Warnf("trace index omitted: %d entries exceed the limit of %d; trace-by-ID uses a span scan for this file", len(entries), MaxEntries)
-		return nil
-	}
 	size := 1 + 4
+	kept, tooLong, longest := 0, 0, 0
 	for _, e := range entries {
-		if len(e.TraceID) > MaxTraceIDLen {
-			metrics.WriterTraceIdxOmittedTotal.Inc("trace_id_too_long")
-			logger.Warnf("trace index omitted: a trace ID of %d bytes exceeds the limit of %d; trace-by-ID uses a span scan for this file", len(e.TraceID), MaxTraceIDLen)
-			return nil
+		if !Indexable(e.TraceID) {
+			tooLong++
+			longest = max(longest, len(e.TraceID))
+			continue
 		}
+		kept++
 		size += 2 + len(e.TraceID) + 2 + 8 + 8
+	}
+	if tooLong > 0 {
+		metrics.WriterTraceIdxOmittedTotal.Add("id_over_limit", tooLong)
+		logger.Warnf("trace index: left out %d trace ID(s) longer than %d bytes (longest %d); trace-by-ID scans this file for such an ID", tooLong, MaxTraceIDLen, longest)
+	}
+	if kept > MaxEntries {
+		metrics.WriterTraceIdxOmittedTotal.Inc("entries_over_cap")
+		logger.Warnf("trace index omitted: %d entries exceed the limit of %d; trace-by-ID uses a span scan for this file", kept, MaxEntries)
+		return nil
 	}
 	buf := make([]byte, size)
 	buf[0] = Version
-	binary.LittleEndian.PutUint32(buf[1:5], uint32(len(entries)))
+	binary.LittleEndian.PutUint32(buf[1:5], uint32(kept))
 	off := 5
 	for _, e := range entries {
+		if !Indexable(e.TraceID) {
+			continue
+		}
 		binary.LittleEndian.PutUint16(buf[off:off+2], uint16(len(e.TraceID)))
 		off += 2
 		copy(buf[off:], e.TraceID)

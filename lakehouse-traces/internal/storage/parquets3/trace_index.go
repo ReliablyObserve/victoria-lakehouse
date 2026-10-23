@@ -19,6 +19,11 @@ const traceIndexMetadataKey = traceindex.MetadataKey
 // existing parquets3 tests and helpers don't need to change shape.
 type TraceIndexEntry = traceindex.Entry
 
+// traceIDIndexable reports whether the index can list the queried id. An id
+// longer than the uint16 length limit is never listed, so an index that lacks
+// it proves nothing about the file: the file must be scanned (#768).
+func traceIDIndexable(id string) bool { return traceindex.Indexable(id) }
+
 func computeTraceIndex(rows []schema.TraceRow) []TraceIndexEntry {
 	return traceindex.Compute(rows)
 }

@@ -90,23 +90,95 @@ func longThenNormal(longLen int) []Entry {
 	}
 }
 
-// TestMarshal_TraceIDAboveUint16OmitsIndex pins #768: a trace ID of 65,536
-// bytes or more must not produce a wrapped index. Marshal returns nil (no
-// index), and the omission is counted.
-func TestMarshal_TraceIDAboveUint16OmitsIndex(t *testing.T) {
+// mixedEntries returns sorted entries, the over-long IDs among them at the
+// first, middle and last positions (short IDs "b..." sort between the long
+// "0..." and "z..." ones).
+func mixedEntries(longLen int) (all, short []Entry) {
+	mk := func(id string, i int) Entry {
+		return Entry{TraceID: id, Partition: uint16(i), StartNs: int64(10 * i), EndNs: int64(10*i + 5)}
+	}
+	ids := []string{
+		strings.Repeat("0", longLen), // first, long
+		"a-short", "b-short",
+		strings.Repeat("m", longLen), // middle, long
+		"n-short", "o-short",
+		strings.Repeat("z", longLen), // last, long
+	}
+	for i, id := range ids {
+		e := mk(id, i)
+		all = append(all, e)
+		if Indexable(id) {
+			short = append(short, e)
+		}
+	}
+	return all, short
+}
+
+// TestMarshal_OverLongIDsAreLeftOutAndEveryOtherIDIsListed pins #768: an ID of
+// 65,536 bytes or more must not produce a wrapped index, and must not take the
+// other IDs of the file with it. The index lists EVERY short ID, wherever the
+// long IDs sit (first, middle, last), and no long one; each omitted ID is
+// counted.
+func TestMarshal_OverLongIDsAreLeftOutAndEveryOtherIDIsListed(t *testing.T) {
 	for _, n := range []int{MaxTraceIDLen + 1, MaxTraceIDLen + 2, 1<<16 + 5, 1 << 17, 3<<16 + 7} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
-			before := metrics.WriterTraceIdxOmittedTotal.Get("trace_id_too_long")
-			raw := Marshal(longThenNormal(n))
-			if raw != nil {
-				// On the pre-fix code this decodes successfully into other entries.
-				got, err := Unmarshal(raw)
-				t.Fatalf("Marshal of a %d-byte trace ID returned a %d-byte index (decodes to %d entries, err=%v)", n, len(raw), len(got), err)
+			all, short := mixedEntries(n)
+			before := metrics.WriterTraceIdxOmittedTotal.Get("id_over_limit")
+			raw := Marshal(all)
+			if raw == nil {
+				t.Fatal("Marshal omitted the whole index; the short IDs must still be listed")
 			}
-			if d := metrics.WriterTraceIdxOmittedTotal.Get("trace_id_too_long") - before; d != 1 {
-				t.Fatalf("omission counted %d times, want 1", d)
+			got, err := Unmarshal(raw)
+			if err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if !reflect.DeepEqual(got, short) {
+				t.Fatalf("index lists %d entries, want exactly the %d short IDs", len(got), len(short))
+			}
+			if d := metrics.WriterTraceIdxOmittedTotal.Get("id_over_limit") - before; d != 3 {
+				t.Fatalf("omitted IDs counted %d, want 3", d)
 			}
 		})
+	}
+}
+
+// TestMarshal_AllIDsOverLongListsNothing: a file whose IDs are all too long
+// gets a valid, empty index (it lists every short ID, and there are none).
+func TestMarshal_AllIDsOverLongListsNothing(t *testing.T) {
+	raw := Marshal([]Entry{{TraceID: strings.Repeat("a", MaxTraceIDLen+1)}})
+	if raw == nil {
+		t.Fatal("want an empty index, got none")
+	}
+	if got, err := Unmarshal(raw); err != nil || len(got) != 0 {
+		t.Fatalf("got %d entries, err=%v; want an empty index", len(got), err)
+	}
+}
+
+// TestMarshal_RandomMixListsEveryShortID: property form of the above: for
+// random mixes of short and over-long IDs the decoded index equals the short
+// IDs, in order. A writer that stops at the first long ID, or that only checks
+// the first ID, fails it.
+func TestMarshal_RandomMixListsEveryShortID(t *testing.T) {
+	rng := rand.New(rand.NewSource(7680))
+	for iter := 0; iter < 60; iter++ {
+		n := 1 + rng.Intn(12)
+		var all, short []Entry
+		for i := 0; i < n; i++ {
+			l := rng.Intn(50)
+			if rng.Intn(3) == 0 {
+				l = MaxTraceIDLen + 1 + rng.Intn(300)
+			}
+			e := Entry{TraceID: strings.Repeat(string(rune('a'+rng.Intn(26))), l), Partition: uint16(i), StartNs: int64(i), EndNs: int64(i) + 1}
+			all = append(all, e)
+			if Indexable(e.TraceID) {
+				short = append(short, e)
+			}
+		}
+		raw := Marshal(all)
+		got, err := Unmarshal(raw)
+		if err != nil || (len(got)+len(short) > 0 && !reflect.DeepEqual(got, short)) {
+			t.Fatalf("iter %d: got %d entries (err %v), want the %d short IDs", iter, len(got), err, len(short))
+		}
 	}
 }
 
@@ -169,9 +241,30 @@ func TestUnmarshal_RejectsTrailingBytes(t *testing.T) {
 	}
 }
 
+// TestUnmarshal_RejectsTrailingByteAfterEmptyLastID: the smallest entry (an
+// empty ID) followed by one extra byte. A consumption check that is off by
+// one (for example one that compares against len-1) accepts it.
+func TestUnmarshal_RejectsTrailingByteAfterEmptyLastID(t *testing.T) {
+	good := Marshal([]Entry{{TraceID: "t1", Partition: 1, StartNs: 1, EndNs: 2}, {TraceID: "", Partition: 2, StartNs: 3, EndNs: 4}})
+	if _, err := Unmarshal(good); err != nil {
+		t.Fatalf("the exact payload must decode: %v", err)
+	}
+	if got, err := Unmarshal(append(append([]byte{}, good...), 0)); err == nil {
+		t.Fatalf("one trailing byte after an empty last ID was accepted (%d entries)", len(got))
+	}
+	// Count says 1 entry but two follow: the second is trailing data.
+	two := Marshal([]Entry{{TraceID: "a"}, {TraceID: ""}})
+	two[1] = 1
+	if got, err := Unmarshal(two); err == nil {
+		t.Fatalf("an entry beyond the declared count was accepted (%d entries)", len(got))
+	}
+}
+
 // TestMarshal_EntryCountAgreesWithDecoder (the #768 minor): the writer and
 // the decoder agree on the entry cap. At the cap the index round-trips; one
-// above it Marshal omits the index (the decoder would refuse it).
+// above it Marshal writes no index (the decoder would refuse it, and a prefix
+// of the IDs would break the "lists every short ID" rule). Over-long IDs do
+// not count toward the cap.
 func TestMarshal_EntryCountAgreesWithDecoder(t *testing.T) {
 	mk := func(n int) []Entry {
 		in := make([]Entry, n)
@@ -180,21 +273,21 @@ func TestMarshal_EntryCountAgreesWithDecoder(t *testing.T) {
 		}
 		return in
 	}
-	at := mk(MaxEntries)
+	at := append(mk(MaxEntries), Entry{TraceID: strings.Repeat("x", MaxTraceIDLen+1)})
 	raw := Marshal(at)
 	if raw == nil {
-		t.Fatal("an index at the cap must be written")
+		t.Fatal("an index at the cap must be written (an over-long ID does not count)")
 	}
 	if got, err := Unmarshal(raw); err != nil || len(got) != MaxEntries {
 		t.Fatalf("at the cap: got %d entries, err=%v", len(got), err)
 	}
 
-	before := metrics.WriterTraceIdxOmittedTotal.Get("too_many_entries")
+	before := metrics.WriterTraceIdxOmittedTotal.Get("entries_over_cap")
 	if raw := Marshal(mk(MaxEntries + 1)); raw != nil {
 		_, err := Unmarshal(raw)
 		t.Fatalf("Marshal wrote an index of %d entries the decoder refuses (err=%v)", MaxEntries+1, err)
 	}
-	if d := metrics.WriterTraceIdxOmittedTotal.Get("too_many_entries") - before; d != 1 {
+	if d := metrics.WriterTraceIdxOmittedTotal.Get("entries_over_cap") - before; d != 1 {
 		t.Fatalf("omission counted %d times, want 1", d)
 	}
 }

@@ -129,11 +129,11 @@ func roundTripIndexIDLen(data []byte) int {
 	return int(binary.LittleEndian.Uint32(data[:4])) % (3 << 16)
 }
 
-// checkRoundTripOrOmitted is the round-trip half of FuzzUnmarshalIndex (#768): entries
-// built from the fuzz input with a trace ID of any length up to 3 x 65536
-// bytes either round-trip exactly or are not indexed at all (Marshal returns
-// nil, which the writers treat as "no index"). A wrapped index that decodes
-// into other entries is never produced.
+// checkRoundTripOrOmitted is the round-trip half of FuzzUnmarshalIndex (#768):
+// entries built from the fuzz input with a trace ID of any length up to
+// 3 x 65536 bytes always yield an index that lists exactly the IDs of at most
+// MaxTraceIDLen bytes and none other; a wrapped index that decodes into
+// different entries is never produced.
 func checkRoundTripOrOmitted(t *testing.T, data []byte) {
 	idLen := roundTripIndexIDLen(data)
 	id := make([]byte, idLen)
@@ -146,22 +146,20 @@ func checkRoundTripOrOmitted(t *testing.T, data []byte) {
 		{TraceID: string(id), Partition: 1, StartNs: 10, EndNs: 20},
 		{TraceID: "normal-trace-id", Partition: 2, StartNs: 30, EndNs: 40},
 	}
-	raw := Marshal(in)
-	if idLen > MaxTraceIDLen {
-		if raw != nil {
-			t.Fatalf("a %d-byte trace ID was indexed (%d bytes)", idLen, len(raw))
-		}
-		return
+	want := in[1:]
+	if idLen <= MaxTraceIDLen {
+		want = in
 	}
+	raw := Marshal(in)
 	if raw == nil {
-		t.Fatalf("a %d-byte trace ID is representable but Marshal omitted the index", idLen)
+		t.Fatalf("a %d-byte trace ID made Marshal drop the whole index", idLen)
 	}
 	got, err := Unmarshal(raw)
 	if err != nil {
 		t.Fatalf("Unmarshal of self-Marshal failed: %v", err)
 	}
-	if !reflect.DeepEqual(got, in) {
-		t.Fatalf("round-trip mismatch for a %d-byte trace ID", idLen)
+	if len(got)+len(want) > 0 && !reflect.DeepEqual(got, want) {
+		t.Fatalf("index for a %d-byte trace ID lists %d entries, want %d", idLen, len(got), len(want))
 	}
 }
 
