@@ -427,7 +427,7 @@
           "minLength": 1
         },
         "enabled": {
-          "type": "boolean"
+          "type": ["boolean", "null"]
         }
       }
     }

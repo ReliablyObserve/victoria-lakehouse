@@ -107,25 +107,35 @@ These endpoints should NOT be exposed externally:
 | Endpoint | Served by | Purpose | Protection |
 |---|---|---|---|
 | `/internal/select/*` | select pods | VictoriaLogs' cluster protocol (binary DataBlock), for a `vlselect`/`vtselect` in front | upstream's: network, `-httpAuth.*`, `-internalselect.disable` |
-| `/internal/buffer/query` | insert pods | the select pods' buffer bridge: each tenant's not yet flushed rows | peer key (with `peer.auth_enabled`; `all_tenants=true` always needs it), `-internalselect.disable` |
-| `/internal/cache/fetch`, `/internal/cache/has` | every pod | peer cache data transfer and probe | peer key (`X-Peer-Auth-Key`), with `peer.auth_enabled` |
-| `/internal/cache/stats`, `/internal/cache/clear` | every pod | peer cache metrics and reset | peer key, with `peer.auth_enabled` |
-| `/internal/manifest/update`, `/internal/stats/sync`, `/internal/tenant/sync` (logs binary) | every pod | manifest push, stats and tenant gossip | peer key, with `peer.auth_enabled` |
-| `POST`/`DELETE /lakehouse/api/v1/tenants/aliases` | every pod | alias admin API (not cluster-internal, but guarded by the same key) | peer key, with `peer.auth_enabled` |
+| `/internal/buffer/query` | insert pods | the select pods' buffer bridge: each tenant's not yet flushed rows | peer key (when `peer.auth_key` is set; `all_tenants=true` always needs it), `-internalselect.disable` |
+| `/internal/cache/fetch`, `/internal/cache/has` | every pod | peer cache data transfer and probe | peer key (`X-Peer-Auth-Key`), when `peer.auth_key` is set |
+| `/internal/cache/stats`, `/internal/cache/clear` | every pod | peer cache metrics and reset | peer key, when `peer.auth_key` is set |
+| `/internal/manifest/update`, `/internal/stats/sync`, `/internal/tenant/sync` (logs binary) | every pod | manifest push, stats and tenant gossip | peer key, when `peer.auth_key` is set |
+| `POST`/`DELETE /lakehouse/api/v1/tenants/aliases` | every pod | alias admin API (not cluster-internal, but guarded by the same key) | peer key, when `peer.auth_key` is set |
 
 Use Kubernetes NetworkPolicy to restrict `/internal/*` to the cluster CIDR, and put vmauth in front of the
 pods for clients (the chart's vmauth routes only `/insert/*` and `/internal/insert` to insert pods).
 
-### Peer authentication (opt-in, off by default)
+<a id="peer-authentication-opt-in-off-by-default"></a>
+
+### Peer authentication
 
 The pods call each other's internal endpoints (manifest push, stats and tenant gossip, the peer cache, the select
 pods' buffer bridge). Peer authentication makes those endpoints refuse a request that does not carry the shared
-peer key. **It is off by default, and with the defaults nothing changes:** every endpoint below answers a request
-without a credential, as upstream's internal endpoints do. Off therefore means that any client that can reach a
-pod's port can call them: keep the pods on a protected network (a NetworkPolicy, vmauth in front of the clients), or
-turn peer authentication on.
+peer key. **It is on whenever a key is configured (`peer.auth_key`), and a default install has no key, so nothing is
+enforced there:** every endpoint below answers a request without a credential, as upstream's internal endpoints do.
+Without a key, any client that can reach a pod's port can call them: keep the pods on a protected network (a
+NetworkPolicy, vmauth in front of the clients), or set a key.
 
-What `peer.auth_enabled` (`-lakehouse.peer.auth-enabled`) requires the key on, in both binaries (the tenant row is the
+`peer.auth_enabled` (`-lakehouse.peer.auth-enabled`, the chart's `peerAuth.enabled`) is a three-state setting:
+
+| `peer.auth_enabled` | With `peer.auth_key` set | Without a key |
+|---|---|---|
+| unset (the default) | the pod sends the key and requires it | nothing to enforce |
+| `false` | the pod sends the key and does not require it (send-only; step 1 of a rollout) | nothing to enforce |
+| `true` | the pod sends the key and requires it | the process does not start |
+
+What a configured key is required on (unless `peer.auth_enabled` is `false`), in both binaries (the tenant row is the
 logs binary's; the traces binary mounts no tenant sync):
 
 | Endpoint | Kind | Why it takes the key |
@@ -140,42 +150,49 @@ logs binary's; the traces binary mounts no tenant sync):
 
 The read-only endpoints follow the same key because they expose data of every tenant (cached blocks, unflushed rows)
 and cluster internals. Not covered by the key, and unchanged: upstream's `/internal/select/*`, `/internal/insert` and
-`/internal/delete/*` (protected as upstream does: network, `-httpAuth.*`, `-internalselect.disable`,
-`-internaldelete.disable`); the cross-signal hints `/internal/prefetch/hint` and `/internal/cache/evict-hint` (their own
+`/internal/delete/*` (protected as upstream does: network, `-httpAuth.*`; `-internalselect.disable` turns the
+select endpoints off, and `/internal/delete/*` answers only when `-internaldelete.enable` is set, off by default); the cross-signal hints `/internal/prefetch/hint` and `/internal/cache/evict-hint` (their own
 `cross_signal.auth_key`); `/internal/lifecycle/*` (the chart's preStop hook calls `/internal/lifecycle/drain` from
 localhost without a key); and the admin writes outside `/internal` (`/lakehouse/drain`,
 `/lakehouse/compaction/recompact`, `/lakehouse/api/v1/tenants/policy`, `/lakehouse/api/v1/admin/tenant/migrate`).
 
-**Turning it on without a flag day.** The key and its enforcement are two settings, so a rolling restart never
-refuses a pod:
+**Turning it on without a flag day.** The key and its enforcement can be rolled out separately, so a rolling restart
+never refuses a pod:
 
-1. Configure the key on every pod (`peer.auth_key`, or the chart's `peerAuth.existingSecret`) and leave
-   `peer.auth_enabled` off. A pod sends the key on every peer call whenever it has one, but still accepts requests
-   without it, so pods that have it and pods that do not (yet) work together. `/internal/buffer/query` also serves
-   `all_tenants=true` to a caller that presents the key, so global-read queries see the unflushed rows from this step on.
-2. Once every pod has restarted with the key, set `peer.auth_enabled: true` (`-lakehouse.peer.auth-enabled`, or
-   `peerAuth.enabled: true`) and restart the pods again. The pods now refuse a request without the key (401). Pods that
-   restarted early and pods that did not are still compatible, because all of them already send the key.
+1. Configure the key on every pod (`peer.auth_key`, or the chart's `peerAuth.existingSecret`) and set
+   `peer.auth_enabled: false` (`-lakehouse.peer.auth-enabled=false`, the chart's `peerAuth.enabled: false`). A pod
+   sends the key on every peer call whenever it has one, but still accepts requests without it, so pods that have it
+   and pods that do not (yet) work together. `/internal/buffer/query` also serves `all_tenants=true` to a caller that
+   presents the key, so global-read queries see the unflushed rows from this step on.
+2. Once every pod has restarted with the key, remove `peer.auth_enabled` (or set it to `true`) and restart the pods
+   again. The pods now refuse a request without the key (401). Pods that restarted early and pods that did not are
+   still compatible, because all of them already send the key.
 
-`peer.auth_enabled` without a key does not start: the process exits with
+`peer.auth_enabled: true` without a key does not start: the process exits with
 `peer.auth_enabled (-lakehouse.peer.auth-enabled) is true but peer.auth_key (-lakehouse.peer.auth-key) is empty`. With
-Helm the key must come from a Secret (`peerAuth.existingSecret`); `peerAuth.enabled` with no Secret, or with a key in
-`lakehouseConfig.peer.auth_key`, fails the render.
+Helm the key should come from a Secret (`peerAuth.existingSecret`); `peerAuth.enabled: true` with no Secret, or with a
+key in `lakehouseConfig.peer.auth_key`, fails the render.
 
-**What a key set before this setting existed does now.** Before `peer.auth_enabled`, setting `peer.auth_key` also made
-the pod require it. Now a key on its own is only sent; a deployment that relied on it must also set
-`peer.auth_enabled`. A pod that holds a key without enforcing it says so at startup (a warning), in
-`lakehouse_peer_auth_enabled 0`, in `/lakehouse/info` and in `helm install`'s notes.
+**Upgrading from release v0.167.0.** That release, and any later one that predates this behaviour, enforced the key
+only when `peer.auth_enabled` was set to `true`: a deployment with a key and no `peer.auth_enabled` took requests
+without a credential while it ran. Earlier releases, and the releases that restore it, enforce a configured key unless
+`peer.auth_enabled` is `false`. If you run v0.167.0 with a key and intend to stay unenforced for now, set
+`peer.auth_enabled: false` before upgrading; otherwise make sure every pod holds the same key (they send it whenever
+they have one) before the upgrade rolls through.
+With Helm, `helm upgrade --reuse-values` keeps the previous release's computed `peerAuth.enabled: false` (the default
+of that chart) and so keeps passing the send-only flag; use `--reset-then-reuse-values`, or pass
+`--set peerAuth.enabled=null`, to take the new default. `helm install`'s notes say which state the release is in.
 
 **Seeing the state.** Off or on, the state is visible in four places:
 
 - one startup warning when the pod's internal endpoints take requests without a credential and it has peers or a
-  split insert/select role;
-- the gauge `lakehouse_peer_auth_enabled` (1 when the pod requires the key, 0 otherwise);
-- `GET /lakehouse/info`, field `peer_auth`: `{"enabled": false, "key_configured": false}` (never the key);
+  split insert/select role (one text for no key, one for a key with `peer.auth_enabled: false`);
+- the gauge `lakehouse_peer_auth_enabled` (1 when the pod requires the key, 0 otherwise: the effective state);
+- `GET /lakehouse/info`, field `peer_auth`: `{"enabled": true, "key_configured": true}` when the pod enforces its key,
+  `{"enabled": false, "key_configured": true}` when it only sends it (never the key);
 - the chart's `peerAuth` values and `helm install` notes.
 
-**Always on, whatever the setting.** Neither can refuse a legitimate peer:
+**Always on, whatever `peer.auth_enabled` says.** Neither can refuse a legitimate peer:
 
 - every key comparison is constant time (`internal/peerauth`);
 - the request bodies of `/internal/manifest/update`, `/internal/stats/sync` and `/internal/tenant/sync` are capped at
@@ -187,6 +204,18 @@ the pod require it. Now a key on its own is only sent; a deployment that relied 
 The default vmauth configuration in the chart is not changed by this setting: it forwards every path to the logs
 select pods, `/internal/*` included. Put vmauth routes for the paths clients may use only, or a NetworkPolicy, in front
 of the pods.
+
+### Cross-signal hints and requests that carry a key
+
+The cross-signal hint endpoints (`/internal/prefetch/hint`, `/internal/cache/evict-hint`) take `cross_signal.auth_key`
+in the `X-Cross-Signal-Key` header when one is set. The comparison is constant time (`internal/peerauth`), the JSON
+body is capped at 4 MiB (about 100 000 trace IDs; a larger body gets 413, a sender batches 100 IDs by default), and
+the key is checked before the body is read. Which endpoints take a key is unchanged.
+
+Every HTTP client that sends a peer key or the cross-signal key to a peer (the peer cache, the manifest, stats and
+tenant pushes, the select pods' buffer bridge, the zone probe and the hint client) refuses redirects: a peer that
+answers with a redirect gets no second request, so a key is never repeated at a location the operator did not
+configure. The redirect answer counts as a failed call, as any other non-200 answer does.
 
 ### Internal endpoints and the peer key
 
@@ -202,26 +231,26 @@ ingest endpoint: clients that may only write reach the same port as `/internal/b
 
 | Pod's setting | Request | Answer |
 |---|---|---|
-| key set and `peer.auth_enabled` | no `Authorization: Bearer`, or another key | **401** `Expected to receive non-empty Authorization: Bearer <key> when peer.auth_key is set` / `The provided Bearer key doesn't match peer.auth_key` (upstream's status for a missing or wrong key) |
-| key set and `peer.auth_enabled` | the key, one tenant (`account_id` + `project_id`) | 200, that tenant's unflushed rows only |
-| key set and `peer.auth_enabled` | the key, `all_tenants=true` | 200, every tenant's unflushed rows (a select pod's global-read query) |
-| key set, `peer.auth_enabled` off | one tenant, with or without a key | 200, that tenant's unflushed rows only, without a credential (as upstream's `/internal/select/*`) |
-| key set, `peer.auth_enabled` off | `all_tenants=true` with the key | 200, every tenant's unflushed rows (step 1 of the rollout above) |
-| key set, `peer.auth_enabled` off | `all_tenants=true` without the key, or with another | **403** `all_tenants=true is served only to an authenticated peer; set the same peer.auth_key on every pod` |
-| not set (default) | one tenant | 200, that tenant's unflushed rows only, without a credential (as upstream's `/internal/select/*`) |
-| not set (default) | `all_tenants=true` | **403** (same message) |
+| key set, `peer.auth_enabled` unset or true | no `Authorization: Bearer`, or another key | **401** `Expected to receive non-empty Authorization: Bearer <key> when peer.auth_key is set` / `The provided Bearer key doesn't match peer.auth_key` (upstream's status for a missing or wrong key) |
+| key set, `peer.auth_enabled` unset or true | the key, one tenant (`account_id` + `project_id`) | 200, that tenant's unflushed rows only |
+| key set, `peer.auth_enabled` unset or true | the key, `all_tenants=true` | 200, every tenant's unflushed rows (a select pod's global-read query) |
+| key set, `peer.auth_enabled: false` | one tenant, with or without a key | 200, that tenant's unflushed rows only, without a credential (as upstream's `/internal/select/*`) |
+| key set, `peer.auth_enabled: false` | `all_tenants=true` with the key | 200, every tenant's unflushed rows (step 1 of the rollout above) |
+| key set, `peer.auth_enabled: false` | `all_tenants=true` without the key, or with another | **403** `all_tenants=true is served only to an authenticated peer; set the same peer.auth_key on every pod` |
+| no key (default) | one tenant | 200, that tenant's unflushed rows only, without a credential (as upstream's `/internal/select/*`) |
+| no key (default) | `all_tenants=true` | **403** (same message) |
 | any | `-internalselect.disable` on the insert pod | **400** `requests to /internal/buffer/query are disabled with -internalselect.disable command-line flag` (upstream's answer and status), before anything else is looked at |
 
 The select pods' bridge sends `Authorization: Bearer <peer.auth_key>` on every request. A peer that refuses it
 (401/403) is counted in `lakehouse_buffer_bridge_errors_total{reason="auth"}` and raises
 `LakehouseBufferBridgeAuthRefused`: the queries that hit it were answered without that pod's unflushed rows.
 
-**Risk without enforcement.** With peer authentication off (the default, as in upstream), anyone who can reach an insert pod's
+**Risk without enforcement.** With peer authentication off (no key, the default, as in upstream, or `peer.auth_enabled: false`), anyone who can reach an insert pod's
 port can read any single tenant's unflushed rows by naming its `AccountID`/`ProjectID`: the rows of the active and
 sealed buffer segments plus the grace period after they are written (about 15 minutes at the defaults). Every
 tenant at once (`all_tenants=true`) is never served without the key. This is the exposure of upstream's
 `/internal/select/*` on `vlstorage`, on a port that ingest clients can reach. Keep the pods on a protected
-network, or turn peer authentication on; global-read queries need the key to see unflushed rows at all.
+network, or set a key; global-read queries need the key to see unflushed rows at all.
 
 With peer authentication on, the peer key guards the insert pods' direct `/internal/buffer/query` endpoint. A select pod's `/select/*` and
 `/internal/select/*` still serve whatever tenant the request names (upstream's model), including the unflushed rows
@@ -230,8 +259,8 @@ it reads through the bridge, so the key does not close every buffer read: protec
 
 **Setting the key.**
 
-- Config file: `peer: {auth_key: <key>}` (and `auth_enabled: true` to enforce it), the same on every pod of both roles.
-- Flag: `-lakehouse.peer.auth-key=<key>` (and `-lakehouse.peer.auth-enabled`), which override the config file. VictoriaMetrics' flag handling
+- Config file: `peer: {auth_key: <key>}`, the same on every pod of both roles; it is enforced unless `auth_enabled: false` (send-only) is set, and `auth_enabled: true` makes a missing key a startup error.
+- Flag: `-lakehouse.peer.auth-key=<key>` and `-lakehouse.peer.auth-enabled[=true|false]`, which override the config file (the enabled flag only when it is given, on the command line or through the environment). VictoriaMetrics' flag handling
   expands `%{ENV_VAR}` in it (`-lakehouse.peer.auth-key=%{LAKEHOUSE_PEER_AUTH_KEY}`) and hides flags named
   `*key*` from `/flags` and `/metrics`.
 - Helm: create a Secret and set `peerAuth.existingSecret` (and `peerAuth.secretKey`, default `peer-auth-key`):
@@ -239,14 +268,14 @@ it reads through the bridge, so the key does not close every buffer read: protec
   ```sh
   kubectl create secret generic lakehouse-peer --from-literal=peer-auth-key="$(openssl rand -hex 32)"
   # step 1: every pod gets the key and sends it; nothing is refused yet
-  helm upgrade --install lh charts/victoria-lakehouse --set peerAuth.existingSecret=lakehouse-peer
-  # step 2, after step 1 has rolled out: the pods require it
+  helm upgrade --install lh charts/victoria-lakehouse --set peerAuth.existingSecret=lakehouse-peer --set peerAuth.enabled=false
+  # step 2, after step 1 has rolled out: the pods require it (peerAuth.enabled unset enforces the key as well)
   helm upgrade --install lh charts/victoria-lakehouse --set peerAuth.existingSecret=lakehouse-peer --set peerAuth.enabled=true
   ```
 
   Every Lakehouse pod gets the key as `LAKEHOUSE_PEER_AUTH_KEY` and passes it with the flag; it never enters the
   ConfigMap. `lakehouseConfig.peer.auth_key` also works for step 1 but renders the key into the ConfigMap, and
-  `peerAuth.enabled` refuses it; setting both is refused. Rotate by updating the Secret and restarting every pod; pods holding different keys refuse each
+  `peerAuth.enabled=true` refuses it; setting both is refused. Rotate by updating the Secret and restarting every pod; pods holding different keys refuse each
   other's bridge requests until all have restarted.
 
 **Turning the buffer query off.** Upstream's `-internalselect.disable` turns off `/internal/buffer/query` on insert pods and

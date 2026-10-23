@@ -33,6 +33,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the run still going for its previous head. Any other event
+# (push to main, schedule, manual run) gets a group of its own, so it is never cancelled or replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   GOFLAGS: -mod=readonly
   # ci.yaml uses GOWORK: "off" — without this, the default GOWORK=auto

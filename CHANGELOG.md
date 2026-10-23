@@ -9,13 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **CI no longer finishes runs that a newer push or a conflict with `main` made pointless (CI only; no change to the Lakehouse binaries or to runtime behaviour).** Every workflow that runs on a pull request now cancels the run still going for the previous head of the same pull request, and only that: runs of a push to `main`, a schedule or a manual run get a group of their own and are never cancelled or replaced (`ci`, `e2e`, `parity`, `security`, `codeql`, `fuzz-stress-memleak`, `changelog-pr`, `pr-labeler`, `verification-matrix-check`, `proof-metrics`, `s3-compat` and `market-data` had no `concurrency:` block; `conformance`, `gate-selftest`, `workflow-lint`, `parquet-readers` and `semgrep` could replace a queued run of `main`; `minio-images` never cancelled a superseded run and `docs-site` could cancel a deploy of `main`). A new workflow, `cancel-conflicting-pr-runs.yaml`, runs on every push to `main` and cancels the queued and in-progress `pull_request` runs of the head of each open pull request that has become `CONFLICTING`, with only `actions: write` and `pull-requests: read`. A new test, `scripts/ci/tests/test_workflow_concurrency.py`, fails when a pull request workflow has no such block, when a run of `main` could be cancelled or replaced, or when the new workflow gains a permission; its script is also run against a stub `gh`. See [Security posture](docs/security-posture.md#superseded-and-conflicting-pull-request-runs).
+
+### Fixed
+
+- **The Jaeger handlers of the logs module's select API copy the span fields they keep and guard their shared state (#734); no binary serves these routes.** `handleJaegerTrace` and `handleJaegerSearch` (`internal/selectapi/jaeger.go`) kept span ids, trace ids, operation, service and tag strings that point into the block the reader hands to the callback, and appended to `spans` and `traceMap` without a lock. Upstream's query engine reuses that memory for the next block of the same worker, and `WriteDataBlockFunc` may run on several workers at once. Over upstream's engine, a trace's spans from the first of two blocks came back with the second block's span ids, and a search listed the second block's trace ids twice and the first block's not at all. The strings are now copied at the point where they are kept, and both collections are written under a mutex. These routes are registered only in `traces` mode of this handler: the logs binary forces `logs` mode, and the traces binary serves Jaeger through VictoriaTraces' own handler. So no released binary answered from this code. Answers over blocks that are not reused are byte-identical before and after.
+
+- **`field_names` keeps no block memory after the read callback returns, as upstream's `WriteDataBlockFunc` requires (#734, both binaries).** Past the per-query stream cap (262,144 stream-days), crediting a field name already counted assigned the map key from the block, and a Go map assignment stores the key it is given: the name then read whatever the reader wrote into that memory for its next block. It is now counted through a pointer under a key copied once (upstream's `pipe_field_names.go` idiom). The rows of upstream's `field_names` pipe (queries with pipes) are copied as upstream's own `runValuesWithHitsQuery` copies them. No wrong answer was observed: today's readers hand this code column names that upstream interns and pipe output that the pipe owns, so both sites only broke the contract. Two tests feed blocks whose memory is rewritten after each call. Cost, measured with benchstat (`-count=10`): copying the pipe's names adds 1.8 µs and 200 allocations per 200-name answer block; past the cap, a block is credited 38 % faster.
+
+## [0.167.5] - 2026-10-23
+
+### Security
+
+- **The cross-signal hint endpoints compare the key in constant time and cap their request body, and the clients that send a peer key refuse redirects.** `/internal/prefetch/hint` and `/internal/cache/evict-hint` compared `cross_signal.auth_key` with a plain string comparison and read the JSON body without a bound; they now use the same constant-time helper as the other internal endpoints (`internal/peerauth`), check the key before reading the body, and answer 413 above 4 MiB (about 100 000 trace IDs, against 100 per batch by default). The HTTP clients that send `peer.auth_key` or `cross_signal.auth_key` to a peer (peer cache, manifest, stats and tenant pushes, the buffer bridge, the zone probe, the hint client) no longer follow redirects, so a key is not repeated at another location; a redirect answer is a failed call. The set of endpoints that take a key is unchanged.
+
+## [0.167.4] - 2026-10-23
+
+### Fixed
+
+- **A configured peer key is enforced again unless `peer.auth_enabled` is explicitly `false`.** Before v0.167.0 setting `peer.auth_key` (or the chart's `peerAuth.existingSecret`) made a pod require the key on its internal endpoints; v0.167.0 required the new `peer.auth_enabled: true` as well, so a deployment that already had a key and upgraded stopped enforcing it without any message beyond a startup warning. `peer.auth_enabled` is now a three-state setting: unset enforces a configured key (the behaviour before v0.167.0; with no key nothing is enforced), `false` only sends the key (step 1 of a rolling rollout, `-lakehouse.peer.auth-enabled=false`, the chart's `peerAuth.enabled: false`), `true` enforces and the process refuses to start without a key. The chart's `peerAuth.enabled` defaults to `null` (no flag is passed), the `lakehouse_peer_auth_enabled` gauge, the `peer_auth` field of `/lakehouse/info`, the startup warning and `helm install`'s notes report the effective state, and the default Helm render of the manifests is unchanged. A deployment that ran v0.167.0 with a key and no `peer.auth_enabled`, and wants to stay unenforced for now, sets `peer.auth_enabled: false` before upgrading (see docs/security.md).
+
+## [0.167.3] - 2026-10-23
+
+### Changed
+
+- **`docs/durability.md` documents a known gap of the insert buffer's read handoff, and the registry and the tests pin it (#391; documentation and tests only, no change to the Lakehouse binaries or to runtime behaviour).** An insert pod keeps a written buffer segment readable for `2 × manifest.refresh_interval + 30 s`, computed from its own refresh interval, and a select pod skips the segment's objects only while the insert pod still serves the segment. A select pod whose listing has not caught up when the segment is retired (a longer `manifest.refresh_interval` than the insert pods', or a slow or failing listing) misses the segment's rows, with status 200 and no metric, until its next complete listing; the rows are in Parquet and come back then. The page now says so, with the guidance to give every role the same refresh interval (the Helm chart does). The registry records it as the known-gap durability cells `lh.durability.select_pod_lists_after_segment_retired_logs` and `_traces`, each backed by a two-pod test (an insert pod and a select pod reading it through the buffer bridge) that pins today's behaviour.
+
+- **The peer-key wiring of both binaries is covered by tests that go through the binaries' own construction path (no change to runtime behaviour).** The manifest, tenant-alias and stats pushers, the peer endpoints mounted over the pod's `Storage`, the `peer_auth` field of `/lakehouse/info` and the startup report are built by small functions that `main` and the tests share, and the new tests fail when a pusher stops sending `peer.auth_key` or when the peer cache handler of the `Storage` stops requiring it (four wiring mutations that no test detected before). They replace a test that searched `main.go` for text. `docs/security.md` named the upstream delete flag `-internaldelete.disable`; it is `-internaldelete.enable`, off by default.
+
+## [0.167.2] - 2026-10-23
+
+### Changed
+
 - **`TestSelectRole_ShutdownWritesNothing` of the traces binary can be repeated with `-count>1` (test only; no change to the Lakehouse binaries or to runtime behaviour).** Upstream's `vtinsert.Stop()` closes a channel that is created once per process, so the insert-role control of the test panicked with `close of closed channel` on the second iteration. The first iteration runs the control in process as before, later ones run it in a child process of the same test binary, so every iteration still asserts both roles (#633).
 
 - **Three new supply-chain checks run in CI, none of them a required check (CI only; no change to the Lakehouse binaries or to runtime behaviour).** `scorecard.yaml` publishes the OpenSSF Scorecard result of `main` (on push and weekly) to the public Scorecard API, which the new README badge reads, and keeps the JSON as a workflow artifact; `semgrep.yaml` runs Semgrep, installed from a hashed lock (`.github/semgrep-requirements.txt`), with the Go, Dockerfile, GitHub Actions, OWASP Top Ten and secrets rule packs on pull requests and weekly, report only, with finding counts in the job summary and the SARIF as an artifact (neither is uploaded to code scanning); `dependency-review.yaml` fails a pull request that adds or upgrades a dependency with a known HIGH or CRITICAL advisory. A new test, `scripts/ci/tests/test_workflow_permissions.py`, fails when a workflow states no token permissions, uses `write-all`, or holds `id-token: write` without being listed with a reason. See [Security posture](docs/security-posture.md).
 
 ### Fixed
-
-- **The Jaeger handlers of the logs module's select API copy the span fields they keep and guard their shared state (#734); no binary serves these routes.** `handleJaegerTrace` and `handleJaegerSearch` (`internal/selectapi/jaeger.go`) kept span ids, trace ids, operation, service and tag strings that point into the block the reader hands to the callback, and appended to `spans` and `traceMap` without a lock. Upstream's query engine reuses that memory for the next block of the same worker, and `WriteDataBlockFunc` may run on several workers at once. Over upstream's engine, a trace's spans from the first of two blocks came back with the second block's span ids, and a search listed the second block's trace ids twice and the first block's not at all. The strings are now copied at the point where they are kept, and both collections are written under a mutex. These routes are registered only in `traces` mode of this handler: the logs binary forces `logs` mode, and the traces binary serves Jaeger through VictoriaTraces' own handler. So no released binary answered from this code. Answers over blocks that are not reused are byte-identical before and after.
 
 - **The released images apply `vl-const-timestamps-parse.patch`, as `make` builds and every test already did.** `Dockerfile.logs` and `Dockerfile.traces` applied the patches the Makefile applies except this one, so a published image parsed a constant `_time` column once per row again on the manifest fast path (a count-class query answered from metadata cost O(rows) timestamp parsing) while local builds, tests and benchmarks did not. The patch is applied in the logs image and in both VictoriaLogs trees of the traces image, in the Makefile's order; answers are unchanged. A new conformance test, `TestDockerfilePatchesMatchMakefile`, compares the patches each Dockerfile applies with the Makefile's, per patch directory and in order, and fails on a missing, extra or reordered patch.
 
@@ -1482,6 +1512,7 @@ carried that bump because the release-metadata PR was resolved against main's
   none of it can quietly regress. Verified on a local parity stack across four consecutive full
   runs: 428 passed, 51 failed, 0 aborted, every failure allowlisted and every allowlist entry
   still live.
+
 ## [0.142.5] - 2026-09-15
 
 ### Changed
@@ -3064,7 +3095,6 @@ the change below. Release runs are now serialized, so this cannot recur.
   `RowGroupSizeByOutputLevel`), parallel column writes (not write-bound), low-level page reads
   (OffsetIndex page-granular measured 0% on our footers).
 
-
 ## [0.88.0] - 2026-06-11
 
 ### Added
@@ -3411,7 +3441,6 @@ the change below. Release runs are now serialized, so this cannot recur.
 
   Post-switch benchmark recorded in : cold LH at parity with hot VL on every scan scenario and
   2.7–10× faster on metadata queries; CH-over-S3 trails 30–40×.
-
 
 ## [0.81.0] - 2026-06-10
 

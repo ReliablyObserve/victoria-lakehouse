@@ -186,7 +186,7 @@ type fieldNamesCounter struct {
 	ids     map[string]int // field name -> column id
 	names   []string
 	streams map[string]*streamColumns
-	blocks  map[string]uint64 // per-block credit past the cap
+	blocks  map[string]*uint64 // per-block credit past the cap
 	capHit  bool
 }
 
@@ -196,7 +196,7 @@ type streamColumns struct {
 }
 
 func newFieldNamesCounter(streamCap int) *fieldNamesCounter {
-	return &fieldNamesCounter{cap: streamCap, ids: make(map[string]int), streams: make(map[string]*streamColumns), blocks: make(map[string]uint64)}
+	return &fieldNamesCounter{cap: streamCap, ids: make(map[string]int), streams: make(map[string]*streamColumns), blocks: make(map[string]*uint64)}
 }
 
 // blockKey is the stream-day a block belongs to. The insert buffer's blocks and
@@ -248,10 +248,17 @@ func (c *fieldNamesCounter) add(_ uint, db *logstorage.DataBlock) {
 				if name == "" {
 					name = "_msg"
 				}
-				if _, ok := c.blocks[name]; !ok {
-					name = strings.Clone(name)
+				// Upstream's idiom (pipe_field_names.go updateColumnHits): an
+				// assignment to an existing key would store the block's copy of
+				// the name, which the reader reuses once this call returns, so
+				// the key is assigned once, with a copy, and the count is updated
+				// through the pointer.
+				p := c.blocks[name]
+				if p == nil {
+					p = new(uint64)
+					c.blocks[strings.Clone(name)] = p
 				}
-				c.blocks[name] += n
+				*p += n
 			}
 			return
 		}
@@ -307,7 +314,7 @@ func (c *fieldNamesCounter) result() []logstorage.ValueWithHits {
 	defer c.mu.Unlock()
 	hits := make(map[string]uint64, len(c.names)+len(c.blocks))
 	for name, n := range c.blocks {
-		hits[name] += n
+		hits[name] += *n
 	}
 	for _, st := range c.streams {
 		if st.rows == 0 {
@@ -366,7 +373,8 @@ func streamKeyOf(cols []logstorage.BlockColumn) string {
 }
 
 // valuesWithHitsOfBlock reads the two columns (name, hits) upstream's
-// field_names pipe writes.
+// field_names pipe writes. The names outlive the callback, so they are copied,
+// as upstream's own reader of these rows does (runValuesWithHitsQuery).
 func valuesWithHitsOfBlock(db *logstorage.DataBlock) []logstorage.ValueWithHits {
 	if db == nil || db.RowsCount() == 0 {
 		return nil
@@ -386,7 +394,7 @@ func valuesWithHitsOfBlock(db *logstorage.DataBlock) []logstorage.ValueWithHits 
 		if i < len(hits) {
 			h, _ = strconv.ParseUint(hits[i], 10, 64)
 		}
-		out = append(out, logstorage.ValueWithHits{Value: n, Hits: h})
+		out = append(out, logstorage.ValueWithHits{Value: strings.Clone(n), Hits: h})
 	}
 	return out
 }

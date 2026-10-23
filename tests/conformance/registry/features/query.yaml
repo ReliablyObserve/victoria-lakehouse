@@ -239,6 +239,8 @@
     - internal/selectapi/jaeger_block_memory_test.go#TestJaegerTrace_KeepsTheSpansOfEveryBlock
     - internal/selectapi/jaeger_block_memory_test.go#TestJaegerSearch_KeepsTheTracesOfEveryBlock
     - internal/selectapi/jaeger_block_memory_test.go#TestJaegerHandlers_WriteBlockFromParallelWorkers
+    - internal/storage/field_names_block_memory_test.go#TestFieldNamesCounter_PastCapKeepsNamesTheReaderReuses
+    - internal/storage/field_names_block_memory_test.go#TestValuesWithHitsOfBlock_KeepsNoBlockMemory
     - lakehouse-traces/internal/selectapi/handler_test.go
     - tests/e2e/vlselect_multilevel_test.go#TestVLSelect_QueryReturnsData
     - tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset

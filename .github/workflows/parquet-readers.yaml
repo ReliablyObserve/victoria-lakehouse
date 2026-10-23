@@ -59,10 +59,10 @@ on:
 permissions:
   contents: read
 
-# The daily run has its own group (a push to main must not cancel it, nor it a push), and only a pull
-# request supersedes an older run of itself.
+# Only a pull request supersedes an older run of itself. Any other event (push to main, the daily run,
+# a manual run) gets a group of its own, so it is never cancelled or replaced.
 concurrency:
-  group: parquet-readers-${{ github.event_name }}-${{ github.ref }}
+  group: parquet-readers-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
