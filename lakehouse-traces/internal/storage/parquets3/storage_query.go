@@ -578,12 +578,17 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 	return fmt.Errorf("cannot read %s: %w", fi.Key, err)
 }
 
-// isObjectGone reports whether err says the object itself is absent. The
-// object's key is cut out of the message first: a key such as
-// "part-404.parquet" must not turn an unreadable object into a missing one.
+// isObjectGone reports whether err says the object itself is absent. An error
+// that carries an S3 error is classified by it (s3reader.IsNotFound), never by
+// its text: a request id or a key that spells "404" must not turn an unreadable
+// object into a missing one. Only an error without any S3 error in its chain is
+// judged by its message, with the object's own key cut out first.
 func isObjectGone(err error, key string) bool {
 	if err == nil {
 		return false
+	}
+	if gone, typed := s3reader.IsNotFound(err); typed {
+		return gone
 	}
 	if key == "" {
 		return isFileNotFoundError(err)

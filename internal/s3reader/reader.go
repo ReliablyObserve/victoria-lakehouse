@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smithy "github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
@@ -85,6 +86,33 @@ func retryS3(ctx context.Context, maxRetries int, fn func() error) error {
 		}
 	}
 	return lastErr
+}
+
+// IsNotFound classifies err by the S3 error it carries, not by its text (a request
+// id or a key that spells "404" is no reason to take a failing read for a missing
+// object). gone reports that the store said the object does not exist: a
+// NoSuchKey or NotFound error, or an HTTP 404 answer. typed reports that err
+// carries an S3 error at all; when it does not, gone is false and the caller may
+// fall back to the message.
+func IsNotFound(err error) (gone, typed bool) {
+	if err == nil {
+		return false, false
+	}
+	var nsk *types.NoSuchKey
+	var nf *types.NotFound
+	if errors.As(err, &nsk) || errors.As(err, &nf) {
+		return true, true
+	}
+	var ae smithy.APIError
+	if errors.As(err, &ae) {
+		code := ae.ErrorCode()
+		return code == "NoSuchKey" || code == "NotFound", true
+	}
+	var re *smithyhttp.ResponseError
+	if errors.As(err, &re) {
+		return re.HTTPStatusCode() == http.StatusNotFound, true
+	}
+	return false, false
 }
 
 func isRetryable(err error) bool {

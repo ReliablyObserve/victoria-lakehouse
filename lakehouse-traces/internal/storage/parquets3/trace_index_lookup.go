@@ -111,25 +111,32 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.T
 					aggEnd = entry.EndNs
 				}
 				hit = true
-			} else if lookupErr != nil {
+			} else if lookupErr != nil && !isObjectGone(lookupErr, fi.Key) {
+				// A file that is gone (removed by a compaction or retention run)
+				// holds no span the scan could still find; any other failure
+				// means this file's index entry is unknown.
 				anyErr = lookupErr
 			}
 		}()
 	}
 	wg.Wait()
 
+	if anyErr != nil {
+		metrics.TraceIndexLookups.Inc("error")
+		// A footer that could not be read leaves its file's entry unknown: the
+		// bound aggregated from the other files could be narrower than the
+		// trace (the unread file may hold spans before its start or after its
+		// end), and the span fetch inside it would miss them. So an error beats
+		// a hit: report a miss, and VT's rewriteTraceIndexQuery span scan, the
+		// source of truth, answers the lookup. That scan reads the unread file
+		// again and fails the request if it still cannot (a read answers
+		// completely or fails, see RunQuery).
+		logger.Warnf("trace-index lookup encountered footer errors; falling back to scan; trace_id=%s; last_err=%v", traceID, anyErr)
+		return 0, 0, false, nil
+	}
 	if hit {
 		metrics.TraceIndexLookups.Inc("hit")
 		return aggStart, aggEnd, true, nil
-	}
-	if anyErr != nil {
-		metrics.TraceIndexLookups.Inc("error")
-		// Errors swallowed at this layer; the metric carries the
-		// signal. A footer-fetch error shouldn't fail the whole
-		// trace-by-ID request — VT's rewriteTraceIndexQuery
-		// fallback will handle the miss.
-		logger.Warnf("trace-index lookup encountered footer errors; falling back to scan; trace_id=%s; last_err=%v", traceID, anyErr)
-		return 0, 0, false, nil
 	}
 	metrics.TraceIndexLookups.Inc("miss")
 	return 0, 0, false, nil

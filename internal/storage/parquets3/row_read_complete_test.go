@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	smithy "github.com/aws/smithy-go"
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -80,8 +81,12 @@ func (f *faultS3) clearFault(key string) {
 	delete(f.faults, key)
 }
 
-// accessDenied is an S3 error that is not a missing object and not retried.
+// accessDenied is an S3 error that is not a missing object and not retried. Its
+// request id spells "404", as about 0.3 % of the 16-hex-digit ids of a real store
+// do: the message of the error must not be taken for a missing object.
 func accessDenied(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("x-amz-request-id", "7A404C0FFEE00000")
+	w.Header().Set("x-amz-id-2", "dGVzdC1ob3N0LWlkLzQwNC8=")
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = fmt.Fprint(w, `<?xml version="1.0"?><Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`)
@@ -290,7 +295,7 @@ func TestRowRead_UnreadableObject_FailsInsteadOfPartial(t *testing.T) {
 					if !strings.Contains(err.Error(), fx.keys[idx]) {
 						t.Fatalf("error %q does not name the unreadable object %s", err, fx.keys[idx])
 					}
-					if isObjectGone(errors.New(err.Error()), fx.keys[idx]) {
+					if isObjectGone(err, fx.keys[idx]) {
 						t.Fatalf("the failure %q is classified as a missing object", err)
 					}
 					if got := metrics.QueryFileErrorsTotal.Get(); got <= before {
@@ -347,6 +352,38 @@ func TestRowRead_KeyContaining404_IsNotAMissingObject(t *testing.T) {
 	}
 }
 
+// The failure of a read keeps the S3 error in its chain, and the S3 error decides:
+// a 403 whose request id spells "404" is not a missing object, a NoSuchKey is.
+func TestRowRead_ClassifiedByTheS3Error_NotByItsText(t *testing.T) {
+	fx := newRCFixture(t, 2, rcKeyFmt)
+	fx.fs.setFault(fx.keys[1], accessDenied)
+	_, err := fx.query(t, context.Background(), "*", nil)
+	if err == nil {
+		t.Fatal("RunQuery answered without error for an unreadable object")
+	}
+	var ae smithy.APIError
+	if !errors.As(err, &ae) || ae.ErrorCode() != "AccessDenied" {
+		t.Fatalf("the S3 error is lost on its way to the caller (a layer formats it with %%v): %v", err)
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("the request id with 404 is not in the error text, the test no longer tests the text match: %v", err)
+	}
+	if !isFileNotFoundError(err) {
+		t.Fatal("the premise changed: the substring match no longer trips on a request id containing 404")
+	}
+	if isObjectGone(err, fx.keys[1]) {
+		t.Fatalf("a 403 is classified as a missing object because its request id contains 404: %v", err)
+	}
+
+	fx2 := newRCFixture(t, 2, rcKeyFmt)
+	fx2.fs.mock.mu.Lock()
+	delete(fx2.fs.mock.files, fx2.keys[1])
+	fx2.fs.mock.mu.Unlock()
+	if rows, err := fx2.query(t, context.Background(), "*", nil); err != nil || rows != (rcFiles-1)*rcRowsPerFile {
+		t.Fatalf("a NoSuchKey must stay tolerated: %d rows, err %v", rows, err)
+	}
+}
+
 // (b) The caller's cancellation or deadline during the last object's read is not
 // a complete answer.
 func TestRowRead_CallerStopsDuringLastObject_Fails(t *testing.T) {
@@ -384,13 +421,17 @@ func TestRowRead_LiveBytesBudget_WaitsNeverDrops(t *testing.T) {
 			var first sync.Once
 			rows, err := fx.query(t, context.Background(), "*", func(db *logstorage.DataBlock) {
 				first.Do(func() {
-					// Hold the consumer until another worker has reached the
-					// ceiling, so the budget trips with blocks of both files left.
-					deadline := time.Now().Add(10 * time.Second)
+					// Hold the consumer so the other workers pile up behind it with
+					// blocks of every object left. A worker that reaches the ceiling
+					// waits (and counts); one that got past it before the block in
+					// flight was counted waits on the consumer instead, and reaches
+					// the ceiling with its next block once the consumer is released.
+					deadline := time.Now().Add(100 * time.Millisecond)
 					for metrics.QueryMemoryBudgetExceeded.Get() <= start && time.Now().Before(deadline) {
 						time.Sleep(time.Millisecond)
 					}
 				})
+				time.Sleep(25 * time.Millisecond) // a slow consumer: the other workers' next blocks arrive while this one is consumed
 			})
 			if err != nil {
 				t.Fatalf("RunQuery: %v, the budget must make workers wait, not fail the read", err)
