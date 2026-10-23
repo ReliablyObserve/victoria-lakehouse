@@ -1,0 +1,53 @@
+name: Scorecard
+
+# Publishes the OpenSSF Scorecard result for main to the public Scorecard API
+# (https://scorecard.dev/viewer/?uri=github.com/ReliablyObserve/victoria-lakehouse), which the
+# README badge reads. The result is kept as a workflow artifact and is NOT uploaded to code
+# scanning, so Scorecard findings never enter the code-scanning merge gate.
+#
+# Not a required check, and not gated by the CI scope: it runs on main and weekly, never per
+# pull request. Publishing only works from the default branch; a run from another branch
+# (workflow_dispatch) validates the workflow and produces the artifact only.
+# Which checks are expected to stay low, and why: docs/security-posture.md.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "37 5 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Publishing the result to the Scorecard API needs an OIDC token.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard.json
+          results_format: json
+          publish_results: true
+
+      - name: Upload result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard
+          path: scorecard.json
+          retention-days: 30
