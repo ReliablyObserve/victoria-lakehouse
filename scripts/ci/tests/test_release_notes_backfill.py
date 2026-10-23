@@ -246,6 +246,7 @@ class Risks(unittest.TestCase):
     def test_ref_context(self):
         notes = "* FEATURE: this was fixed upstream in issue [#12](%s/issues/12) long ago\n" % bf.rn.REPO_URL
         self.assertEqual(bf.ref_context(notes), [(12, "* FEATURE: this was fixed upstream in issue #12 long ago")])
+        self.assertEqual(bf.ref_context("* FEATURE: `#5` and #6 stay out\n"), [])
 
     def test_risks_are_reported_in_the_plan_without_changing_the_text(self):
         changelog = "# Changelog\n\n## [Unreleased]\n\n### Added\n\n- **A @szibis.** unbalanced ` tick (#5)\n"
