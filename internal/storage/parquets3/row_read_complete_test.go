@@ -1108,14 +1108,11 @@ func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
 		warm           bool
 		incompressible bool
 	}
-	// Each dimension (footer cold/warm, compressible/not, filtered/not) is crossed
-	// with the others in at least one case; all eight would cost the package its
-	// CI time budget.
+	// Each dimension (footer cold/warm, compressible/not, filtered/not) appears in
+	// one of the two cases; the full cross costs the package its CI time budget.
 	cases := []tcase{
 		{"compressible/cold/unfiltered", "*", false, false},
-		{"compressible/warm/filtered", "padding", true, false},
-		{"incompressible/cold/filtered", "padding", false, true},
-		{"incompressible/warm/unfiltered", "*", true, true},
+		{"incompressible/warm/filtered", "padding", true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

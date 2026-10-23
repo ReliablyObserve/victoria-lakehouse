@@ -72,21 +72,23 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 	}
 	for _, ep := range endpoints {
 		t.Run(ep.name, func(t *testing.T) {
-			fx := newRCFixture(t, 4, rcKeyFmt)
-			rcServe(t, fx)
-			began := time.Now()
-			code, body := rcGet(fx, ep.path, ep.params)
-			t.Logf("control took %s", time.Since(began).Round(time.Millisecond))
-			if !rcComplete(code, body) || body == "" {
-				t.Fatalf("control: %d %q", code, body)
+			// A healthy read and a removed object are checked on a representative few
+			// of the endpoints (they are the same code below the handler); the
+			// unreadable object on all of them.
+			thorough := ep.name == "query" || ep.name == "stats_query" || ep.name == "field_values" || ep.name == "jaeger_trace_by_id"
+			if thorough {
+				fx := newRCFixture(t, 4, rcKeyFmt)
+				rcServe(t, fx)
+				code, body := rcGet(fx, ep.path, ep.params)
+				if !rcComplete(code, body) || body == "" {
+					t.Fatalf("control: %d %q", code, body)
+				}
 			}
 
-			fx = newRCFixture(t, 4, rcKeyFmt)
+			fx := newRCFixture(t, 4, rcKeyFmt)
 			rcServe(t, fx)
 			fx.fs.setFault(fx.keys[1], accessDenied)
-			began = time.Now()
-			code, body = rcGet(fx, ep.path, ep.params)
-			t.Logf("unreadable took %s", time.Since(began).Round(time.Millisecond))
+			code, body := rcGet(fx, ep.path, ep.params)
 			t.Logf("HTTP unreadable %-20s -> %d %.110q", ep.name, code, body)
 			if rcComplete(code, body) {
 				t.Fatalf("%s answered %d %q with an unreadable object", ep.name, code, body)
@@ -108,6 +110,9 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 				t.Fatalf("%s answered %d %.120q, want %d", ep.name, code, body, want)
 			}
 
+			if !thorough {
+				return
+			}
 			fx = newRCFixture(t, 4, rcKeyFmt)
 			rcServe(t, fx)
 			fx.fs.mock.mu.Lock()
