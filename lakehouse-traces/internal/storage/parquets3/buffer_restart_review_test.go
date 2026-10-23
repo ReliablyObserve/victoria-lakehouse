@@ -83,7 +83,7 @@ func TestBufferRestartReview_CrashBetweenMarkerAndState_Duplicates(t *testing.T)
 	if len(st.Commits) != 2 {
 		t.Fatalf("fixture: %d commit records, want 2", len(st.Commits))
 	}
-	st.DrainingSeq = st.CommittedThroughSeq
+	st.DrainingSeq, st.DrainingMaxRows, st.DrainingPlan = st.CommittedThroughSeq, 1000, planScheme
 	st.CommittedThroughSeq--
 	st.Commits = st.Commits[:1] // A's record
 	if err := e.f.writeState(st); err != nil {

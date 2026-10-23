@@ -39,6 +39,8 @@
     - lh.durability.restart_cardinality_gate_traces
     - lh.durability.drain_plan_mismatch_logs
     - lh.durability.drain_plan_mismatch_traces
+    - lh.durability.drain_plan_config_change_logs
+    - lh.durability.drain_plan_config_change_traces
     - lh.durability.select_pod_lists_after_segment_retired_logs
     - lh.durability.select_pod_lists_after_segment_retired_traces
     - lh.durability.kill_between_upload_and_commit_logs

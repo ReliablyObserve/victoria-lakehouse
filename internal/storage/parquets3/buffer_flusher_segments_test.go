@@ -628,7 +628,7 @@ func TestSegments_RetiredGroupIsSettled(t *testing.T) {
 	}
 	keys := e.storedDataKeys()
 	// Simulate a restart with the segment uncommitted and its object retired.
-	if err := f.writeState(flushState{DrainingSeq: g.Seq()}); err != nil {
+	if err := f.writeState(flushState{DrainingSeq: g.Seq(), DrainingMaxRows: 1000, DrainingPlan: planScheme}); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.Remove(f.storedPath())
