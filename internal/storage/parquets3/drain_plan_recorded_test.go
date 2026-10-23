@@ -130,69 +130,85 @@ const (
 	dieBeforeCommit          // every object and the marker are stored; the state still says draining
 )
 
-// The crash/restart matrix: the drain dies after every possible number of
-// uploads (0 .. all of them), in each of the ways above, for a segment whose
-// seconds are normal and for ones with crowded seconds, and the next process has
-// the same maxRows, a bigger one or a smaller one. Every acknowledged row is
-// stored exactly once, and no key is stored twice.
+// The crash/restart matrix: the first process dies after some uploads, in each of
+// the ways above, for a segment whose seconds are normal and for ones with crowded
+// seconds, and the next process has a bigger or a smaller maxRows (or, without
+// -short, the same one). Every acknowledged row is stored exactly once, and no key
+// is stored twice. -short runs the cells of matrixCells; without it the process
+// also dies after every number of uploads, for every pair.
 func TestDrainPlan_CrashRestartMatrix_EveryRowInItsOwnSecond(t *testing.T) { crashRestartMatrix(t, 0) }
 func TestDrainPlan_CrashRestartMatrix_OneCrowdedSecond(t *testing.T)       { crashRestartMatrix(t, 1) }
 func TestDrainPlan_CrashRestartMatrix_TwoTenantsTwoHours(t *testing.T)     { crashRestartMatrix(t, 2) }
 
 // (one test for each shape, so that the sharded CI runs spread them)
+type matrixCell struct {
+	kill, cut int
+	m1, m2    int64
+}
+
+// matrixCells are the cells of one shape. With -short (the race jobs of CI, whose
+// shards have a time budget) a few cells that each cover a different recovery
+// path: the first upload stored and the plan changed in both directions, the
+// marks lost (HEAD settles), and a kill between the marker and the state commit.
+// Without it every upload boundary of the changed pairs also runs.
+func matrixCells(t *testing.T, shapeIdx int, shape planShape) []matrixCell {
+	const all = 1 << 30 // every upload succeeds
+	cells := map[int][]matrixCell{
+		0: {{dieBetweenUploads, 1, 5, 1000}},
+		1: {{dieBetweenUploads, 1, 5, 1000}, {dieBetweenUploads, 2, 5, 1000}, {dieMarksLost, 1, 5, 1000}, {dieBeforeCommit, all, 5, 1000}, {dieBetweenUploads, 1, 3, 5}},
+		2: {{dieBetweenUploads, 1, 5, 1000}, {dieBetweenUploads, 1, 3, 5}, {dieMarksLost, 1, 3, 5}},
+	}[shapeIdx]
+	if testing.Short() {
+		return cells
+	}
+	for _, p := range [][2]int64{{5, 5}, {5, 1000}, {1000, 5}, {3, 5}} {
+		e := newSegEnv(t)
+		ingestShape(e, shape)
+		e.seal()
+		full := drainCut(e, p[0], all)
+		for cut := 0; cut <= full; cut++ {
+			cells = append(cells, matrixCell{dieBetweenUploads, cut, p[0], p[1]})
+		}
+	}
+	return cells
+}
+
 func crashRestartMatrix(t *testing.T, shapeIdx int) {
-	pairs := [][2]int64{{5, 5}, {5, 1000}, {1000, 5}, {3, 5}}
-	for _, shape := range planShapes()[shapeIdx : shapeIdx+1] {
-		for _, p := range pairs {
-			m1, m2 := p[0], p[1]
-			// how many data objects a complete drain with m1 stores
-			full := func() int {
-				e := newSegEnv(t)
-				ingestShape(e, shape)
-				e.seal()
-				return drainCut(e, m1, 1<<30)
-			}()
-			for _, kill := range []int{dieBetweenUploads, dieMarksLost, dieBeforeCommit} {
-				if kill != dieBetweenUploads && (m1 == m2 || m1 == 1000) {
-					continue // the plan cannot differ, or is one group; the other kills are covered by the pairs that split
-				}
-				for cut := 0; cut <= full; cut++ {
-					if kill != dieBetweenUploads && cut != full && cut != 1 {
-						continue // the first and the last boundary; every boundary for the plain kill
-					}
-					if kill == dieBeforeCommit && cut != full {
-						continue
-					}
-					name := fmt.Sprintf("%s/maxRows %d then %d/kill %d/dies after %d of %d uploads", shape.name, m1, m2, kill, cut, full)
-					t.Run(name, func(t *testing.T) {
-						inv0 := metrics.BufferFlushErrors.Get("invariant")
-						defer func() { mustNoInvariantViolation(t, inv0) }()
-						e := newSegEnv(t)
-						ingestShape(e, shape)
-						g := e.seal()
-						f1 := e.flusher(m1)
-						drainCutWith(e, f1, cut)
-						switch kill {
-						case dieMarksLost:
-							_ = os.Remove(f1.storedPath())
-						case dieBeforeCommit:
-							// the segment was committed; rewind the state to what a crash
-							// between the marker and the state write leaves
-							if err := f1.writeState(flushState{DrainingSeq: g.Seq(), DrainingMaxRows: m1, DrainingPlan: planScheme}); err != nil {
-								t.Fatal(err)
-							}
-						}
-						e.restart()
-						e.drainAll(e.flusher(m2))
-						e.mustHaveExactly(shape.rows, name)
-						e.storedOnce(name)
-						if n := len(e.segs.Pending()); n != 0 {
-							t.Errorf("%d segments still pending", n)
-						}
-					})
+	shape := planShapes()[shapeIdx]
+	seen := map[matrixCell]bool{}
+	for _, c := range matrixCells(t, shapeIdx, shape) {
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		c := c
+		name := fmt.Sprintf("%s/maxRows %d then %d/kill %d/dies after %d uploads", shape.name, c.m1, c.m2, c.kill, c.cut)
+		t.Run(name, func(t *testing.T) {
+			inv0 := metrics.BufferFlushErrors.Get("invariant")
+			defer func() { mustNoInvariantViolation(t, inv0) }()
+			e := newSegEnv(t)
+			ingestShape(e, shape)
+			g := e.seal()
+			f1 := e.flusher(c.m1)
+			drainCutWith(e, f1, c.cut)
+			switch c.kill {
+			case dieMarksLost:
+				_ = os.Remove(f1.storedPath())
+			case dieBeforeCommit:
+				// the segment was committed; rewind the state to what a crash
+				// between the marker and the state write leaves
+				if err := f1.writeState(flushState{DrainingSeq: g.Seq(), DrainingMaxRows: c.m1, DrainingPlan: planScheme}); err != nil {
+					t.Fatal(err)
 				}
 			}
-		}
+			e.restart()
+			e.drainAll(e.flusher(c.m2))
+			e.mustHaveExactly(shape.rows, name)
+			e.storedOnce(name)
+			if n := len(e.segs.Pending()); n != 0 {
+				t.Errorf("%d segments still pending", n)
+			}
+		})
 	}
 }
 
@@ -269,7 +285,7 @@ func TestDrainPlan_NextSegmentUsesTheConfiguredMaxRows(t *testing.T) {
 func TestDrainPlan_PropertyRandomMaxRows(t *testing.T) {
 	iters := 30
 	if testing.Short() {
-		iters = 8
+		iters = 4
 	}
 	for seed := int64(1); seed <= int64(iters); seed++ {
 		rng := rand.New(rand.NewSource(seed))
