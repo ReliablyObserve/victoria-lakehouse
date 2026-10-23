@@ -54,6 +54,9 @@ func rcComplete(code int, body string) bool {
 }
 
 func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("HTTP endpoint matrix: runs in the heavy job")
+	}
 	endpoints := []struct {
 		name, path string
 		params     url.Values

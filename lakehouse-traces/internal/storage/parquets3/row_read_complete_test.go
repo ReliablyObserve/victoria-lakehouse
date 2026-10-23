@@ -295,6 +295,9 @@ func TestRowRead_NoFault_ReturnsEveryRow(t *testing.T) {
 // (a) An object that cannot be read fails the read, whatever its position among
 // the objects and however many workers read them.
 func TestRowRead_UnreadableObject_FailsInsteadOfPartial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fault matrix: runs in the heavy job")
+	}
 	faults := map[string]func(t *testing.T, fx *rcFixture, idx int){
 		"s3_access_denied": func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], accessDenied) },
 		"truncated_body":   func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], truncatedBody) },
@@ -445,6 +448,9 @@ func TestRowRead_ClassifiedByTheS3Error_NotByItsText(t *testing.T) {
 // (b) The caller's cancellation or deadline during the last object's read is not
 // a complete answer.
 func TestRowRead_CallerStopsDuringLastObject_Fails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("sleeps on a hung object: runs in the heavy job")
+	}
 	t.Run("deadline", func(t *testing.T) {
 		fx := newRCFixture(t, 1, rcKeyFmt) // one worker: the last object is read last
 		fx.fs.setFault(fx.keys[rcFiles-1], hang)
@@ -567,6 +573,9 @@ func TestRowRead_MultiReader_FailAndRecover(t *testing.T) {
 // Every read surface that scans objects fails on an unreadable object, and
 // tolerates a removed one.
 func TestRowRead_EverySurface_FailsOnUnreadableObject(t *testing.T) {
+	if testing.Short() {
+		t.Skip("surface matrix: runs in the heavy job")
+	}
 	surfaces := map[string]func(fx *rcFixture) error{
 		"field_names": func(fx *rcFixture) error {
 			_, err := fx.s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, "*", fx.start, fx.end))
@@ -948,6 +957,9 @@ func TestLiveBytesGate_ConcurrentWorkersAllFinish(t *testing.T) {
 // decoder and the consumer. A gate that estimates too low (the compressed size, a
 // constant, no footer) lets the workers pile up past it.
 func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("in-flight ceiling matrix: runs in the heavy job")
+	}
 	const files = 12
 	type tcase struct {
 		name, query    string
@@ -966,8 +978,9 @@ func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Cleanup(func() { inflightBlockHook = nil; liveGateHook = nil })
-			measure := func(fx *rcFixture) (peak, maxBlock, totalBytes, blocks int64, rows int, err error) {
+			measure := func(fx *rcFixture, pile bool) (peak, maxBlock, totalBytes, blocks int64, rows int, err error) {
 				var inflight, pk, mb, total, n atomic.Int64
+				var piled sync.Once
 				inflightBlockHook = func(d int64) {
 					cur := inflight.Add(d)
 					for {
@@ -987,7 +1000,18 @@ func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
 						}
 					}
 				}
-				rows, err = fx.query(t, context.Background(), tc.query, func(*logstorage.DataBlock) { time.Sleep(2 * time.Millisecond) })
+				rows, err = fx.query(t, context.Background(), tc.query, func(*logstorage.DataBlock) {
+					if pile {
+						// Hold the first block until a second one has reached the consumer's
+						// door, so that the unbounded run overlaps whatever the scheduler does.
+						piled.Do(func() {
+							for deadline := time.Now().Add(10 * time.Second); inflight.Load() <= mb.Load() && time.Now().Before(deadline); {
+								time.Sleep(time.Millisecond)
+							}
+						})
+					}
+					time.Sleep(2 * time.Millisecond)
+				})
 				return pk.Load(), mb.Load(), total.Load(), n.Load(), rows, err
 			}
 
@@ -998,7 +1022,7 @@ func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
 			// (ceiling + one block) is always below what a gate-less run holds.
 			ref := newRCFixtureShape(t, 16, files, rcKeyFmt, tc.incompressible)
 			ref.s.cfg.Query.MaxLiveBytes = 8 << 30
-			unboundedPeak, maxBlock, total, blocks, rows, err := measure(ref)
+			unboundedPeak, maxBlock, total, blocks, rows, err := measure(ref, true)
 			if err != nil || rows != files*rcRowsPerFile {
 				t.Fatalf("unbounded run: %d rows, err %v", rows, err)
 			}
@@ -1019,7 +1043,7 @@ func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
 				}
 			}
 			waits := metrics.QueryMemoryBudgetExceeded.Get()
-			peak, _, _, _, rows, err := measure(fx)
+			peak, _, _, _, rows, err := measure(fx, false)
 			if err != nil || rows != files*rcRowsPerFile {
 				t.Fatalf("%d rows of %d, err %v: the ceiling must make workers wait, not drop rows", rows, files*rcRowsPerFile, err)
 			}
@@ -1148,6 +1172,9 @@ func TestDecodedEstimate_Estimator(t *testing.T) {
 // today's behaviour at the DEFAULT ceiling so that it stays visible; when the gap is
 // fixed the second query finishes and this test must become that assertion.
 func TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793(t *testing.T) {
+	if testing.Short() {
+		t.Skip("stalled-consumer pin: runs in the heavy job")
+	}
 	a := newRCFixtureN(t, 12, 12, rcKeyFmt) // more workers and objects than the process has file slots (at most 8)
 	b := newRCFixtureN(t, 4, rcFiles, "traces/dt=2026-10-23/hour=10/starve-b-%d.parquet")
 	stall := make(chan struct{})
