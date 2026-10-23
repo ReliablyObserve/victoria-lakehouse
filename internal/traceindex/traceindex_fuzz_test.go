@@ -7,7 +7,9 @@ import (
 	"testing"
 )
 
-// FuzzUnmarshalIndex feeds Unmarshal arbitrary bytes; it must never panic.
+// FuzzUnmarshalIndex feeds Unmarshal arbitrary bytes; it must never panic,
+// must not allocate out of proportion to its input (#745) and must not
+// return more entries than the bytes can hold.
 // Returning an error is allowed (and expected for malformed inputs); the
 // trace-index codec contract (commit 5bab58f — _trace_idx footer KV) only
 // guarantees a non-panicking decode.
@@ -62,11 +64,30 @@ func FuzzUnmarshalIndex(f *testing.F) {
 	lyingLen := []byte{Version, 1, 0, 0, 0, 0xFF, 0xFF}
 	f.Add(lyingLen)
 
+	// Seeds for #745: a 5-byte value declaring 268 M entries, and the
+	// largest count the cap lets through with no payload at all.
+	f.Add([]byte{Version, 0xF0, 0xFF, 0xFF, 0x0F})
+	f.Add([]byte{Version, 0xFF, 0xFF, 0xFF, 0xFF})
+	f.Add(crafted(1<<20, 0))
+
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// Must never panic. Error or success both fine.
-		entries, err := Unmarshal(data)
+		// Must never panic. Error or success both fine. The allocation
+		// must stay in proportion to the input (generous: one 40-byte
+		// Entry per 20 input bytes plus the decoded IDs, plus slack for
+		// the process-wide TotalAlloc counter).
+		var (
+			entries []Entry
+			err     error
+		)
+		a := allocDelta(func() { entries, err = Unmarshal(data) })
+		if limit := uint64(8*len(data)) + 4<<20; a > limit {
+			t.Fatalf("allocated %d bytes for %d input bytes (limit %d)", a, len(data), limit)
+		}
 		if err != nil {
 			return
+		}
+		if len(entries) > (len(data)-5)/testMinEntrySize {
+			t.Fatalf("%d entries from %d bytes", len(entries), len(data))
 		}
 		// On success, every entry's TraceID must be a valid (possibly
 		// empty) string and Partition must be a uint16 — both are
