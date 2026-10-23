@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The Jaeger handlers of the logs module's select API copy the span fields they keep and guard their shared state (#734); no binary serves these routes.** `handleJaegerTrace` and `handleJaegerSearch` (`internal/selectapi/jaeger.go`) kept span ids, trace ids, operation, service and tag strings that point into the block the reader hands to the callback, and appended to `spans` and `traceMap` without a lock. Upstream's query engine reuses that memory for the next block of the same worker, and `WriteDataBlockFunc` may run on several workers at once. Over upstream's engine, a trace's spans from the first of two blocks came back with the second block's span ids, and a search listed the second block's trace ids twice and the first block's not at all. The strings are now copied at the point where they are kept, and both collections are written under a mutex. These routes are registered only in `traces` mode of this handler: the logs binary forces `logs` mode, and the traces binary serves Jaeger through VictoriaTraces' own handler. So no released binary answered from this code. Answers over blocks that are not reused are byte-identical before and after.
 
+## [0.167.7] - 2026-10-23
+
 ## [0.167.6] - 2026-10-23
 
 ### Changed
