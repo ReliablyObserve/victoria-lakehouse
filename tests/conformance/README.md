@@ -926,18 +926,39 @@ jobs and is a separate change.
 Tests: `python -m unittest scripts/ci/tests/test_ci_scope_workflows.py` (the lint and its fixtures, the repository
 workflows, and the action's script run as the runner runs it in temporary git repositories).
 
-## Release skip (non-product merges and `[skip release]`)
+## Release decision (non-product merges, `[skip release]`, and merges whose run was cancelled)
 
 A merge to `main` that changes nothing that ships is never released, so the marker below is no longer
-needed for it (it is still honoured). `scripts/ci/release_product_check.py` runs in the workflow's
-`skip` step and asks the registry gate's own classifier (`scripts/ci/pr_classify.py`, taken from the
-parent commit) about the pushed commit. Not released: docs, CI workflows, tests, scripts, test-stack
+needed for it (it is still honoured). The decision is made on the range `last-tag..HEAD`, not on the
+pushed commit alone (#756): release runs are serialised by a concurrency group, GitHub keeps one pending
+run per group, and the run of a middle merge of a burst is cancelled, so a head-only decision lost the
+product merge #736 behind a CI-only and a test-only merge (2026-10-23). `scripts/ci/release_product_check.py`
+runs in the workflow's `skip` step, after the version step (which computes `LATEST_TAG`, the highest
+`vMAJOR.MINOR.PATCH` tag), and releases when ANY commit in the range is owed a release:
+
+- it has no `[skip release]` marker in its subject or in the title of the pull request that produced it
+  (`scripts/ci/release_skip.py`; the title is read from the API only for a commit that would otherwise
+  release), and
+- it is a product change, asked per commit to the registry gate's own classifier
+  (`scripts/ci/pr_classify.py`, taken from the commit's parent) with the rules below.
+
+The marker of the pushed commit therefore never hides an earlier owed commit. Release-metadata commits
+(`chore: release metadata for vX [skip release]`) carry the marker, so a release's own metadata merge
+never releases and never loops. The first run after a tag, a re-run of a finished run and a run of an
+older commit see an empty range (HEAD is the tag's commit or an ancestor of it) and release nothing.
+A revert of a product commit is a product commit and is released (an extra release, never a lost one).
+Not released: docs, CI workflows, tests, scripts, test-stack
 compose files and Dockerfiles, tooling locks (pip, npm) and Dependabot bumps of them, release metadata.
 Released although the gate waives them, because they rebuild the binaries or images: `go.mod`, `go.sum`,
 `go.work` of the root and `lakehouse-traces` modules (Go toolchain and dependency bumps), a changed
 `FROM` digest or tag in `Dockerfile`, `Dockerfile.logs` or `Dockerfile.traces` (a digest *added* to a
 line that had none pins what the tag already resolves to and is not released; a digest that changes
-or goes away is), and the upstream pins in `auto-release.yaml`. Every doubt releases: a manual run, a
-push that is not exactly one commit on the previous head (a rebase merge), a merge commit, an empty
-diff, a classifier error. Known gap: other edits of the build steps in `auto-release.yaml` (not the
-pins) are treated as CI. Tests: `python -m unittest scripts.ci.tests.test_release_product_check`.
+or goes away is), and the upstream pins in `auto-release.yaml`. Every doubt releases: a manual run
+(`workflow_dispatch`, never skipped, also on a commit that is already tagged), a merge commit, an empty
+diff, a classifier error, no usable tag, a tag that is not an ancestor of HEAD, more than 100 commits
+since the tag. The one fail-closed case is a pull-request title that cannot be read for a commit that
+would otherwise release: no release, the run turns red, start the workflow by hand; another owed commit
+in the range still releases. The version bump (patch, minor, ...) is still read from the labels and
+subject of the pushed commit's pull request, not from the commits in the range. Known gap: other edits of the build steps in
+`auto-release.yaml` (not the pins) are treated as CI. Tests: `python -m unittest
+scripts.ci.tests.test_release_product_check` (fixture histories, including the exact #736 sequence).

@@ -1,10 +1,7 @@
-import contextlib
 import io
 import json
 import os
-import subprocess
 import sys
-import tempfile
 import unittest
 import unittest.mock
 
@@ -171,59 +168,6 @@ class GithubTitles(unittest.TestCase):
         with self.assertRaises(OSError):
             self.fetch({}, urlopen=down)
         self.assertEqual(len(calls), 3)
-
-
-class Cli(unittest.TestCase):
-    ENV_KEYS = ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "COMMIT_MSG", "GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_SHA",
-                "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")
-
-    def run_cli(self, msg, env=None):
-        with tempfile.TemporaryDirectory() as d:
-            out, summary = os.path.join(d, "out"), os.path.join(d, "summary")
-            e = {k: v for k, v in os.environ.items() if k not in self.ENV_KEYS}
-            e.update({"COMMIT_MSG": msg, "GITHUB_OUTPUT": out, "GITHUB_STEP_SUMMARY": summary, **(env or {})})
-            p = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "..", "release_skip.py")],
-                               capture_output=True, text=True, env=e)
-            def read(path):
-                if not os.path.exists(path):
-                    return ""
-                with open(path, encoding="utf-8") as fh:
-                    return fh.read()
-
-            return p, read(out), read(summary)
-
-    def test_skip_written_and_summarised(self):
-        p, out, summary = self.run_cli("chore: x [skip release]")
-        self.assertEqual(p.returncode, 0)
-        self.assertEqual(out, "skip=true\n")
-        self.assertIn("[skip release]", summary)
-
-    def test_fail_closed_is_loud(self):
-        p, out, summary = self.run_cli("fix: x (#9)")
-        self.assertEqual(p.returncode, 1, "the run must turn red")
-        self.assertEqual(out, "skip=true\n")
-        self.assertTrue(any(l.startswith("::warning::") for l in p.stdout.splitlines()), p.stdout)
-        self.assertIn("workflow_dispatch", summary)
-
-    def test_plain_push_without_a_pr_lookup_failure_releases(self):
-        # a token-less environment cannot look the PR up: fail closed, never release blindly
-        p, out, _ = self.run_cli("fix: direct push")
-        self.assertEqual(out, "skip=true\n")
-
-    def test_manual_run_releases_and_other_ref_is_refused(self):
-        p, out, summary = self.run_cli("", {"GITHUB_EVENT_NAME": "workflow_dispatch"})
-        self.assertEqual((p.returncode, out), (0, "skip=false\n"))
-        self.assertIn("release", summary)
-        p, out, _ = self.run_cli("", {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/x"})
-        self.assertEqual((p.returncode, out), (1, "skip=true\n"))
-
-    def test_main_in_process(self):
-        with unittest.mock.patch.dict(os.environ, {"COMMIT_MSG": "chore: [skip release]"}, clear=False), contextlib.redirect_stdout(io.StringIO()):
-            os.environ.pop("GITHUB_OUTPUT", None)
-            os.environ.pop("GITHUB_STEP_SUMMARY", None)
-            os.environ.pop("GITHUB_EVENT_NAME", None)
-            os.environ.pop("GITHUB_REF", None)
-            self.assertEqual(r.main(), 0)
 
 
 if __name__ == "__main__":
