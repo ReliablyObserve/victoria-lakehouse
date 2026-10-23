@@ -676,6 +676,18 @@ class RangeDecision(unittest.TestCase):
         self.assertTrue(self.decide(head, "v0.1.0").skip)
         self.assertEqual(self.title_calls, [])
 
+    def test_a_marked_commit_never_reaches_the_classifier_or_the_api(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        head = self.step("refactor: tidy [skip release] (#2)", {"internal/storage/b.go": "package storage\n"})
+        calls = []
+
+        def counting(*a):
+            calls.append(a)
+            return {"product": "1", "reason": "x"}
+        self.assertTrue(self.decide(head, "v0.1.0", classify=counting).skip)
+        self.assertEqual((calls, self.title_calls), ([], []))
+
     def test_a_marker_only_in_the_pull_request_title_is_honoured_per_commit(self):
         released = self.step("fix: x (#1)", self.PRODUCT)
         self.tag("v0.1.0", released)
@@ -720,6 +732,8 @@ class RangeDecision(unittest.TestCase):
     # doubts release
     def test_no_usable_tag_releases(self):
         head = self.step("docs: a [skip release]", {"docs/a.md": "a"})
+        for name in ("v1.2.3-rc1", "v1.2.3.4", "v01.2.3", "latest"):  # real tags that are not plain versions, at the commit itself
+            self.tag(name, head)
         for tag in ("v0.0.0", "", "v1.2.3", "main", "v1.2.3-rc1", "v1.2.3\n", "v1.2.3$(touch pwned)", "v1.2.3;id", "../v1", "v01.2.3"):
             with self.subTest(tag=tag):
                 v = self.decide(head, tag)
