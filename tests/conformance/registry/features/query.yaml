@@ -477,6 +477,7 @@
     - internal/schema/stream_fields_test.go#TestParseStreamFields
     - internal/schema/stream_fields_test.go#FuzzParseStreamFields
     - internal/vlstorage/values_filter_limit_test.go#TestValuesFilteredThenLimited
+    - internal/selectapi/jaeger_fallback_test.go#TestOnlyEmptyValue
     - lakehouse-traces/internal/vlstorage/values_filter_limit_test.go#TestValuesFilteredThenLimited
     - lakehouse-traces/internal/vtstorage_adapter/values_filter_limit_test.go#TestValuesFilteredThenLimited
     - tests/parity/field_values_map_attrs_test.go#TestParity_FieldValues_MapAttributes

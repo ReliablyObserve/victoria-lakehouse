@@ -554,7 +554,7 @@
   compare: { type: values-with-hits, options: { hits_tolerance: "0" } }
   layers: [api]
   pending: true
-  refs: { doc: docs/parity-and-gaps.md, tests: [internal/vlstorage/values_filter_limit_test.go#TestValuesFilteredThenLimited, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
+  refs: { doc: docs/parity-and-gaps.md, tests: [internal/vlstorage/values_filter_limit_test.go#TestValuesFilteredThenLimited, internal/selectapi/jaeger_fallback_test.go#TestOnlyEmptyValue, tests/parity/field_values_empty_parity_test.go#TestParity_FieldValues_EmptyBucket] }
   notes: "The adapters limited first and filtered after, so matching values behind non-matching ones (now also the empty bucket) were dropped. Parity cases field_values_lk_substring_filter and field_values_lk_filter_then_limit."
 
 - id: vl.select.stream_field_values.no_empty
