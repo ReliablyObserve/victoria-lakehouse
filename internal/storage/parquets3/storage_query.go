@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -150,13 +151,15 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// Per-query memory ceiling for in-flight DataBlock rows. Bounds the live
 	// memory footprint a single wildcard query can pin: workers backpressure
 	// on the mutex when the consumer (LogsQL pipe / HTTP writer) is slow, and
-	// the budget triggers context cancellation if rows pile up faster than
-	// the consumer can drain them.
+	// once the in-flight bytes reach the ceiling a worker WAITS for the consumer
+	// to drain them (liveBytesGate). The budget never cancels the query and never
+	// drops a block: a read stopped by it would answer 200 with rows missing.
 	maxLiveBytes := s.cfg.Query.MaxLiveBytes
 	if maxLiveBytes <= 0 {
 		maxLiveBytes = defaultMaxLiveBytes
 	}
-	var liveBytes atomic.Int64
+	var liveBytes liveBytesGate
+	parentCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -171,6 +174,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// of queuing blocks in a deep channel that lets producer fanout balloon
 	// resident memory beyond the container's mem_limit.
 	var writeBlockPanic atomic.Bool
+	var budgetLogged atomic.Bool
 	counting := storage.IsFieldNamesCounter(ctx)
 	preFilter := func(db *logstorage.DataBlock, tss []tombstone) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
@@ -180,12 +184,8 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			cancel()
 			return nil
 		}
-		if liveBytes.Load() >= maxLiveBytes {
-			metrics.QueryMemoryBudgetExceeded.Inc()
-			logger.Warnf("query memory budget exceeded: live=%d, max=%d; cancelling",
-				liveBytes.Load(), maxLiveBytes)
-			cancel()
-			return nil
+		if !liveBytes.waitBelow(ctx, maxLiveBytes, &budgetLogged) {
+			return nil // the query was cancelled while waiting; RunQuery reports why
 		}
 		if counting {
 			return s.preFilterFieldNames(ctx, db, tss, filter)
@@ -229,7 +229,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			}
 			rowsEmitted.Add(int64(db.RowsCount()))
 			sz := dataBlockApproxBytes(db)
-			liveBytes.Add(sz)
+			liveBytes.add(sz)
 			wbMu.Lock()
 			func() {
 				defer func() {
@@ -241,7 +241,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				writeBlock(workerID, db)
 			}()
 			wbMu.Unlock()
-			liveBytes.Add(-sz)
+			liveBytes.release(sz)
 		}
 	}
 
@@ -422,18 +422,19 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		wg.Add(1)
 		go func(workerIdx int) {
 			defer wg.Done()
-			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink, lane)
+			s.fileWorkerLoop(ctx, cancel, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink, lane)
 		}(i)
 	}
 	wg.Wait()
 
-	s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
-
-	if v := firstErr.Load(); v != nil {
-		if err, ok := v.(error); ok && ctx.Err() != nil {
-			return err
-		}
+	// A read that could not read an object it selected, or that its caller
+	// stopped (cancelled, timed out) while the last object was being read, has
+	// no complete answer: fail, as hot does, instead of answering with a hole.
+	if err := readFailure(&firstErr, parentCtx); err != nil {
+		return err
 	}
+
+	s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
 
 	recordQueryRows(&rowsEmitted)
 
@@ -475,10 +476,10 @@ func (s *Storage) acquireQueryMaxRowsBudget(ctx context.Context, maxRows int64) 
 // run the I/O. The bound's Acquire is scoped tightly around the
 // processOneFile call via an immediately-invoked closure with deferred
 // release.
-func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink, lane *cleanLane) {
+func (s *Storage) fileWorkerLoop(ctx context.Context, cancel context.CancelFunc, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink, lane *cleanLane) {
 	for fi := range taskCh {
 		if err := ctx.Err(); err != nil {
-			firstErr.CompareAndSwap(nil, err)
+			recordReadError(firstErr, err)
 			return
 		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
@@ -488,17 +489,64 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 		if s.bounds != nil && s.bounds.FileWorkers != nil {
 			rel, boundErr := s.bounds.FileWorkers.Acquire(ctx, 1)
 			if boundErr != nil {
-				firstErr.CompareAndSwap(nil, fmt.Errorf("file workers limit exceeded: %w", boundErr))
+				recordReadError(firstErr, fmt.Errorf("file workers limit exceeded: %w", boundErr))
+				cancel()
 				return
 			}
+			var err error
 			func() {
 				defer rel()
-				s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
+				err = s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
 			}()
+			if failFileRead(firstErr, cancel, err) {
+				return
+			}
 			continue
 		}
-		s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
+		if failFileRead(firstErr, cancel, s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)) {
+			return
+		}
 	}
+}
+
+// failFileRead records the first error of a file read and stops the other
+// workers (they would only issue reads for an answer that is already lost).
+// It reports whether err was an error.
+func failFileRead(firstErr *atomic.Value, cancel context.CancelFunc, err error) bool {
+	if err == nil {
+		return false
+	}
+	recordReadError(firstErr, err)
+	cancel()
+	return true
+}
+
+// readError boxes the first error of a read: an atomic.Value accepts one
+// concrete type only, and the errors recorded here (a cancellation, a wrapped
+// file error, a bound's rejection) have different ones.
+type readError struct{ err error }
+
+// recordReadError keeps the first error recorded.
+func recordReadError(v *atomic.Value, err error) { v.CompareAndSwap(nil, readError{err}) }
+
+// recordedReadError is the first error recorded, or nil.
+func recordedReadError(v *atomic.Value) error {
+	if r, ok := v.Load().(readError); ok {
+		return r.err
+	}
+	return nil
+}
+
+// readFailure is why a read has no complete answer, or nil. It is the first
+// error a worker recorded (an object that could not be read, or the cancellation
+// a worker saw), or the caller's own cancellation or deadline, which can strike
+// while the last object is being read, when no worker has another iteration
+// left in which to notice it.
+func readFailure(firstErr *atomic.Value, parentCtx context.Context) error {
+	if err := recordedReadError(firstErr); err != nil {
+		return err
+	}
+	return parentCtx.Err()
 }
 
 // recordQueryRows adds the rows a query emitted to QueryRowsTotal. Shared by
@@ -516,7 +564,7 @@ func recordQueryRows(rowsEmitted *atomic.Int64) {
 // behind a function call also makes the negative-control test
 // (TestQueryFileWorkers_BoundEnforced) load-bearing: stripping the
 // Acquire makes the bound's Limit unenforced.
-func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) error {
 	// Footer and file-level bloom pruning read the query text for terms that
 	// must match; under a NOT, an OR or an `if (...)` they do not (#289).
 	pruneQuery := queryStr
@@ -524,19 +572,44 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 		pruneQuery = ""
 	}
 	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, pruneQuery, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
-		return
+		return nil
 	}
 	if s.checkFileBloom(ctx, fi, pruneQuery) {
-		return
+		return nil
 	}
-	if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
-		if isFileNotFoundError(err) {
-			s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
-			return
-		}
-		metrics.QueryFileErrorsTotal.Inc()
-		logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+	err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock)
+	if err == nil {
+		return nil
 	}
+	if isObjectGone(err, fi.Key) {
+		// Listed, then removed by a compaction or a retention run: its rows are
+		// in the compacted object or deleted on purpose.
+		s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
+		return nil
+	}
+	if ctx.Err() != nil {
+		// The query was stopped (its caller, or the row ceiling); the stop is
+		// reported by RunQuery, and a read it aborted is not a failing object.
+		return nil
+	}
+	// Any other failure leaves rows of a selected object out of the answer:
+	// fail the read rather than answer with a silent hole.
+	metrics.QueryFileErrorsTotal.Inc()
+	logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+	return fmt.Errorf("cannot read %s: %w", fi.Key, err)
+}
+
+// isObjectGone reports whether err says the object itself is absent. The
+// object's key is cut out of the message first: a key such as
+// "part-404.parquet" must not turn an unreadable object into a missing one.
+func isObjectGone(err error, key string) bool {
+	if err == nil {
+		return false
+	}
+	if key == "" {
+		return isFileNotFoundError(err)
+	}
+	return isFileNotFoundError(errors.New(strings.ReplaceAll(err.Error(), key, "")))
 }
 
 func (s *Storage) applySelfFilter(files []manifest.FileInfo) []manifest.FileInfo {
@@ -1382,7 +1455,10 @@ func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.Row
 
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
-		db := readRowGroupColumnarKeys(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots, onlyKeys)
+		db, err := readRowGroupColumnarKeys(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots, onlyKeys)
+		if err != nil {
+			return err
+		}
 		emit(db)
 		return nil
 	}

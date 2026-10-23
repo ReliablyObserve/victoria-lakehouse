@@ -49,8 +49,8 @@ func TestDataBlockApproxBytes_BasicAccounting(t *testing.T) {
 //   - per-process heap growth stays under a generous ceiling (the bug
 //     before the fix grew the heap by gigabytes within a couple of seconds;
 //     this test asserts the post-fix bound)
-//   - either all rows are returned OR the QueryMemoryBudgetExceeded counter
-//     incremented (controlled cancellation, not OOM)
+//   - every row is returned: the budget makes workers wait for the consumer
+//     (the QueryMemoryBudgetExceeded counter counts the waits), never drops rows
 //
 // If the fix is reverted (the resultCh:256 channel + unconstrained workers
 // with no per-query byte budget) the heap growth assertion fails because
@@ -156,8 +156,8 @@ func TestRunQuery_WildcardManyFiles_MemoryBudget(t *testing.T) {
 
 	budgetAfter := getCounterValue(t, metrics.QueryMemoryBudgetExceeded)
 
-	// The contract: either we returned all rows, or we triggered the budget
-	// (controlled cancellation), but we MUST NOT have ballooned the heap.
+	// The contract: we returned all rows (the budget only makes workers wait)
+	// and we MUST NOT have ballooned the heap.
 	// 256 MiB is comfortably above the 64 MiB live budget plus parquet
 	// decode scratch space, but well below what the channel-buffered
 	// pattern would queue (256 blocks × multi-MB each = >>1 GiB).
@@ -191,10 +191,11 @@ func TestRunQuery_WildcardManyFiles_MemoryBudget(t *testing.T) {
 		}
 	}
 
-	// If the budget fired, totalRows may be less than filesCount*rowsPerFile.
-	// If it didn't fire, we should have all rows.
-	if budgetAfter == budgetBefore && totalRows.Load() != int64(filesCount*rowsPerFile) {
-		t.Fatalf("budget did not fire AND row count is wrong: got %d, want %d",
+	// The budget makes workers wait for the consumer; it never drops rows. The
+	// answer is complete whether or not the budget fired.
+	if totalRows.Load() != int64(filesCount*rowsPerFile) {
+		t.Fatalf("the budget dropped rows (it fired %v): got %d, want %d",
+			budgetAfter > budgetBefore,
 			totalRows.Load(), filesCount*rowsPerFile)
 	}
 
@@ -525,10 +526,11 @@ func TestRunQuery_ProductionShape_WildcardScalesUnderMemoryBudget(t *testing.T) 
 		}
 	}
 
-	// Quantitative assertion #3: either the budget fired, OR all rows
-	// were returned. No silent data loss permitted.
-	if budgetAfter == budgetBefore && totalRows.Load() != int64(totalRowsExpected) {
-		t.Fatalf("budget did not fire AND row count is wrong: got %d, want %d",
+	// Quantitative assertion #3: all rows were returned, whether or not the
+	// budget fired. No silent data loss permitted.
+	if totalRows.Load() != int64(totalRowsExpected) {
+		t.Fatalf("the budget dropped rows (it fired %v): got %d, want %d",
+			budgetAfter > budgetBefore,
 			totalRows.Load(), totalRowsExpected)
 	}
 

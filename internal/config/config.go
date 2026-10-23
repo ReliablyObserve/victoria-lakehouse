@@ -774,8 +774,9 @@ type QueryConfig struct {
 	MaxFilesPerQuery int `yaml:"max_files_per_query"`
 	// MaxLiveBytes is a per-query ceiling on the bytes of in-flight
 	// DataBlocks currently held by RunQuery before writeBlock has consumed
-	// them. When exceeded, the query context is cancelled, returning a
-	// partial result instead of OOM-killing the container. 0 means use the
+	// them. When reached, a file worker waits for the consumer to drain them,
+	// so a slow consumer cannot make the process OOM; the query is never
+	// cancelled and never answers with rows missing. 0 means use the
 	// default (defaultMaxLiveBytes in storage/parquets3).
 	MaxLiveBytes int64 `yaml:"max_live_bytes"`
 	// SlowThreshold logs queries that run longer than this.

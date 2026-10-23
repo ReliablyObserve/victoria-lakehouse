@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -125,6 +126,7 @@ func (s *Storage) RunQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 }
 
 func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID, q *logstorage.Query, writeBlock logstorage.WriteDataBlockFunc) error {
+	parentCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -167,12 +169,14 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 
 	// Per-query memory ceiling for in-flight DataBlock rows. Mirror of the
 	// budget in internal/storage/parquets3 (logs module). See that file for
-	// the rationale and VL reference.
+	// the rationale and VL reference. A worker that reaches it WAITS for the
+	// consumer (liveBytesGate); the budget never cancels the query or drops a
+	// block, which would answer 200 with rows missing.
 	maxLiveBytes := s.cfg.Query.MaxLiveBytes
 	if maxLiveBytes <= 0 {
 		maxLiveBytes = defaultMaxLiveBytes
 	}
-	var liveBytes atomic.Int64
+	var liveBytes liveBytesGate
 
 	var rowsEmitted atomic.Int64
 	maxRows := rowCeilingOf(ctx, s.cfg.Query.MaxRows)
@@ -182,6 +186,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// Pre-filter runs in each worker goroutine without locks.
 	// Only the final writeBlock call is serialized.
 	var writeBlockPanic atomic.Bool
+	var budgetLogged atomic.Bool
 	counting := storage.IsFieldNamesCounter(ctx)
 	preFilter := func(db *logstorage.DataBlock, tss []tombstone) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
@@ -191,12 +196,8 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			cancel()
 			return nil
 		}
-		if liveBytes.Load() >= maxLiveBytes {
-			metrics.QueryMemoryBudgetExceeded.Inc()
-			logger.Warnf("query memory budget exceeded: live=%d, max=%d; cancelling",
-				liveBytes.Load(), maxLiveBytes)
-			cancel()
-			return nil
+		if !liveBytes.waitBelow(ctx, maxLiveBytes, &budgetLogged) {
+			return nil // the query was cancelled while waiting; RunQuery reports why
 		}
 		if counting {
 			return s.preFilterFieldNames(ctx, db, tss, filter)
@@ -223,7 +224,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 			}
 			rowsEmitted.Add(int64(db.RowsCount()))
 			sz := dataBlockApproxBytes(db)
-			liveBytes.Add(sz)
+			liveBytes.add(sz)
 			wbMu.Lock()
 			func() {
 				defer func() {
@@ -235,7 +236,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				writeBlock(workerID, db)
 			}()
 			wbMu.Unlock()
-			liveBytes.Add(-sz)
+			liveBytes.release(sz)
 		}
 	}
 
@@ -440,19 +441,23 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.fileWorkerLoop(ctx, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink, lane)
+			s.fileWorkerLoop(ctx, cancel, taskCh, &firstErr, maxRows, &rowsEmitted, startNs, endNs, queryStr, pipeFields, filter, hasTombstones, sink, lane)
 		}()
 	}
 	wg.Wait()
 
-	if v := firstErr.Load(); v != nil {
-		if err, ok := v.(error); ok {
-			if maxRows > 0 && rowsEmitted.Load() >= maxRows {
-				// Cancelled due to maxRows — not an error.
-			} else {
-				return err
-			}
+	if err := recordedReadError(&firstErr); err != nil {
+		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
+			// Cancelled due to maxRows — not an error.
+		} else {
+			return err
 		}
+	}
+	// The caller's own cancellation or deadline can strike while the last
+	// object is being read, when no worker has another iteration left in which
+	// to notice it: the answer is incomplete, so fail (see the logs module).
+	if err := parentCtx.Err(); err != nil {
+		return err
 	}
 
 	s.serveBufferView(ctx, view, startNs, endNs, maxRows, &rowsEmitted, q, tenantIDs, sink)
@@ -465,10 +470,10 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 // drains one file from taskCh, traverses the K8s-style FileWorkers
 // bound (when configured), and invokes processOneFile to run the I/O.
 // Mirror of the logs module helper.
-func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink, lane *cleanLane) {
+func (s *Storage) fileWorkerLoop(ctx context.Context, cancel context.CancelFunc, taskCh <-chan manifest.FileInfo, firstErr *atomic.Value, maxRows int64, rowsEmitted *atomic.Int64, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, sink *tombstoneSink, lane *cleanLane) {
 	for fi := range taskCh {
 		if err := ctx.Err(); err != nil {
-			firstErr.CompareAndSwap(nil, err)
+			recordReadError(firstErr, err)
 			return
 		}
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
@@ -483,17 +488,52 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 		if s.bounds != nil && s.bounds.FileWorkers != nil {
 			rel, boundErr := s.bounds.FileWorkers.Acquire(ctx, 1)
 			if boundErr != nil {
-				firstErr.CompareAndSwap(nil, fmt.Errorf("file workers limit exceeded: %w", boundErr))
+				recordReadError(firstErr, fmt.Errorf("file workers limit exceeded: %w", boundErr))
+				cancel()
 				return
 			}
+			var err error
 			func() {
 				defer rel()
-				s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
+				err = s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
 			}()
+			if failFileRead(firstErr, cancel, err) {
+				return
+			}
 			continue
 		}
-		s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)
+		if failFileRead(firstErr, cancel, s.processOneFile(fctx, fi, startNs, endNs, queryStr, pipeFields, filter, tomb, write)) {
+			return
+		}
 	}
+}
+
+// failFileRead records the first error of a file read and stops the other
+// workers (they would only issue reads for an answer that is already lost).
+// It reports whether err was an error.
+func failFileRead(firstErr *atomic.Value, cancel context.CancelFunc, err error) bool {
+	if err == nil {
+		return false
+	}
+	recordReadError(firstErr, err)
+	cancel()
+	return true
+}
+
+// readError boxes the first error of a read: an atomic.Value accepts one
+// concrete type only, and the errors recorded here (a cancellation, a wrapped
+// file error, a bound's rejection) have different ones.
+type readError struct{ err error }
+
+// recordReadError keeps the first error recorded.
+func recordReadError(v *atomic.Value, err error) { v.CompareAndSwap(nil, readError{err}) }
+
+// recordedReadError is the first error recorded, or nil.
+func recordedReadError(v *atomic.Value) error {
+	if r, ok := v.Load().(readError); ok {
+		return r.err
+	}
+	return nil
 }
 
 // processOneFile is the per-file work unit extracted from the
@@ -503,7 +543,7 @@ func (s *Storage) fileWorkerLoop(ctx context.Context, taskCh <-chan manifest.Fil
 // function call also makes the negative-control test
 // (TestQueryFileWorkers_BoundEnforced) load-bearing: stripping the
 // Acquire makes the bound's Limit unenforced.
-func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) {
+func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, queryStr string, pipeFields []string, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc) error {
 	// Footer and file-level bloom pruning read the query text for terms that
 	// must match; under a NOT, an OR or an `if (...)` they do not (#289).
 	pruneQuery := queryStr
@@ -511,19 +551,44 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 		pruneQuery = ""
 	}
 	if skip, _ := shouldSkipByFooter(ctx, s.pool, fi, pruneQuery, s.registry, s.footerCache, s.footerPrefetchBytes()); skip {
-		return
+		return nil
 	}
 	if s.checkFileBloom(ctx, fi, pruneQuery) {
-		return
+		return nil
 	}
-	if err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock); err != nil {
-		if isFileNotFoundError(err) {
-			s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
-			return
-		}
-		metrics.QueryFileErrorsTotal.Inc()
-		logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+	err := s.queryFile(ctx, fi, startNs, endNs, queryStr, pipeFields, filteredWriteBlock)
+	if err == nil {
+		return nil
 	}
+	if isObjectGone(err, fi.Key) {
+		// Listed, then removed by a compaction or a retention run: its rows are
+		// in the compacted object or deleted on purpose.
+		s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
+		return nil
+	}
+	if ctx.Err() != nil {
+		// The query was stopped (its caller, or the row ceiling); the stop is
+		// reported by RunQuery, and a read it aborted is not a failing object.
+		return nil
+	}
+	// Any other failure leaves rows of a selected object out of the answer:
+	// fail the read rather than answer with a silent hole.
+	metrics.QueryFileErrorsTotal.Inc()
+	logger.Warnf("query file error: %s; key=%s", err, fi.Key)
+	return fmt.Errorf("cannot read %s: %w", fi.Key, err)
+}
+
+// isObjectGone reports whether err says the object itself is absent. The
+// object's key is cut out of the message first: a key such as
+// "part-404.parquet" must not turn an unreadable object into a missing one.
+func isObjectGone(err error, key string) bool {
+	if err == nil {
+		return false
+	}
+	if key == "" {
+		return isFileNotFoundError(err)
+	}
+	return isFileNotFoundError(errors.New(strings.ReplaceAll(err.Error(), key, "")))
 }
 
 // maxSyntheticAggRows / syntheticAggChunkSize bound the count-pushdown synthetic
@@ -1461,7 +1526,10 @@ func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.Row
 
 	// Fast path: columnar reading when no constant columns need merging.
 	if len(constants) == 0 && len(readCols) > 0 {
-		db := readRowGroupColumnarKeys(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots, aliasCols, onlyKeys)
+		db, err := readRowGroupColumnarKeys(f, rg, readCols, s.registry, startNs, endNs, bitmap, slots, aliasCols, onlyKeys)
+		if err != nil {
+			return err
+		}
 		emit(db)
 		return nil
 	}
