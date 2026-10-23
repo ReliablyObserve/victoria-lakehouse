@@ -35,6 +35,10 @@ type ackLedger struct {
 	held     map[string]bool // read back from the buffer after the request
 	storable map[string]bool // _time >= 0: the rows the rule says the buffer takes
 	sent     int
+	// staleReads makes the next n reads of the buffer after a request return the
+	// view from before it, as if the rows were not searchable yet (a test seam
+	// for a slow runner; zero is no lag).
+	staleReads int
 }
 
 func newAckLedger() *ackLedger {
@@ -50,9 +54,11 @@ func (e *segEnv) ingestTracked(l *ackLedger, tn logstorage.TenantID, ts time.Tim
 	e.t.Helper()
 	rows := make([]adapterRow, 0, n)
 	var msgs []string
+	times := map[string]string{}
 	for i := 0; i < n; i++ {
 		t := ts.Add(time.Duration(i) * time.Millisecond).UnixNano()
 		msg := fmt.Sprintf("tracked-%d", e.seq.Add(1))
+		times[msg] = time.Unix(0, t).UTC().Format(time.RFC3339Nano)
 		rows = append(rows, adapterRow{ts: t, fields: ackFields("api", msg)})
 		msgs = append(msgs, msg)
 		if t >= 0 {
@@ -63,11 +69,29 @@ func (e *segEnv) ingestTracked(l *ackLedger, tn logstorage.TenantID, ts time.Tim
 	e.sendViaAdapter(tn, rows)
 	after := e.bufferMsgs()
 	// A just-added row can take a moment to be searchable even after a flush:
-	// wait (bounded) until every row the rule says is stored shows up, so that
-	// "not found" means refused, not "not indexed yet".
-	for try := 0; try < 40 && !allSeen(after, before, msgs, l.storable); try++ {
-		time.Sleep(25 * time.Millisecond)
-		after = e.bufferMsgs()
+	// wait until every row the rule says is stored shows up, so that "not found"
+	// means refused, not "not indexed yet". The wait polls the outcome with a
+	// generous upper bound (a slow runner under -race) and fails loudly when it
+	// runs out: a fixed number of tries used to run out silently, record a stored
+	// row as not held, and fail the test later with "in Parquet but not held"
+	// (#625, #580).
+	read := func() map[string]int {
+		if l.staleReads > 0 { // the injected lag: the rows are not searchable yet
+			l.staleReads--
+			return before
+		}
+		return e.bufferMsgs()
+	}
+	if l.staleReads > 0 {
+		after = read()
+	}
+	deadline := time.Now().Add(ackVisibleWithin)
+	for !allSeen(after, before, msgs, l.storable) {
+		if time.Now().After(deadline) {
+			e.t.Fatalf("rows the rule says are stored are still not searchable in the buffer %v after the request: %v", ackVisibleWithin, describeUnseen(unseen(after, before, msgs, l.storable), times, tn))
+		}
+		time.Sleep(5 * time.Millisecond)
+		after = read()
 	}
 	l.sent += n
 	for _, m := range msgs {
@@ -75,6 +99,32 @@ func (e *segEnv) ingestTracked(l *ackLedger, tn logstorage.TenantID, ts time.Tim
 			l.held[m] = true
 		}
 	}
+}
+
+// ackVisibleWithin bounds the wait for a stored row to be searchable. It is an
+// upper bound for a loaded runner, not a delay: the wait ends when the rows show.
+const ackVisibleWithin = 60 * time.Second
+
+// unseen lists the storable messages of msgs that the query result after does
+// not show beyond before.
+func unseen(after, before map[string]int, msgs []string, storable map[string]bool) []string {
+	var out []string
+	for _, m := range msgs {
+		if storable[m] && after[m] <= before[m] {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// describeUnseen names the rows with their tenant and _time, so a row that
+// upstream's storage does not serve can be told from a slow one.
+func describeUnseen(msgs []string, times map[string]string, tn logstorage.TenantID) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, fmt.Sprintf("%s (tenant %d:%d, _time %s)", m, tn.AccountID, tn.ProjectID, times[m]))
+	}
+	return out
 }
 
 // allSeen reports whether every message in msgs that the rule marks as storable
@@ -228,6 +278,9 @@ func TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce(t *testing.T) {
 	for seed := int64(1); seed <= 8; seed++ {
 		t.Run(fmt.Sprintf("seed%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
+			// The lag of the buffer's search is drawn from its own source, so the
+			// rows and the steps of a seed stay what they were.
+			lagRng := rand.New(rand.NewSource(seed + 1000))
 			e := newSegEnv(t)
 			l := newAckLedger()
 			before := refusedNow()
@@ -247,7 +300,14 @@ func TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce(t *testing.T) {
 					e.restart()
 					f = e.flusher(40)
 				default:
+					// Every other request is read back late, by up to 80 reads
+					// (the old wait gave up after 40): a stored row that is not
+					// searchable yet must be waited for, not recorded as refused.
+					if lagRng.Intn(2) == 0 {
+						l.staleReads = 1 + lagRng.Intn(80)
+					}
 					e.ingestTracked(l, tenants[rng.Intn(len(tenants))], randomTime(rng), 1+rng.Intn(9))
+					l.staleReads = 0
 				}
 			}
 			if e.segs.Active().Rows() > 0 {

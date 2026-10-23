@@ -1,7 +1,7 @@
-# Optional peer authentication of the pods' internal endpoints (peer.auth_enabled, off by default).
+# Peer authentication of the pods' internal endpoints: a configured peer.auth_key is enforced unless peer.auth_enabled is explicitly false; no key, nothing to enforce.
 
 - id: lh.internal.peer_auth.off_by_default_logs
-  title: "LH internal endpoints take a request without a credential while peer.auth_enabled is off, the default (logs)"
+  title: "LH internal endpoints take a request without a credential when no peer key is set or peer.auth_enabled is false (logs)"
   surface: lh
   kind: internal
   origin: lh-addition
@@ -13,10 +13,10 @@
   layers: [api]
   pending: true
   refs: { doc: docs/security.md, tests: [cmd/lakehouse-logs/peer_auth_test.go, cmd/lakehouse-logs/peer_auth_multiinstance_test.go, internal/peerauth/peerauth_test.go] }
-  notes: "Peer authentication is opt-in. With the defaults (peer.auth_enabled false) /internal/manifest/update, /internal/cache/*, /internal/stats/sync, /internal/tenant/sync and /internal/buffer/query answer a request without a credential exactly as before the setting existed, also when peer.auth_key is set (the pod then only sends it on its own peer calls); /internal/buffer/query still refuses all_tenants=true to a caller that does not present the key. Covered by TestPeerEndpoints_OffByDefaultServesWithoutKey, TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps and TestOutgoingPeerCallsCarryTheKeyWhenConfigured. SCHEMA LIMIT: the runner's stack enforces peer auth (the e2e stack sets peer.auth_enabled), so it cannot express the off case. Stays pending."
+  notes: "With no peer.auth_key (the default install) or with peer.auth_enabled explicitly false /internal/manifest/update, /internal/cache/*, /internal/stats/sync, /internal/tenant/sync and /internal/buffer/query answer a request without a credential; with a key and peer.auth_enabled false the pod only sends the key on its own peer calls (step 1 of a rolling rollout); /internal/buffer/query still refuses all_tenants=true to a caller that does not present the key. Covered by TestPeerEndpoints_NotEnforcedServesWithoutKey, TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps and TestOutgoingPeerCallsCarryTheKeyWhenConfigured. SCHEMA LIMIT: the runner's stack enforces peer auth (the e2e stack sets a key), so it cannot express the off case. Stays pending."
 
 - id: lh.internal.peer_auth.enforced_logs
-  title: "LH pod with peer.auth_enabled refuses every internal mutating and read-only endpoint without the peer key, 401 (logs)"
+  title: "LH pod with a peer key (peer.auth_enabled unset or true) refuses every internal mutating and read-only endpoint without it, 401 (logs)"
   surface: lh
   kind: internal
   origin: lh-addition
@@ -28,7 +28,7 @@
   layers: [api]
   pending: true
   refs: { doc: docs/security.md, tests: [cmd/lakehouse-logs/peer_auth_test.go, cmd/lakehouse-logs/peer_wiring_test.go, cmd/lakehouse-logs/peer_auth_multiinstance_test.go, internal/peerauth/peerauth_test.go] }
-  notes: "With peer.auth_enabled and peer.auth_key set, /internal/manifest/update, /internal/cache/clear, /internal/stats/sync, /internal/tenant/sync, /internal/cache/stats|fetch|has and /internal/buffer/query answer 401 to a request with no key, a wrong key (same length, longer, shorter) or the other credential form, change nothing, and serve the right key; the key is compared in constant time. Covered by TestPeerEndpoints_EnforcedRefusesWithoutTheKey, TestPeerAuthMultiInstance_AllKeyedAndEnforcing and TestEqual_Property/TestBearer_Property. Enabled without a key fails to start (TestPeerAuthEnabled_FlagAndStartupValidation). SCHEMA LIMIT: the runner sends no Authorization header; the unauthenticated request is the refused case. The binary's own construction path is covered by TestPeerWiring_StoreEndpointsFollowThePeerConfig (the peer cache handler and the endpoints over a real Storage) and TestPeerWiring_PushersPresentTheKey (the manifest, tenant and stats pushers send the key). Stays pending."
+  notes: "With peer.auth_key set and peer.auth_enabled unset or true (a key alone enforces, as before the switch existed), /internal/manifest/update, /internal/cache/clear, /internal/stats/sync, /internal/tenant/sync, /internal/cache/stats|fetch|has and /internal/buffer/query answer 401 to a request with no key, a wrong key (same length, longer, shorter) or the other credential form, change nothing, and serve the right key; the key is compared in constant time. Covered by TestPeerEndpoints_EnforcedRefusesWithoutTheKey, TestPeerEndpoints_KeyAloneEnforces, TestPeerAuthMultiInstance_AllKeyedAndEnforcing, TestPeerAuthMultiInstance_KeyOnlyConfigEnforces and TestEqual_Property/TestBearer_Property. Enabled without a key fails to start (TestPeerAuthEnabled_FlagAndStartupValidation). SCHEMA LIMIT: the runner sends no Authorization header; the unauthenticated request is the refused case. The binary's own construction path is covered by TestPeerWiring_StoreEndpointsFollowThePeerConfig (the peer cache handler and the endpoints over a real Storage) and TestPeerWiring_PushersPresentTheKey (the manifest, tenant and stats pushers send the key). Stays pending."
 
 - id: lh.internal.peer_auth.body_cap_logs
   title: "LH internal sync endpoints cap the request body at peer.max_request_body_bytes, 413 over it, always on (logs)"
@@ -46,7 +46,7 @@
   notes: "Whatever peer.auth_enabled says, the bodies of /internal/manifest/update, /internal/stats/sync, /internal/tenant/sync are capped (default 64 MiB; a push of 20000 tenants is 9.6 MB, of 2000 annotated files 3.7 MB) and a zstd stats body may not expand past the cap; a larger one is 413 and merges nothing. Covered by TestManifestUpdate_BodyCap, TestSyncHandler_BodyJustOverTheCapIs413, TestSyncHandler_ZstdBombRefused. SCHEMA LIMIT: the runner cannot send a body over the cap. Stays pending."
 
 - id: lh.internal.peer_auth.off_by_default_traces
-  title: "LH internal endpoints take a request without a credential while peer.auth_enabled is off, the default (traces)"
+  title: "LH internal endpoints take a request without a credential when no peer key is set or peer.auth_enabled is false (traces)"
   surface: lh
   kind: internal
   origin: lh-addition
@@ -58,10 +58,10 @@
   layers: [api]
   pending: true
   refs: { doc: docs/security.md, tests: [lakehouse-traces/peer_auth_test.go, lakehouse-traces/peer_auth_multiinstance_test.go, internal/peerauth/peerauth_test.go] }
-  notes: "Peer authentication is opt-in. With the defaults (peer.auth_enabled false) /internal/manifest/update, /internal/cache/*, /internal/stats/sync and /internal/buffer/query answer a request without a credential exactly as before the setting existed, also when peer.auth_key is set (the pod then only sends it on its own peer calls); /internal/buffer/query still refuses all_tenants=true to a caller that does not present the key. Covered by TestPeerEndpoints_OffByDefaultServesWithoutKey, TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps and TestOutgoingPeerCallsCarryTheKeyWhenConfigured. SCHEMA LIMIT: the runner's stack enforces peer auth (the e2e stack sets peer.auth_enabled), so it cannot express the off case. Stays pending."
+  notes: "With no peer.auth_key (the default install) or with peer.auth_enabled explicitly false /internal/manifest/update, /internal/cache/*, /internal/stats/sync and /internal/buffer/query answer a request without a credential; with a key and peer.auth_enabled false the pod only sends the key on its own peer calls (step 1 of a rolling rollout); /internal/buffer/query still refuses all_tenants=true to a caller that does not present the key. Covered by TestPeerEndpoints_NotEnforcedServesWithoutKey, TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps and TestOutgoingPeerCallsCarryTheKeyWhenConfigured. SCHEMA LIMIT: the runner's stack enforces peer auth (the e2e stack sets a key), so it cannot express the off case. Stays pending."
 
 - id: lh.internal.peer_auth.enforced_traces
-  title: "LH pod with peer.auth_enabled refuses every internal mutating and read-only endpoint without the peer key, 401 (traces)"
+  title: "LH pod with a peer key (peer.auth_enabled unset or true) refuses every internal mutating and read-only endpoint without it, 401 (traces)"
   surface: lh
   kind: internal
   origin: lh-addition
@@ -73,7 +73,7 @@
   layers: [api]
   pending: true
   refs: { doc: docs/security.md, tests: [lakehouse-traces/peer_auth_test.go, lakehouse-traces/peer_wiring_test.go, lakehouse-traces/peer_auth_multiinstance_test.go, internal/peerauth/peerauth_test.go] }
-  notes: "With peer.auth_enabled and peer.auth_key set, /internal/manifest/update, /internal/cache/clear, /internal/stats/sync, /internal/cache/stats|fetch|has and /internal/buffer/query answer 401 to a request with no key, a wrong key (same length, longer, shorter) or the other credential form, change nothing, and serve the right key; the key is compared in constant time. Covered by TestPeerEndpoints_EnforcedRefusesWithoutTheKey, TestPeerAuthMultiInstance_AllKeyedAndEnforcing and TestEqual_Property/TestBearer_Property. Enabled without a key fails to start (TestPeerAuthEnabled_FlagAndStartupValidation). SCHEMA LIMIT: the runner sends no Authorization header; the unauthenticated request is the refused case. The binary's own construction path is covered by TestPeerWiring_StoreEndpointsFollowThePeerConfig (the peer cache handler and the endpoints over a real Storage) and TestPeerWiring_PushersPresentTheKey (the manifest, tenant and stats pushers send the key). Stays pending."
+  notes: "With peer.auth_key set and peer.auth_enabled unset or true (a key alone enforces, as before the switch existed), /internal/manifest/update, /internal/cache/clear, /internal/stats/sync, /internal/cache/stats|fetch|has and /internal/buffer/query answer 401 to a request with no key, a wrong key (same length, longer, shorter) or the other credential form, change nothing, and serve the right key; the key is compared in constant time. Covered by TestPeerEndpoints_EnforcedRefusesWithoutTheKey, TestPeerEndpoints_KeyAloneEnforces, TestPeerAuthMultiInstance_AllKeyedAndEnforcing, TestPeerAuthMultiInstance_KeyOnlyConfigEnforces and TestEqual_Property/TestBearer_Property. Enabled without a key fails to start (TestPeerAuthEnabled_FlagAndStartupValidation). SCHEMA LIMIT: the runner sends no Authorization header; the unauthenticated request is the refused case. The binary's own construction path is covered by TestPeerWiring_StoreEndpointsFollowThePeerConfig (the peer cache handler and the endpoints over a real Storage) and TestPeerWiring_PushersPresentTheKey (the manifest, tenant and stats pushers send the key). Stays pending."
 
 - id: lh.internal.peer_auth.body_cap_traces
   title: "LH internal sync endpoints cap the request body at peer.max_request_body_bytes, 413 over it, always on (traces)"

@@ -26,6 +26,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/membuffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/peercache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/resourcebounds"
@@ -1341,7 +1342,7 @@ func (s *Storage) fetchPeerAZ(ctx context.Context, peer string) string {
 		req.Header.Set("Authorization", "Bearer "+s.cfg.Peer.AuthKey)
 	}
 
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{Timeout: 2 * time.Second, CheckRedirect: peerauth.RefuseRedirects}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""

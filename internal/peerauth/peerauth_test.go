@@ -206,6 +206,7 @@ func TestNoHandlerComparesTheKeyItself(t *testing.T) {
 		"internal/tenant/handler.go",
 		"internal/peercache/peercache.go",
 		"internal/buffer/handler.go",
+		"internal/crosssignal/handler.go",
 		"cmd/lakehouse-logs/handlers.go",
 		"lakehouse-traces/handlers.go",
 	} {

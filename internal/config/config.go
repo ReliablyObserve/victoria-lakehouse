@@ -658,13 +658,15 @@ type PeerConfig struct {
 	// bridge, the peer cache, manifest, stats and tenant sync); empty serves
 	// them without a credential.
 	AuthKey string `yaml:"auth_key"`
-	// AuthEnabled makes the pods require AuthKey on their internal endpoints
-	// (the buffer bridge, the peer cache, manifest, stats and tenant sync);
-	// false (the default) serves them without a credential. A pod sends
-	// AuthKey on its own peer calls whenever one is set, whatever this says,
-	// so the key can be rolled out before enforcement is switched on. true
-	// needs AuthKey; the process refuses to start without it.
-	AuthEnabled bool `yaml:"auth_enabled"`
+	// AuthEnabled is tri-state: unset enforces a configured AuthKey on the
+	// internal endpoints (the buffer bridge, the peer cache, manifest, stats
+	// and tenant sync), false only sends the key and serves them without a
+	// credential, true enforces and requires AuthKey. Unset is the behaviour
+	// before this setting existed, and without a key nothing is enforced.
+	// false is step 1 of a rolling rollout of the key: every pod sends the
+	// key before any pod enforces it. true makes the process refuse to
+	// start without AuthKey.
+	AuthEnabled *bool `yaml:"auth_enabled"`
 	// MaxRequestBodyBytes caps the request body of every internal endpoint
 	// that reads one (manifest update, stats sync, tenant sync), and the size
 	// a compressed stats sync body expands to.
@@ -1682,9 +1684,9 @@ func (c *Config) normalizePeerAuthKey() error {
 		return err
 	}
 	c.Peer.AuthKey = k
-	if c.Peer.AuthEnabled && c.Peer.AuthKey == "" {
+	if c.Peer.AuthEnabled != nil && *c.Peer.AuthEnabled && c.Peer.AuthKey == "" {
 		return fmt.Errorf("peer.auth_enabled (-lakehouse.peer.auth-enabled) is true but peer.auth_key (-lakehouse.peer.auth-key) is empty; " +
-			"set the key, or leave peer.auth_enabled false")
+			"set the key, or leave peer.auth_enabled unset")
 	}
 	if c.Peer.MaxRequestBodyBytes < 0 {
 		return fmt.Errorf("peer.max_request_body_bytes must not be negative, got %d", c.Peer.MaxRequestBodyBytes)
@@ -1693,13 +1695,14 @@ func (c *Config) normalizePeerAuthKey() error {
 }
 
 // EnforcedKey is the key the pod's internal endpoints require: AuthKey when
-// peer.auth_enabled is set, "" (require nothing) otherwise. The pod's own
-// peer calls send AuthKey, not this.
+// peer.auth_enabled is unset or true, "" (require nothing) when it is
+// explicitly false (send-only) or when there is no key. The pod's own peer
+// calls send AuthKey, not this.
 func (p PeerConfig) EnforcedKey() string {
-	if p.AuthEnabled {
-		return p.AuthKey
+	if p.AuthEnabled != nil && !*p.AuthEnabled {
+		return ""
 	}
-	return ""
+	return p.AuthKey
 }
 
 func (c *Config) Validate() error {
@@ -2323,8 +2326,9 @@ func mergeConfig(base, overlay *Config) *Config { //nolint:gocyclo // field-by-f
 	if overlay.Peer.AuthKey != "" {
 		base.Peer.AuthKey = overlay.Peer.AuthKey
 	}
-	if overlay.Peer.AuthEnabled {
-		base.Peer.AuthEnabled = true
+	if overlay.Peer.AuthEnabled != nil {
+		v := *overlay.Peer.AuthEnabled
+		base.Peer.AuthEnabled = &v
 	}
 	if overlay.Peer.MaxRequestBodyBytes > 0 {
 		base.Peer.MaxRequestBodyBytes = overlay.Peer.MaxRequestBodyBytes

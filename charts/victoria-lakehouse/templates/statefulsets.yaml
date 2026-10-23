@@ -76,8 +76,8 @@ spec:
             {{- if $.Values.peerAuth.existingSecret }}
             - "-lakehouse.peer.auth-key=%{LAKEHOUSE_PEER_AUTH_KEY}"
             {{- end }}
-            {{- if $.Values.peerAuth.enabled }}
-            - "-lakehouse.peer.auth-enabled=true"
+            {{- if kindIs "bool" $.Values.peerAuth.enabled }}
+            - "-lakehouse.peer.auth-enabled={{ $.Values.peerAuth.enabled }}"
             {{- end }}
             {{- range $key, $val := $roleVals.extraArgs }}
             - "--{{ $key }}={{ $val }}"

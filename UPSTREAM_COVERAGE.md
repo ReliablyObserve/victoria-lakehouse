@@ -562,10 +562,10 @@ flag: 35/181 covered by at least one registry row.
 | `lh.internal.cache_stats.schema` | LH internal cache stats — hot-cache hit rate and eviction counters | internal | 🟡 declared, not yet executed |
 | `lh.internal.peer_auth.body_cap_logs` | LH internal sync endpoints cap the request body at peer.max_request_body_bytes, 413 over it, always on (logs) | internal | 🟡 declared, not yet executed |
 | `lh.internal.peer_auth.body_cap_traces` | LH internal sync endpoints cap the request body at peer.max_request_body_bytes, 413 over it, always on (traces) | internal | 🟡 declared, not yet executed |
-| `lh.internal.peer_auth.enforced_logs` | LH pod with peer.auth_enabled refuses every internal mutating and read-only endpoint without the peer key, 401 (logs) | internal | 🟡 declared, not yet executed |
-| `lh.internal.peer_auth.enforced_traces` | LH pod with peer.auth_enabled refuses every internal mutating and read-only endpoint without the peer key, 401 (traces) | internal | 🟡 declared, not yet executed |
-| `lh.internal.peer_auth.off_by_default_logs` | LH internal endpoints take a request without a credential while peer.auth_enabled is off, the default (logs) | internal | 🟡 declared, not yet executed |
-| `lh.internal.peer_auth.off_by_default_traces` | LH internal endpoints take a request without a credential while peer.auth_enabled is off, the default (traces) | internal | 🟡 declared, not yet executed |
+| `lh.internal.peer_auth.enforced_logs` | LH pod with a peer key (peer.auth_enabled unset or true) refuses every internal mutating and read-only endpoint without it, 401 (logs) | internal | 🟡 declared, not yet executed |
+| `lh.internal.peer_auth.enforced_traces` | LH pod with a peer key (peer.auth_enabled unset or true) refuses every internal mutating and read-only endpoint without it, 401 (traces) | internal | 🟡 declared, not yet executed |
+| `lh.internal.peer_auth.off_by_default_logs` | LH internal endpoints take a request without a credential when no peer key is set or peer.auth_enabled is false (logs) | internal | 🟡 declared, not yet executed |
+| `lh.internal.peer_auth.off_by_default_traces` | LH internal endpoints take a request without a credential when no peer key is set or peer.auth_enabled is false (traces) | internal | 🟡 declared, not yet executed |
 | `lh.lifecycle.ring.schema` | LH lifecycle ring — hash-ring membership and shard ownership | admin | 🟡 declared, not yet executed |
 | `lh.manifest.partitions.schema` | LH manifest partitions — partition listing | admin | 🟡 declared, not yet executed |
 | `lh.manifest.range.schema` | LH manifest range — partition manifest lookup over a time window | admin | 🟡 declared, not yet executed |
