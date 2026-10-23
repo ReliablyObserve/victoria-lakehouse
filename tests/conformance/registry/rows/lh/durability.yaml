@@ -343,6 +343,7 @@
       - internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedReapIsRemovedAtOpen
       - internal/membuffer/segments_reap_crash_test.go#TestSegments_CrashDuringReapThenRestart
       - internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedRemovalNeverReusesASeq
+      - internal/membuffer/segments_reap_crash_test.go#TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart
       - internal/storage/parquets3/buffer_flusher_reap_crash_test.go#TestSegments_RestartAfterAnInterruptedReap
   notes: "Fixes #390. Reap removes a segment directory with upstream fs.MustRemoveDir (a marker file first) and OpenSegments removes a directory upstream's fs.IsPartiallyRemovedDir reports, before opening it, as upstream logstorage does with its partitions. The tests cover every state a kill inside the removal can leave and a removal stopped half-way by the code itself (a child process, because the old code panics inside upstream's goroutines)."
 
@@ -366,5 +367,6 @@
       - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedReapIsRemovedAtOpen
       - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_CrashDuringReapThenRestart
       - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedRemovalNeverReusesASeq
+      - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart
       - lakehouse-traces/internal/storage/parquets3/buffer_flusher_reap_crash_test.go#TestSegments_RestartAfterAnInterruptedReap
   notes: "Same fix and tests in the traces binary."

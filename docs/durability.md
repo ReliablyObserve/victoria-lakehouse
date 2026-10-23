@@ -532,9 +532,14 @@ so a steady stream of overlapping queries cannot keep it alive
 (`lakehouse_buffer_segments{state="retired"}`). The directory is removed the way
 upstream removes its own directories (`fs.MustRemoveDir`, marker first), so a
 kill in the middle of the removal leaves a directory the next start recognises
-and removes instead of opening it (#390). A removal that fails for any other
+and removes instead of opening it (#390); that removal keeps the marker until the
+directory is gone, so a start stopped in the middle of it is finished by the next.
+A removal that fails for any other
 reason (missing permissions, a read-only volume) stops the process, as
-it stops upstream. A snapshot that holds a
+it stops upstream. **Upgrading from a build before this fix:** a segment directory
+that such a build left half-deleted has no marker and still fails the start (or the first query); remove
+that `seg-*` directory under `insert.buffer_dir` by hand. No row is lost: only
+committed segments are removed, so its rows are already in Parquet. A snapshot that holds a
 retired segment for 30 minutes is treated as leaked: the segment is closed
 anyway, and that query's late read of it fails with a logged warning. The rows are served with **no
 time watermark**: a late row, a backfilled row or a restarted pod needs no
@@ -550,7 +555,8 @@ each group of the drain, committed, late rows, segment removed, restart),
 `TestSegmentsHeader_SentWithAnEmptyAnswer`, `TestParseSegments`; for a kill during
 the removal: `TestSegments_InterruptedReapIsRemovedAtOpen` (every state the
 removal can leave), `TestSegments_CrashDuringReapThenRestart` (a removal stopped
-half-way by the code), `TestSegments_InterruptedRemovalNeverReusesASeq` and
+half-way by the code), `TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart`
+(the start's own removal stopped half-way), `TestSegments_InterruptedRemovalNeverReusesASeq` and
 `TestSegments_RestartAfterAnInterruptedReap` (the drain after the restart is
 exact).
 

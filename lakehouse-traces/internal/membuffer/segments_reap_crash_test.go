@@ -354,3 +354,57 @@ func TestSegments_InterruptedRemovalNeverReusesASeq(t *testing.T) {
 		t.Errorf("%d pending segments, want none", len(p))
 	}
 }
+
+// TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart: the removal
+// that OpenSegments makes of a half-removed directory can itself be stopped
+// (a kill, or here a part directory it cannot delete). It must keep the marker
+// until the directory is gone, so the start after that recognises the directory
+// again and finishes the removal; a removal that deleted the marker first and
+// gave up would leave a half-deleted directory no start can tell from a live
+// one (#390's crash loop again).
+func TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart(t *testing.T) {
+	if runReapCrashChild(t) {
+		return
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permissions are not enforced for root: the removal cannot be stopped half-way")
+	}
+	root := t.TempDir()
+	s := openSegs(t, root)
+	addRows(s, reapCrashTenant, "reaped", 3)
+	reaped, _ := s.Seal()
+	addRows(s, reapCrashTenant, "pending", 4)
+	s.Seal()
+	s.Commit(reaped, time.Now())
+	s.Close()
+
+	markRemoving(t, reaped.dir)
+	blocked := firstPartDir(t, reaped.dir)
+	if err := os.Chmod(blocked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o750) })
+
+	// The first start cannot finish the removal: it stops, as upstream's
+	// MustRemoveDir stops the process on an error it cannot retry.
+	out, err := runChild(t, "TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart", "open", root)
+	t.Logf("the first start ended with %v", err)
+	if _, err := os.Stat(filepath.Join(reaped.dir, partialRemovalMarker)); err != nil {
+		t.Fatalf("the stopped startup removal did not keep the %s marker in %s (%v): the next start cannot tell the half-removed segment from a live one; first start's output:\n%s", partialRemovalMarker, reaped.dir, err, tail(out, 40))
+	}
+
+	if err := os.Chmod(blocked, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runChild(t, "TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart", "open", root)
+	if err != nil {
+		t.Fatalf("the second start failed (%v); its output:\n%s", err, tail(out, 40))
+	}
+	r := parseOpenResult(t, out)
+	if _, err := os.Stat(reaped.dir); !os.IsNotExist(err) {
+		t.Errorf("the half-removed segment directory is still there after the second start (%v)", err)
+	}
+	if r.rows != 4 {
+		t.Errorf("the buffer holds %d rows after the second start, want the pending segment's 4", r.rows)
+	}
+}
