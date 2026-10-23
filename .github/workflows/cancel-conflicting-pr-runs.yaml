@@ -1,0 +1,88 @@
+name: cancel-conflicting-pr-runs
+
+# When main moves, an open pull request can start to conflict with it. GitHub starts no pull_request
+# run for a conflicting pull request, but a run already queued or in flight for its head keeps going to
+# the end, and a conflicting branch has to be rebased and re-run anyway. This workflow cancels those
+# runs of the head commit.
+#
+# Scope: only runs whose event is `pull_request`, only for the head commit of an open pull request whose
+# mergeable state is CONFLICTING. It never touches a run of main, of a push, of a schedule or of a pull
+# request that merges cleanly. A pull request whose state stays UNKNOWN after the bounded polling is left
+# alone (fail open), as is any API error. Set `dry_run` on a manual run to log what would be cancelled.
+#
+# The job needs no checkout, no action and no secret: the gh CLI on the runner, the job token with
+# `actions: write` (cancel a run) and `pull-requests: read` (list pull requests and their mergeable state).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log the runs that would be cancelled and cancel none"
+        type: boolean
+        default: false
+
+permissions: {}
+
+# One sweep at a time. A sweep that is waiting is replaced by a newer one, which looks at the same pull
+# requests with fresher state.
+concurrency:
+  group: cancel-conflicting-pr-runs
+  cancel-in-progress: false
+
+jobs:
+  cancel:
+    name: cancel runs of conflicting pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Cancel the pull_request runs of conflicting pull requests
+        run: |
+          set -uo pipefail
+          # GitHub recomputes the mergeable state of every open pull request lazily after main moves.
+          # Give it a moment to invalidate the old answers, then ask (asking starts the computation).
+          sleep 15
+          deadline=$((SECONDS + 300))
+          if ! prs=$(gh pr list --state open --limit 200 --json number,headRefOid,mergeable); then
+            echo "::warning::could not list the open pull requests; nothing is cancelled"
+            exit 0
+          fi
+          printf '%s\n' "$prs" | jq -r '.[] | [.number, .headRefOid, .mergeable] | @tsv' |
+          while IFS=$'\t' read -r number sha state; do
+            attempt=0
+            while [ "$state" = "UNKNOWN" ] && [ "$attempt" -lt 5 ] && [ "$SECONDS" -lt "$deadline" ]; do
+              sleep 6
+              attempt=$((attempt + 1))
+              state=$(gh pr view "$number" --json mergeable --jq .mergeable 2>/dev/null) || state="UNKNOWN"
+            done
+            if [ "$state" != "CONFLICTING" ]; then
+              echo "PR #$number: mergeable=$state, its runs are left alone"
+              continue
+            fi
+            if [ "$sha" = "$GITHUB_SHA" ]; then
+              echo "PR #$number: its head is the commit of this run, left alone"
+              continue
+            fi
+            for status in queued in_progress waiting; do
+              ids=$(gh run list --commit "$sha" --event pull_request --status "$status" --limit 100 \
+                --json databaseId,event | jq -r '.[] | select(.event == "pull_request") | .databaseId') || ids=""
+              for id in $ids; do
+                if [ "${DRY_RUN:-false}" = "true" ]; then
+                  echo "PR #$number: would cancel run $id ($status)"
+                elif gh run cancel "$id" >/dev/null 2>&1; then
+                  echo "PR #$number: cancelled run $id ($status)"
+                else
+                  echo "PR #$number: run $id could not be cancelled (finished meanwhile?)"
+                fi
+              done
+            done
+          done
+          exit 0

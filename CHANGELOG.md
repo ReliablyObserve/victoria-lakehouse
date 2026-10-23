@@ -7,13 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CI no longer finishes runs that a newer push or a conflict with `main` made pointless (CI only; no change to the Lakehouse binaries or to runtime behaviour).** Every workflow that runs on a pull request now cancels the run still going for the previous head of the same pull request, and only that: runs of a push to `main`, a schedule or a manual run get a group of their own and are never cancelled or replaced (`ci`, `e2e`, `parity`, `security`, `codeql`, `fuzz-stress-memleak`, `changelog-pr`, `pr-labeler`, `verification-matrix-check`, `proof-metrics`, `s3-compat` and `market-data` had no `concurrency:` block; `conformance`, `gate-selftest`, `workflow-lint`, `parquet-readers` and `semgrep` could replace a queued run of `main`; `minio-images` never cancelled a superseded run and `docs-site` could cancel a deploy of `main`). A new workflow, `cancel-conflicting-pr-runs.yaml`, runs on every push to `main` and cancels the queued and in-progress `pull_request` runs of the head of each open pull request that has become `CONFLICTING`, with only `actions: write` and `pull-requests: read`. A new test, `scripts/ci/tests/test_workflow_concurrency.py`, fails when a pull request workflow has no such block, when a run of `main` could be cancelled or replaced, or when the new workflow gains a permission; its script is also run against a stub `gh`. See [Security posture](docs/security-posture.md#superseded-and-conflicting-pull-request-runs).
+
+### Fixed
+
+- **`field_names` keeps no block memory after the read callback returns, as upstream's `WriteDataBlockFunc` requires (#734, both binaries).** Past the per-query stream cap (262,144 stream-days), crediting a field name already counted assigned the map key from the block, and a Go map assignment stores the key it is given: the name then read whatever the reader wrote into that memory for its next block. It is now counted through a pointer under a key copied once (upstream's `pipe_field_names.go` idiom). The rows of upstream's `field_names` pipe (queries with pipes) are copied as upstream's own `runValuesWithHitsQuery` copies them. No wrong answer was observed: today's readers hand this code column names that upstream interns and pipe output that the pipe owns, so both sites only broke the contract. Two tests feed blocks whose memory is rewritten after each call. Cost, measured with benchstat (`-count=10`): copying the pipe's names adds 1.8 µs and 200 allocations per 200-name answer block; past the cap, a block is credited 38 % faster.
+
 ## [0.167.5] - 2026-10-23
+
+### Security
+
+- **The cross-signal hint endpoints compare the key in constant time and cap their request body, and the clients that send a peer key refuse redirects.** `/internal/prefetch/hint` and `/internal/cache/evict-hint` compared `cross_signal.auth_key` with a plain string comparison and read the JSON body without a bound; they now use the same constant-time helper as the other internal endpoints (`internal/peerauth`), check the key before reading the body, and answer 413 above 4 MiB (about 100 000 trace IDs, against 100 per batch by default). The HTTP clients that send `peer.auth_key` or `cross_signal.auth_key` to a peer (peer cache, manifest, stats and tenant pushes, the buffer bridge, the zone probe, the hint client) no longer follow redirects, so a key is not repeated at another location; a redirect answer is a failed call. The set of endpoints that take a key is unchanged.
+
+## [0.167.4] - 2026-10-23
 
 ### Fixed
 
 - **A configured peer key is enforced again unless `peer.auth_enabled` is explicitly `false`.** Before v0.167.0 setting `peer.auth_key` (or the chart's `peerAuth.existingSecret`) made a pod require the key on its internal endpoints; v0.167.0 required the new `peer.auth_enabled: true` as well, so a deployment that already had a key and upgraded stopped enforcing it without any message beyond a startup warning. `peer.auth_enabled` is now a three-state setting: unset enforces a configured key (the behaviour before v0.167.0; with no key nothing is enforced), `false` only sends the key (step 1 of a rolling rollout, `-lakehouse.peer.auth-enabled=false`, the chart's `peerAuth.enabled: false`), `true` enforces and the process refuses to start without a key. The chart's `peerAuth.enabled` defaults to `null` (no flag is passed), the `lakehouse_peer_auth_enabled` gauge, the `peer_auth` field of `/lakehouse/info`, the startup warning and `helm install`'s notes report the effective state, and the default Helm render of the manifests is unchanged. A deployment that ran v0.167.0 with a key and no `peer.auth_enabled`, and wants to stay unenforced for now, sets `peer.auth_enabled: false` before upgrading (see docs/security.md).
 
 ## [0.167.3] - 2026-10-23
+
 ### Changed
 
 - **`docs/durability.md` documents a known gap of the insert buffer's read handoff, and the registry and the tests pin it (#391; documentation and tests only, no change to the Lakehouse binaries or to runtime behaviour).** An insert pod keeps a written buffer segment readable for `2 × manifest.refresh_interval + 30 s`, computed from its own refresh interval, and a select pod skips the segment's objects only while the insert pod still serves the segment. A select pod whose listing has not caught up when the segment is retired (a longer `manifest.refresh_interval` than the insert pods', or a slow or failing listing) misses the segment's rows, with status 200 and no metric, until its next complete listing; the rows are in Parquet and come back then. The page now says so, with the guidance to give every role the same refresh interval (the Helm chart does). The registry records it as the known-gap durability cells `lh.durability.select_pod_lists_after_segment_retired_logs` and `_traces`, each backed by a two-pod test (an insert pod and a select pod reading it through the buffer bridge) that pins today's behaviour.
@@ -35,8 +50,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The acknowledged-row tests no longer miss rows that the buffer holds (tests only, no change to runtime behaviour; #730, #625, #580).** The read these tests use to decide which rows the insert buffer took kept each block's values as map keys without copying them. Upstream reuses a block's memory for the worker's next block, so the keys of the earlier block changed under the map and their rows read as missing: under CPU load the pre-1970 property test recorded a stored span as refused or never searchable. The read now clones the values, as the flusher and the buffer bridge already do, in both modules. A new test, `TestAckedRowsBufferRead_FindsEveryRowOfEveryBlock`, reads two blocks of one part through one worker and fails on every read without the copy; it is linked from the `lh.durability.pre1970_rows_logs` and `lh.durability.pre1970_rows_traces` rows.
 
 ### Security
-
-- **The cross-signal hint endpoints compare the key in constant time and cap their request body, and the clients that send a peer key refuse redirects.** `/internal/prefetch/hint` and `/internal/cache/evict-hint` compared `cross_signal.auth_key` with a plain string comparison and read the JSON body without a bound; they now use the same constant-time helper as the other internal endpoints (`internal/peerauth`), check the key before reading the body, and answer 413 above 4 MiB (about 100 000 trace IDs, against 100 per batch by default). The HTTP clients that send `peer.auth_key` or `cross_signal.auth_key` to a peer (peer cache, manifest, stats and tenant pushes, the buffer bridge, the zone probe, the hint client) no longer follow redirects, so a key is not repeated at another location; a redirect answer is a failed call. The set of endpoints that take a key is unchanged.
 
 - **The release workflow is split into separate build, publish and metadata jobs, each with only the permissions it needs, and the release binaries are built reproducibly (CI only; the Lakehouse binaries differ only in embedded build paths and VCS stamps, no change to runtime behaviour).** `.github/workflows/auto-release.yaml` is now `release-decide` (read only), `release-build` (read only, no secrets: binaries, the multi-arch image archives, the chart, the release notes and the release-metadata files, uploaded as workflow artifacts), `release-publish` (the only job with `packages: write`; copies the images and the chart to the registries and creates the GitHub release as a draft; runs no build tool) and `release-metadata` (the only job that reads the personal access token, in the `release` environment; pushes the tag, publishes the draft release and opens the release-metadata pull request from four prepared files). No job that builds can write, and no job that can write runs a build tool. The version is validated before it is used: only `vMAJOR.MINOR.PATCH` tags count, the `pr` input must be a number, and no expression is interpolated into a script. The release binaries are built with `-trimpath -buildvcs=false`, as the images already were. A manual run with `dry_run: true` builds everything and pushes nothing (see [Release notes](docs/release-notes.md#dry-run)). The workflow linter baseline loses its `auto-release.yaml` entries.
 
@@ -1497,6 +1510,7 @@ carried that bump because the release-metadata PR was resolved against main's
   none of it can quietly regress. Verified on a local parity stack across four consecutive full
   runs: 428 passed, 51 failed, 0 aborted, every failure allowlisted and every allowlist entry
   still live.
+
 ## [0.142.5] - 2026-09-15
 
 ### Changed
@@ -3079,7 +3093,6 @@ the change below. Release runs are now serialized, so this cannot recur.
   `RowGroupSizeByOutputLevel`), parallel column writes (not write-bound), low-level page reads
   (OffsetIndex page-granular measured 0% on our footers).
 
-
 ## [0.88.0] - 2026-06-11
 
 ### Added
@@ -3426,7 +3439,6 @@ the change below. Release runs are now serialized, so this cannot recur.
 
   Post-switch benchmark recorded in : cold LH at parity with hot VL on every scan scenario and
   2.7–10× faster on metadata queries; CH-over-S3 trails 30–40×.
-
 
 ## [0.81.0] - 2026-06-10
 
