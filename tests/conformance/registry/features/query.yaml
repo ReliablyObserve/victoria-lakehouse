@@ -232,7 +232,7 @@
   since: v0.9.0
   area: query
   surfaces: [api]
-  rows: [lh.info.schema]
+  rows: [lh.info.schema, lh.select.jaeger_handlers.block_memory]
   tests:
     - internal/selectapi/handler_test.go
     - internal/selectapi/coverage_hardening_test.go

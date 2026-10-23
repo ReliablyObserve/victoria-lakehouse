@@ -127,3 +127,23 @@
       - lakehouse-traces/internal/storage/parquets3/tombstone_proof_test.go#TestTombstoneProof_PairBudget
       - lakehouse-traces/internal/storage/parquets3/tombstone_proof_property_test.go#TestProperty_TombstoneProof_GatedEqualsScan
   notes: "A tombstone (an upstream-shaped delete task has no lower bound) used to switch off the manifest-answered counts, the label-count push-down and the metadata-only row-group reads for every file of the window, and to project its columns into every read. The read path now proves, per file and from memory only (the file's time range, a complete manifest label set holding none of the tombstone's exact values (not used for a compaction output, recognised by its level or by its compacted- key, whose label set is a union of its inputs' and partial when an input had none: #621), the pmeta bloom facet for a bloomed column; never a per-file .bloom read), that no row of the file can match any tombstone acting on its tenant, and reads that file as if there were no tombstone. A tombstone the proof cannot decide (a map attribute, a regex, a negation, an OR, an empty value, an exact prefix, an incomplete label set, no bloom facet, unknown time bounds) keeps today's path for the files it may match. Unflushed buffered rows are never proven clean. The per-row matcher resolves each tombstone's range and filter once per block and checks the time first. Results are identical; a file that really holds deleted rows still costs a read until compaction removes them. Perf guard: BenchmarkTombstoneGating and BenchmarkTombstoneGatingCold (internal/storage/parquets3/tombstone_gating_bench_test.go: 8 objects, K = 0/1/10/100 upstream-shaped tombstones; count, hits, filtered count, count by service, field_names). DIRECTION: none (internal optimisation, no change of any answer)."
+
+- id: lh.select.jaeger_handlers.block_memory
+  title: "The Jaeger trace-by-ID and search handlers of the logs module's select API keep no upstream block memory after the read callback returns, and write their shared state under a lock (#734)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  request: { method: GET, path: "/select/jaeger/api/traces/{{seed.trace_id}}" }
+  compare: { type: trace }
+  layers: [api]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/selectapi/jaeger_block_memory_test.go#TestJaegerTrace_KeepsTheSpansOfEveryBlock
+      - internal/selectapi/jaeger_block_memory_test.go#TestJaegerSearch_KeepsTheTracesOfEveryBlock
+      - internal/selectapi/jaeger_block_memory_test.go#TestJaegerHandlers_WriteBlockFromParallelWorkers
+  notes: "A unit-level cell, not a served route. internal/selectapi/handler.go registers these handlers only when cfg.Mode is traces, and the logs binary forces logs mode (config.LoadWithMode(..., config.ModeLogs, ...) in cmd/lakehouse-logs/main.go), so no released binary answers a Jaeger request from this code; the traces binary serves Jaeger through VictoriaTraces' own handler (the vt.jaeger.* rows) and has no copy of it. The tests drive the handlers over a store that rewrites the block memory after every callback and calls it from several goroutines, as upstream's query engine does; they do not need a stack. The request is the route the handler implements; it stays pending and is not executed against the traces stack, whose answer comes from VictoriaTraces. Answers over blocks that are not reused are byte-identical before and after. DIRECTION: none (the shim is kept, not deleted; whether to delete it is the owner's decision)."
