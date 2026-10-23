@@ -140,8 +140,8 @@ logs binary's; the traces binary mounts no tenant sync):
 
 The read-only endpoints follow the same key because they expose data of every tenant (cached blocks, unflushed rows)
 and cluster internals. Not covered by the key, and unchanged: upstream's `/internal/select/*`, `/internal/insert` and
-`/internal/delete/*` (protected as upstream does: network, `-httpAuth.*`, `-internalselect.disable`,
-`-internaldelete.disable`); the cross-signal hints `/internal/prefetch/hint` and `/internal/cache/evict-hint` (their own
+`/internal/delete/*` (protected as upstream does: network, `-httpAuth.*`; `-internalselect.disable` turns the
+select endpoints off, and `/internal/delete/*` answers only when `-internaldelete.enable` is set, off by default); the cross-signal hints `/internal/prefetch/hint` and `/internal/cache/evict-hint` (their own
 `cross_signal.auth_key`); `/internal/lifecycle/*` (the chart's preStop hook calls `/internal/lifecycle/drain` from
 localhost without a key); and the admin writes outside `/internal` (`/lakehouse/drain`,
 `/lakehouse/compaction/recompact`, `/lakehouse/api/v1/tenants/policy`, `/lakehouse/api/v1/admin/tenant/migrate`).
