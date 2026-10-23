@@ -729,7 +729,7 @@ One primitive governs every bounded surface: a reserved request, a hard limit, a
 
 The select API is the upstream one; the Lakehouse difference is what answers it. That is why a multi-level select topology, Grafana datasources and the VMUI all work against the cold tier unchanged.
 
-- Verification: rows: `lh.info.schema` (pass, pending) · tests: `internal/selectapi/handler_test.go`, `internal/selectapi/coverage_hardening_test.go`, `internal/storage/field_names_block_memory_test.go#TestFieldNamesCounter_PastCapKeepsNamesTheReaderReuses`, `internal/storage/field_names_block_memory_test.go#TestValuesWithHitsOfBlock_KeepsNoBlockMemory`, `lakehouse-traces/internal/selectapi/handler_test.go`, `tests/e2e/vlselect_multilevel_test.go#TestVLSelect_QueryReturnsData`, `tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset`
+- Verification: rows: `lh.info.schema` (pass, pending) · tests: `internal/selectapi/handler_test.go`, `internal/selectapi/coverage_hardening_test.go`, `internal/selectapi/verify_test.go#TestVerify_LogsMode_NoJaegerEndpoints`, `internal/selectapi/verify_test.go#TestVerify_TracesMode_NoJaegerEndpoints`, `cmd/lakehouse-logs/jaeger_unserved_test.go#TestLogsBinary_DoesNotServeJaeger`, `internal/storage/field_names_block_memory_test.go#TestFieldNamesCounter_PastCapKeepsNamesTheReaderReuses`, `internal/storage/field_names_block_memory_test.go#TestValuesWithHitsOfBlock_KeepsNoBlockMemory`, `lakehouse-traces/internal/selectapi/handler_test.go`, `tests/e2e/vlselect_multilevel_test.go#TestVLSelect_QueryReturnsData`, `tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset`
 - Docs: `docs/read-path.md`, `docs/architecture.md`
 
 ### ✅ Translated metadata mode for Loki clients
