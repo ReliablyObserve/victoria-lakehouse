@@ -788,12 +788,13 @@ class RangeDecision(unittest.TestCase):
         released = self.step("fix: x (#1)", self.PRODUCT)
         self.tag("v0.1.0", released)
         out = os.path.join(self.repo.d, "..", "token_seen.txt")
-        self.repo.commit("probe classifier", {"scripts/ci/pr_classify.py": "import os\nopen(%r, 'w').write(os.environ.get('GITHUB_TOKEN', 'none') + os.environ.get('GH_TOKEN', 'none'))\nprint('product=0')\n" % out})
+        self.repo.commit("probe classifier", {"scripts/ci/pr_classify.py": "import os\nwith open(%r, 'w') as fh:\n    fh.write(os.environ.get('GITHUB_TOKEN', 'none') + os.environ.get('GH_TOKEN', 'none'))\nprint('product=0')\n" % out})
         head = self.step("bench: x", {"scripts/bench/run.sh": "x"})
         with unittest.mock.patch.dict(os.environ, {"GITHUB_TOKEN": "sekrit", "GH_TOKEN": "sekrit2"}):
             self.decide(head, "v0.1.0", classifier=None)
         self.addCleanup(lambda: os.path.exists(out) and os.remove(out))
-        self.assertEqual(open(out).read(), "nonenone")
+        with open(out, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "nonenone")
 
     def test_an_exception_never_escapes(self):
         def boom(*a):
