@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A restart with another `insert.target_file_size` in the middle of a buffer drain no longer loses rows (both binaries; #748).** The groups of a sealed segment are named `<nonce>-<slice>` and the plan that numbers the slices depends on the rows per group (`insert.target_file_size` / 512); a drain cut short by an upload failure or a restart and resumed with another value renumbered the slices, a new slice found the key of an old, different slice already stored, took the group for settled, and its rows were never written while the segment was committed (measured: 5 of 12 rows stored, 7 lost, no crowded second involved). The state of a drain now records the rows per group (`draining_max_rows`) and the version of the plan (`draining_plan`) the segment was planned with, and a resumed drain finishes with them (a warning is logged when the configured value differs); only the segments drained after it use the configured value. Objects, keys and bytes are unchanged for a drain that is not resumed with another value. **Upgrade note:** a state written by the release before this one that says a segment was being drained cannot be resumed safely (it did not record the plan), and the process stops at start with the action to take: start that release with the same `insert.target_file_size` until the buffer is drained (`lakehouse_buffer_segments{state="pending"}` is 0), then upgrade; deleting the state would plan the segment again and can skip rows. A node with no segment mid-drain upgrades without any action. See [Persistence & Durability](docs/durability.md#21-failed-uploads).
 
+## [0.167.7] - 2026-10-23
+
 ## [0.167.6] - 2026-10-23
 
 ### Changed
