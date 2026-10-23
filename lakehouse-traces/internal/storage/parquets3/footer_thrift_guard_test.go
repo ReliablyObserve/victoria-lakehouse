@@ -338,6 +338,13 @@ func nestedFooter(nest string, n int) []byte {
 			b = append(b, 0x01, 0x5B, 0x00) // size 1, key i32 / value map, key 0, then the value
 		}
 		b = append(b, 0x00) // innermost: size 0
+	case "mapkey": // n maps nested through their keys (value i32), the innermost empty
+		b = append(b, 0x1B)
+		for i := 1; i < n; i++ {
+			b = append(b, 0x01, 0xB5) // size 1, key map / value i32
+		}
+		b = append(b, 0x00)
+		b = append(b, make([]byte, n-1)...) // the i32 value of every entry
 	case "struct":
 		for i := 0; i < n; i++ {
 			b = append(b, 0x1C)
@@ -354,13 +361,30 @@ func nestedFooter(nest string, n int) []byte {
 // is rejected. Lists and maps used to recurse without counting, so a footer of
 // repeated list headers ran the decoder out of stack (a Go fatal error, exit 2).
 func TestCheckFooterThriftBounds_NestingCap(t *testing.T) {
-	for _, nest := range []string{"list", "map", "struct"} {
-		if err := checkFooterThriftBounds(nestedFooter(nest, footerThriftMaxDepth)); err != nil {
-			t.Fatalf("%s nested %d deep (the cap) must be accepted: %v", nest, footerThriftMaxDepth, err)
+	// The contract is the literal 32 / 33, not the constant: a change of the
+	// cap must change this test on purpose.
+	for _, nest := range []string{"list", "map", "mapkey", "struct"} {
+		if err := checkFooterThriftBounds(nestedFooter(nest, 32)); err != nil {
+			t.Fatalf("%s nested 32 deep (the cap) must be accepted: %v", nest, err)
 		}
-		if err := checkFooterThriftBounds(nestedFooter(nest, footerThriftMaxDepth+1)); err == nil {
-			t.Fatalf("%s nested %d deep (cap+1) must be rejected", nest, footerThriftMaxDepth+1)
+		if err := checkFooterThriftBounds(nestedFooter(nest, 33)); err == nil {
+			t.Fatalf("%s nested 33 deep (cap+1) must be rejected", nest)
 		}
+	}
+	// A SchemaElement is walked by its own function: its fields count from the
+	// element's level (top struct 0, schema list 1, element 2, first field 3).
+	inElement := func(k int) []byte {
+		b := []byte{0x29, 0x1C, 0x89} // field 2 list of 1 struct; its field 8: a list
+		for i := 1; i < k; i++ {
+			b = append(b, 0x19)
+		}
+		return append(b, 0x05, tcStop, tcStop) // innermost list of i32, element stop, top stop
+	}
+	if err := checkFooterThriftBounds(inElement(30)); err != nil {
+		t.Fatalf("30 lists inside a SchemaElement (level 32) must be accepted: %v", err)
+	}
+	if err := checkFooterThriftBounds(inElement(31)); err == nil {
+		t.Fatal("31 lists inside a SchemaElement (level 33) must be rejected")
 	}
 }
 
@@ -369,7 +393,7 @@ func TestCheckFooterThriftBounds_NestingCap(t *testing.T) {
 // covered lists and maps the 8 MiB footer ended the process with
 // "fatal error: stack overflow" in (*footerGuard).value (1 MiB survived).
 func TestParseFooterFromBytes_RejectsDeepNesting(t *testing.T) {
-	for _, nest := range []string{"list", "map", "struct"} {
+	for _, nest := range []string{"list", "map", "mapkey", "struct"} {
 		for _, size := range []int{1 << 20, 8 << 20} {
 			meta := nestedFooter(nest, size/2)
 			footer := footerWithMeta(meta)
@@ -519,6 +543,40 @@ func TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries(t *testing.T) {
 		t.Fatal("10 leaves x 10 row groups in 299 bytes must fail")
 	}
 
+	// Field 1 is a leaf marker only as an i32: with another type parquet-go
+	// skips it, the element is a group, and no chunks are expected for it.
+	notLeaf := fmdField(nil, 0, 2, tcList)
+	notLeaf = append(notLeaf, 10<<4|tcStruct)
+	for i := 0; i < 10; i++ {
+		notLeaf = append(notLeaf, 0x16, 0x04, tcStop) // field 1 as i64
+	}
+	notLeaf = fmdField(notLeaf, 2, 4, tcList)
+	notLeaf = append(notLeaf, 10<<4|tcStruct)
+	notLeaf = append(notLeaf, make([]byte, 10)...)
+	notLeaf = fmdField(notLeaf, 4, 6, tcBinary)
+	notLeaf = append(thriftUvarint(notLeaf, 60), make([]byte, 60)...) // room for the budget
+	notLeaf = append(notLeaf, tcStop)
+	if err := checkFooterThriftBounds(notLeaf); err != nil {
+		t.Fatalf("elements whose field 1 is not an i32 are not leaves: %v", err)
+	}
+
+	// row_groups given twice (explicit field ids): the larger list counts.
+	dup := fmdField(nil, 0, 2, tcList)
+	dup = append(dup, 10<<4|tcStruct)
+	for i := 0; i < 10; i++ {
+		dup = append(dup, 0x15, 0x04, tcStop)
+	}
+	dup = fmdField(dup, 2, 4, tcList)
+	dup = append(dup, 10<<4|tcStruct)
+	dup = append(dup, make([]byte, 10)...)
+	dup = append(dup, 0x09, 0x08, 0x0C) // explicit id 4 again: list<struct> of 0
+	dup = fmdField(dup, 4, 6, tcBinary)
+	dup = append(thriftUvarint(dup, 60), make([]byte, 60)...) // room for the budget, still under 300 bytes
+	dup = append(dup, tcStop)
+	if err := checkFooterThriftBounds(dup); err == nil {
+		t.Fatal("10 leaves x 10 row groups in a short footer must fail even when a later empty row_groups follows")
+	}
+
 	// A chain of groups, each with one child, ending in a leaf: depth is the
 	// number of open ancestors of the last element.
 	chain := func(levels int) []byte {
@@ -585,6 +643,11 @@ func TestCheckFooterThriftBounds_AcceptsEdgeShapedRealFiles(t *testing.T) {
 		}
 		return r
 	}()
+	groups := parquet.Group{}
+	for i := 0; i < 300; i++ {
+		groups[string(rune('a'+i%26))+string(rune('a'+(i/26)%26))] = parquet.Group{"x": parquet.Leaf(parquet.Int64Type)}
+	}
+	groupsSchema := parquet.NewSchema("groups", groups)
 	narrow := parquet.NewSchema("narrow", parquet.Group{"x": parquet.Leaf(parquet.Int64Type)})
 	narrowRows := make([]parquet.Row, 300)
 	for i := range narrowRows {
@@ -597,6 +660,7 @@ func TestCheckFooterThriftBounds_AcceptsEdgeShapedRealFiles(t *testing.T) {
 		"300 columns, 40 row groups":   write(wideSchema, repeatRow(wideRow, 40), 1),
 		"1 column, 300 row groups":     write(narrow, narrowRows, 1),
 		"nested, 12 levels":            write(nestedSchema, nil, 0),
+		"300 sibling groups of 1 leaf": write(groupsSchema, nil, 0),
 	}
 	for name, obj := range cases {
 		n := footerTotal(obj)
