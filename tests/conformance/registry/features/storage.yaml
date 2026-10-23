@@ -484,8 +484,34 @@
     - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestOwn_StripeFetchUsesTheCallersDownloader
     - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestOverlayOpen_CountsOneFooterCacheHit
     - lakehouse-traces/internal/storage/parquets3/footer_review_test.go#TestEnrichFromCachedFooter_RealPageIndexBounds
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_BoundsDeclaredListSize
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_AcceptsRealFooters
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_Structure
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_MutatedFootersStayBounded
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_ScalarFieldsDoNotDriveAllocation
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_BoundsDeclaredListSize
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_AcceptsRealFooters
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_Structure
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_MutatedFootersStayBounded
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_ScalarFieldsDoNotDriveAllocation
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_traces_test.go#TestCheckFooterThriftBounds_AcceptsRealTraceFooters
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_AcceptsEdgeShapedRealFiles
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_BudgetBoundary
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_NestingCap
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_DeepSchemaResidual
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_RejectsDeepNesting
+    - internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_RejectsQuadraticColumnAllocation
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_AcceptsEdgeShapedRealFiles
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_BudgetBoundary
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_NestingCap
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_DeepSchemaResidual
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_RejectsDeepNesting
+    - lakehouse-traces/internal/storage/parquets3/footer_thrift_guard_test.go#TestParseFooterFromBytes_RejectsQuadraticColumnAllocation
   docs:
     - docs/read-path.md
+    - docs/security.md#parquet-footers-read-from-the-bucket-are-untrusted-bytes
     - docs/performance.md
   highlight: >-
     **Zero-round-trip open**: a Parquet file whose footer is cached opens with no S3 request — the footer and the page index are served from memory — so only data ranges reach S3, and the footer cache is bounded by bytes rather than entries.
