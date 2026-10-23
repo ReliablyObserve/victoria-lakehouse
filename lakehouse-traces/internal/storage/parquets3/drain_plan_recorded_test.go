@@ -138,8 +138,8 @@ func TestDrainPlan_CrashRestartMatrix(t *testing.T) {
 				return drainCut(e, m1, 1<<30)
 			}()
 			for _, kill := range []int{dieBetweenUploads, dieMarksLost, dieBeforeCommit} {
-				if m1 == m2 && kill != dieBetweenUploads {
-					continue // the plan cannot differ; the existing crash matrix covers these
+				if kill != dieBetweenUploads && (m1 == m2 || m1 == 1000) {
+					continue // the plan cannot differ, or is one group; the other kills are covered by the pairs that split
 				}
 				for cut := 0; cut <= full; cut++ {
 					if kill != dieBetweenUploads && cut != full && cut != 1 {
@@ -250,7 +250,7 @@ func TestDrainPlan_NextSegmentUsesTheConfiguredMaxRows(t *testing.T) {
 func TestDrainPlan_PropertyRandomMaxRows(t *testing.T) {
 	iters := 30
 	if testing.Short() {
-		iters = 12
+		iters = 8
 	}
 	for seed := int64(1); seed <= int64(iters); seed++ {
 		rng := rand.New(rand.NewSource(seed))

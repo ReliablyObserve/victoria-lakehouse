@@ -439,6 +439,7 @@
       - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_PropertyRandomMaxRows
       - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_TwoWritersEachRestartedWithAnotherMaxRows
       - internal/storage/parquets3/flush_state_plan_test.go#TestFlushState_RecordsTheDrainsMaxRows
+      - internal/storage/parquets3/flush_state_plan_test.go#TestBufferFlusher_GroupRowsOutsideADrainIsTheConfiguredValue
       - internal/storage/parquets3/flush_state_plan_test.go#TestReadFlushState_DrainingNeedsItsMaxRows
       - internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_StateOfTheReleaseBeforeStopsStartup
       - internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_UnknownPlanSchemeStopsStartup
@@ -471,6 +472,7 @@
       - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_PropertyRandomMaxRows
       - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_TwoWritersEachRestartedWithAnotherMaxRows
       - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestFlushState_RecordsTheDrainsMaxRows
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestBufferFlusher_GroupRowsOutsideADrainIsTheConfiguredValue
       - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestReadFlushState_DrainingNeedsItsMaxRows
       - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_StateOfTheReleaseBeforeStopsStartup
       - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_UnknownPlanSchemeStopsStartup

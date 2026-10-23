@@ -170,3 +170,23 @@ func TestNewBufferFlusher_UnknownPlanSchemeStopsStartup(t *testing.T) {
 		t.Errorf("a state of this release's scheme stopped startup: %s", msg)
 	}
 }
+
+// Outside a drain the plan functions use the configured rows per group, whatever
+// the last drain was resumed with.
+func TestBufferFlusher_GroupRowsOutsideADrainIsTheConfiguredValue(t *testing.T) {
+	e := newSegEnv(t)
+	e.ingest(segTenantA, hourAgo, 12)
+	g := e.seal()
+	f := e.flusher(5)
+	if err := f.writeState(flushState{DrainingSeq: g.Seq(), DrainingMaxRows: 7, DrainingPlan: planScheme}); err != nil {
+		t.Fatal(err)
+	}
+	f = e.flusher(5) // a restart: the state says 7
+	if err := f.drain(context.Background(), g); err != nil {
+		t.Fatal(err)
+	}
+	if f.groupRows() != 5 {
+		t.Errorf("groupRows %d after a drain resumed with 7; want the configured 5", f.groupRows())
+	}
+	e.mustHaveExactly(12, "resumed with 7")
+}
