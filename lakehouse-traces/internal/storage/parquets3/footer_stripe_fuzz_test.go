@@ -6,6 +6,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/parquet-go/parquet-go"
+
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 )
 
@@ -49,7 +51,16 @@ func FuzzCacheFooterFromTail(f *testing.F) {
 		}
 		tail := data[16:]
 		tailOff := fileSize - int64(len(tail)) + delta%3 // mostly consistent, sometimes off
-		cf, file, err := cacheFooterFromTail(context.Background(), nil, "fuzz.parquet", tail, tailOff, fileSize)
+		var cf *CachedFooter
+		var file *parquet.File
+		var err error
+		// Bounded allocation: a tail whose footer declares a 2^31-element
+		// thrift list killed the nightly fuzz worker (exit 2, #724).
+		if alloc := allocatedBy(func() {
+			cf, file, err = cacheFooterFromTail(context.Background(), nil, "fuzz.parquet", tail, tailOff, fileSize)
+		}); alloc > footerAllocBound(len(tail)) {
+			t.Fatalf("cacheFooterFromTail of a %d-byte tail allocated %d bytes (bound %d)", len(tail), alloc, footerAllocBound(len(tail)))
+		}
 		if err != nil {
 			if cf != nil || file != nil {
 				t.Fatalf("error path returned a result: cf=%v file=%v", cf != nil, file != nil)
