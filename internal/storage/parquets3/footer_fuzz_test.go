@@ -151,8 +151,18 @@ func FuzzParseFooterBytes(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		footerBytes, fileSize := decodeFuzzInput(data)
 
-		// Must never panic. Error is fine.
-		cached, file, err := ParseFooterFromBytes("fuzz.parquet", footerBytes, fileSize)
+		// Must never panic. Error is fine. Must never allocate more than the
+		// linear bound the thrift guard gives: a footer declaring a
+		// 2^31-element list killed the nightly fuzz worker (exit 2) before
+		// that guard existed (#724).
+		var cached *CachedFooter
+		var file *parquet.File
+		var err error
+		if alloc := allocatedBy(func() {
+			cached, file, err = ParseFooterFromBytes("fuzz.parquet", footerBytes, fileSize)
+		}); alloc > footerAllocBound(len(footerBytes)) {
+			t.Fatalf("parse of a %d-byte footer allocated %d bytes (bound %d)", len(footerBytes), alloc, footerAllocBound(len(footerBytes)))
+		}
 		if err != nil {
 			if cached != nil || file != nil {
 				t.Fatalf("error path returned non-nil result: cached=%v file=%v", cached, file)
