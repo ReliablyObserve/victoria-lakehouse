@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -147,6 +148,11 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 	defer cancel()
 
+	// The callback may run on several workers at once, and the block's names
+	// and values live in memory the reader reuses once it returns
+	// (logstorage.WriteDataBlockFunc): every string a span keeps is a copy, and
+	// the spans are collected under mu.
+	var mu sync.Mutex
 	var spans []jaegerSpan
 	err = h.store.RunQuery(ctx, tenantIDs, q, func(_ uint, db *logstorage.DataBlock) {
 		columns := db.GetColumns(false)
@@ -155,6 +161,7 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 			colMap[col.Name] = col.Values
 		}
 
+		var local []jaegerSpan
 		for i := 0; i < db.RowsCount(); i++ {
 			rowTraceID := getVal(colMap, "trace_id", i)
 			if rowTraceID != traceID {
@@ -162,12 +169,12 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 			}
 
 			span := jaegerSpan{
-				TraceID: rowTraceID,
-				SpanID:  getVal(colMap, "span_id", i),
+				TraceID: traceID, // the request's own string, equal to rowTraceID
+				SpanID:  strings.Clone(getVal(colMap, "span_id", i)),
 			}
-			span.ParentSpanID = getVal(colMap, "parent_span_id", i)
-			span.OperationName = getValAny(colMap, i, "name", "span.name")
-			span.ServiceName = getValAny(colMap, i, "resource_attr:service.name", "service.name")
+			span.ParentSpanID = strings.Clone(getVal(colMap, "parent_span_id", i))
+			span.OperationName = strings.Clone(getValAny(colMap, i, "name", "span.name"))
+			span.ServiceName = strings.Clone(getValAny(colMap, i, "resource_attr:service.name", "service.name"))
 
 			startStr := getValAny(colMap, i, "start_time_unix_nano")
 			if startNs, err := strconv.ParseInt(startStr, 10, 64); err == nil {
@@ -193,7 +200,7 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 				if knownFields[colName] || i >= len(vals) || vals[i] == "" {
 					continue
 				}
-				v := vals[i]
+				v := strings.Clone(vals[i])
 				switch colName {
 				case "status_code", "status.code":
 					if v != "0" {
@@ -214,12 +221,12 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 				default:
 					if strings.HasPrefix(colName, "resource_attr:") {
 						processTags = append(processTags, jaegerTag{
-							Key: strings.TrimPrefix(colName, "resource_attr:"), Type: "string", Value: v,
+							Key: strings.Clone(strings.TrimPrefix(colName, "resource_attr:")), Type: "string", Value: v,
 						})
 					} else if strings.HasPrefix(colName, "scope_attr:") {
-						span.Tags = append(span.Tags, jaegerTag{Key: colName, Type: "string", Value: v})
+						span.Tags = append(span.Tags, jaegerTag{Key: strings.Clone(colName), Type: "string", Value: v})
 					} else {
-						span.Tags = append(span.Tags, jaegerTag{Key: colName, Type: "string", Value: v})
+						span.Tags = append(span.Tags, jaegerTag{Key: strings.Clone(colName), Type: "string", Value: v})
 					}
 				}
 			}
@@ -234,8 +241,11 @@ func (h *Handler) handleJaegerTrace(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			spans = append(spans, span)
+			local = append(local, span)
 		}
+		mu.Lock()
+		spans = append(spans, local...)
+		mu.Unlock()
 	})
 
 	if err != nil {
@@ -381,6 +391,10 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(h.scopeContext(r), h.timeout)
 	defer cancel()
 
+	// As in handleJaegerTrace: the callback may run on several workers at once
+	// and the block's values are reused once it returns, so traceMap is written
+	// under mu and keeps copies only.
+	var mu sync.Mutex
 	traceMap := make(map[string][]map[string]string)
 	err = h.store.RunQuery(ctx, tenantIDs, q, func(_ uint, db *logstorage.DataBlock) {
 		columns := db.GetColumns(false)
@@ -407,15 +421,18 @@ func (h *Handler) handleJaegerSearch(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			tid = strings.Clone(tid)
 			span := map[string]string{
 				"trace_id":             tid,
-				"span_id":              getVal(colMap, "span_id", i),
-				"service.name":         getValAny(colMap, i, "resource_attr:service.name", "service.name"),
-				"span.name":            getValAny(colMap, i, "name", "span.name"),
-				"start_time_unix_nano": getValAny(colMap, i, "start_time_unix_nano"),
-				"duration_ns":          durStr,
+				"span_id":              strings.Clone(getVal(colMap, "span_id", i)),
+				"service.name":         strings.Clone(getValAny(colMap, i, "resource_attr:service.name", "service.name")),
+				"span.name":            strings.Clone(getValAny(colMap, i, "name", "span.name")),
+				"start_time_unix_nano": strings.Clone(getValAny(colMap, i, "start_time_unix_nano")),
+				"duration_ns":          strings.Clone(durStr),
 			}
+			mu.Lock()
 			traceMap[tid] = append(traceMap[tid], span)
+			mu.Unlock()
 		}
 	})
 
