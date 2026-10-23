@@ -275,12 +275,27 @@ and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 ### 2.1 Failed uploads
 
 A drain writes one object per (tenant, hour partition, slice). The slices of a
-tenant are planned from the segment's per-second row counts — at most
-`target_file_size` worth of rows each (`estBytesPerRow` × rows), never crossing
-an hour partition, a single second with more rows than the limit being one
-slice — so **memory is bounded by the slice**, not by the segment, however large
-the segment is. Keys are `<nonce>-<slice>`: the same in every process, because a
-sealed segment is immutable.
+tenant are at most `target_file_size` worth of rows each (`estBytesPerRow` ×
+rows) and never cross an hour partition, so **memory is bounded by the slice**,
+not by the segment, however large the segment is and however many rows share a
+second. They are planned from summaries whose size does not depend on the
+number of distinct seconds: the rows per hour (one query per tenant and
+segment); for an hour that holds more rows than a slice, the rows per second of
+that hour (at most 3,600 entries); for a second that holds more rows than a
+slice, the rows per bucket of that second (at most 1,024 entries), where the
+bucket is upstream's `hash` pipe over the row's time, stream and message (the
+span's time, trace id and span id in traces), cut into 1,024 equal ranges. A
+crowded second is therefore written as ceil(rows / limit) objects, each of
+consecutive buckets, instead of one object over the limit. A segment without a
+crowded second is planned exactly as when every second was counted: the same
+slices, the same numbers, the same bytes. The one remaining exception is more
+rows than a slice that are identical in those fields (the same message of the
+same stream at the same nanosecond): no content the bucket looks at can tell
+them apart, so they stay one slice over the limit, and a warning (throttled to
+one a minute) says so. The bucket is built from named fields because a pipe
+that packs all of a row's fields follows the order of the block's columns,
+which changes when upstream merges the segment's parts. Keys are `<nonce>-<slice>`: the same in every process, because a sealed
+segment is immutable.
 
 The invariant: **an object's bytes never change once uploaded, and no key is
 uploaded twice with different content.** To keep it:
@@ -357,7 +372,7 @@ or collect is counted once under `stage="collect"` and never under `invariant`,
 and the drain resumes after the restart. This is the check that would have
 stopped #388, where the plan quietly covered fewer rows than the segment held
 and the segment was committed anyway. The cost of the check is one `stats
-count()` per tenant and segment on top of the per-second plan (measured in the
+count()` per tenant and segment on top of the plan's summaries (measured in the
 benchmark of the PR that added it). The alerts are
 `LakehouseBufferDrainPlanMismatch` (any increase of `stage="invariant"`, a
 warning) and `LakehouseBufferSegmentStalled` (the gauge stays 1 for 15 minutes,
