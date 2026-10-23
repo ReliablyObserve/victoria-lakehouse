@@ -189,6 +189,27 @@ the handle the allowlist and the fixes refer to.
 Each is fixed in its own PR; none of them is a test-harness problem, so the
 suite records them rather than hiding them.
 
+## Known upstream difference: `stats sum()` / `avg()` depend on block shape ([#689](https://github.com/ReliablyObserve/victoria-lakehouse/issues/689))
+
+This is behaviour of upstream VictoriaLogs, present in both VictoriaLogs pins and in hot VictoriaLogs and VictoriaTraces themselves. It is not a Lakehouse read-path defect, and the pins are not patched (owner decision 2026-10-23).
+
+**What happens.** `lib/logstorage/block_result.go`, `(*blockResultColumn).sumValues`, parses a *constant* column (every row of a block holds the same value) with `tryParseFloat64`, and a string or dictionary column with `tryParseNumber`. `tryParseNumber` accepts everything `tryParseFloat64` accepts and more. So a value in the class below is added to the sum in one block shape and ignored in the other, and `sum(x)` and `avg(x)` over the same rows change with the way the rows are split into blocks. `min` is not affected (measured on hand-built blocks, `TestSumAvgBlockShape_UpstreamDependsOnBlockShape`), `sumValues` is called only by `stats_sum.go` and `stats_avg.go` in both pins (sourced by grep), so no other aggregate has this dependence, and the rows returned are identical on every path.
+
+**The class** (a value that `tryParseNumber` accepts and `tryParseFloat64` rejects; derived from the pinned code and asserted against upstream's own engine by `TestSumAvgBlockShape_ExclusionClassIsExact`):
+
+- an integer part with a leading zero (`007`, `0000000000000010`, `01.5`; a `%032x` trace id of decimal digits is this case);
+- an integer above the uint64 maximum 18446744073709551615 (`18446744073709551616`, `123456789012345678901234567`);
+- a duration (`5s`, `1.5ms`) or a byte size (`1KB`, `1.5GiB`);
+- scientific notation (`1e3`), hex (`0x10`) and a trailing dot (`1.`).
+
+Not in the class: plain decimal numbers (`20`, `-20`, `1.25`, `0.5`, `1.007`), underscore forms (`1_000`), and anything neither parser takes (`abc`, an IP address, a timestamp).
+
+**Why hot and cold can differ.** Hot VictoriaLogs/VictoriaTraces and the cold tier run the same upstream code, so they agree for the same block shape. They cut blocks differently (in-memory parts versus Parquet row groups, and the `sort` pipe starts a new output block when the source column set changes), so `stats sum(x)` / `avg(x)` over a field holding values of the class can return different numbers on hot and on cold, and on a projected and an all-columns read of the same Parquet file. Both signals are affected the same way (checked: the same function bodies in the logs pin and in the traces pin).
+
+**Recommendation.** Do not mix zero-padded, unit-suffixed or oversized numeric strings into a field that is summed or averaged; store the number without padding or unit, or sum a numeric field (`math`, `extract` into a plain number) instead.
+
+**What is tracked.** Registry rows `vl.pipe.stats.sum_avg_block_shape` and `vt.select.logsql_query.stats_sum_avg_block_shape` (`expect: differ`). The differential projection property test (`FuzzProjectionEquivalence`, `TestProjectionEquivalence_Random`, both modules) compares the rows that feed a final ungrouped `stats sum(X)` / `avg(X)` exactly (a `stats by (...)` aggregate is never excluded), and leaves out only the final value, only when a value of X is in the class; every other query and every other sum/avg value stays fully compared. The nightly crasher (`fuzz-logs-18`, seed `1\x030ba17`) is a permanent seed of `FuzzProjectionEquivalence` and has its own test, `TestProjectionEquivalence_SumAvgCrasher689`. When upstream makes the two paths agree, `TestSumAvgBlockShape_UpstreamDependsOnBlockShape` fails; then remove the exclusion, the rows and this section.
+
 ## Intentional differences
 
 Behaviors where hot and cold deliberately disagree. These are **not** gaps —
