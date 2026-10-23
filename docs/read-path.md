@@ -215,7 +215,7 @@ A quoted or bare word filter is a **phrase**, not an equality: upstream (`filter
 | L2c labels, column stats, pushdown | pruned on the value | not pruned |
 | L2d file bloom (pmeta facet, `.bloom`) | pruned on the value | not pruned by a value, except in attested files (below) |
 | L6 footer / row-group bloom (SBBF) | pruned on the value | not pruned by a value, except in attested files (below) |
-| `_trace_idx` (traces) | pruned on the trace ID | not pruned by a value, except in attested files (below) |
+| `_trace_idx` (traces) | pruned on the trace ID (not for the empty ID or an ID over 65,535 bytes: the file is scanned) | not pruned by a value, except in attested files (below) |
 | Token bloom (`_msg` words) | pruned when every token is present | pruned when every phrase token is present |
 
 A phrase is otherwise pruned only by "every token of the phrase is present" (the token bloom), which is sound because the first and last phrase tokens must be whole tokens of the stored value.

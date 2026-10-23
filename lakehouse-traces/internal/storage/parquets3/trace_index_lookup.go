@@ -62,7 +62,9 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.T
 	if err := s.tombstoneGate(ctx, tenantIDs); err != nil {
 		return 0, 0, false, err
 	}
-	if traceID == "" {
+	if traceID == "" || !traceIDIndexable(traceID) {
+		// An id longer than the index can list is in no footer; the caller
+		// falls back to the span scan, which finds it (#768).
 		metrics.TraceIndexLookups.Inc("miss")
 		return 0, 0, false, nil
 	}
@@ -159,6 +161,11 @@ func (s *Storage) lookupTraceIDInFile(ctx context.Context, fi manifest.FileInfo,
 // findTraceIDInFooterMeta is split out so the lookup logic is testable
 // without round-tripping through S3 or the footer cache.
 func findTraceIDInFooterMeta(meta *format.FileMetaData, traceID string) (TraceIndexEntry, bool, error) {
+	if !traceIDIndexable(traceID) {
+		// The index never lists an id this long; report a miss so the span
+		// scan decides (#768).
+		return TraceIndexEntry{}, false, nil
+	}
 	if meta == nil || len(meta.KeyValueMetadata) == 0 {
 		return TraceIndexEntry{}, false, nil
 	}

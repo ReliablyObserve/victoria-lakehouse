@@ -1,6 +1,7 @@
 package traceindex
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math/rand"
 	"reflect"
@@ -70,7 +71,18 @@ func FuzzUnmarshalIndex(f *testing.F) {
 	f.Add([]byte{Version, 0xFF, 0xFF, 0xFF, 0xFF})
 	f.Add(crafted(1<<20, 0))
 
+	// Seeds for #768: indexes written before the fix with a wrapped trace
+	// ID length (the decoder must refuse them), and payloads whose first
+	// bytes pick a trace ID length around the uint16 limit.
+	f.Add(legacyMarshal(longThenNormal(1<<16 + 5)))
+	f.Add(legacyMarshal(longThenNormal(1 << 17)))
+	f.Add(append(append([]byte{}, good...), 0))
+	f.Add([]byte{0xFF, 0xFF, 0x00, 0x00, 'a'})
+	f.Add([]byte{0x00, 0x00, 0x01, 0x00, 'a'})
+	f.Add([]byte{0x01, 0x00, 0x01, 0x00, 'a'})
+
 	f.Fuzz(func(t *testing.T, data []byte) {
+		checkRoundTripOrOmitted(t, data)
 		// Must never panic. Error or success both fine. The allocation
 		// must stay in proportion to the input (generous: one 40-byte
 		// Entry per 20 input bytes plus the decoded IDs, plus slack for
@@ -99,7 +111,56 @@ func FuzzUnmarshalIndex(f *testing.F) {
 			_ = e.StartNs
 			_ = e.EndNs
 		}
+		// #768: a payload that decodes is exactly what Marshal writes for
+		// those entries (the decoder consumed all of it), so no garbage can
+		// pass as an index.
+		if re := Marshal(entries); !bytes.Equal(re, data) {
+			t.Fatalf("decoded %d entries from %d bytes but Marshal gives %d bytes", len(entries), len(data), len(re))
+		}
 	})
+}
+
+// roundTripIndexIDLen picks a trace ID length from the fuzz input, covering
+// the uint16 boundary and far above it, bounded to 3 x 65536 bytes.
+func roundTripIndexIDLen(data []byte) int {
+	if len(data) < 4 {
+		return len(data)
+	}
+	return int(binary.LittleEndian.Uint32(data[:4])) % (3 << 16)
+}
+
+// checkRoundTripOrOmitted is the round-trip half of FuzzUnmarshalIndex (#768):
+// entries built from the fuzz input with a trace ID of any length up to
+// 3 x 65536 bytes always yield an index that lists exactly the IDs of at most
+// MaxTraceIDLen bytes and none other; a wrapped index that decodes into
+// different entries is never produced.
+func checkRoundTripOrOmitted(t *testing.T, data []byte) {
+	idLen := roundTripIndexIDLen(data)
+	id := make([]byte, idLen)
+	for i := range id {
+		if len(data) > 0 {
+			id[i] = data[i%len(data)]
+		}
+	}
+	in := []Entry{
+		{TraceID: string(id), Partition: 1, StartNs: 10, EndNs: 20},
+		{TraceID: "normal-trace-id", Partition: 2, StartNs: 30, EndNs: 40},
+	}
+	want := in[1:]
+	if idLen <= MaxTraceIDLen {
+		want = in
+	}
+	raw := Marshal(in)
+	if raw == nil {
+		t.Fatalf("a %d-byte trace ID made Marshal drop the whole index", idLen)
+	}
+	got, err := Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal of self-Marshal failed: %v", err)
+	}
+	if len(got)+len(want) > 0 && !reflect.DeepEqual(got, want) {
+		t.Fatalf("index for a %d-byte trace ID lists %d entries, want %d", idLen, len(got), len(want))
+	}
 }
 
 // FuzzRoundTripIndex feeds randomly-shaped Entry slices through
