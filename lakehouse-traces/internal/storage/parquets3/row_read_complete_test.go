@@ -190,6 +190,47 @@ func rcBody(i, j int, incompressible bool, rng *rand.Rand) string {
 	return fmt.Sprintf("file=%d span=%d %s", i, j, strings.Repeat("padding ", 24))
 }
 
+var (
+	rcObjectsMu sync.Mutex
+	rcObjects   = map[[2]int][]byte{}
+	rcBaseOnce  sync.Once
+	rcBaseTime  time.Time
+)
+
+// rcBase is the time the fixtures' spans start at, fixed for the test binary so
+// that the objects can be written once.
+func rcBase() time.Time {
+	rcBaseOnce.Do(func() { rcBaseTime = time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second) })
+	return rcBaseTime
+}
+
+// rcObject is object i of the fixtures, written once per test binary (writing
+// parquet with its blooms dominates the cost of a fixture) and shared: tests copy
+// before they damage it.
+func rcObject(t *testing.T, i int, incompressible bool) []byte {
+	t.Helper()
+	k := [2]int{i, 0}
+	if incompressible {
+		k[1] = 1
+	}
+	rcObjectsMu.Lock()
+	defer rcObjectsMu.Unlock()
+	if data, ok := rcObjects[k]; ok {
+		return data
+	}
+	rng := rand.New(rand.NewSource(int64(11 + i)))
+	spans := rcSpans(rcBase(), i, rcRowsPerFile)
+	for j := range spans {
+		spans[j].Body = rcBody(i, j, incompressible, rng)
+	}
+	res, err := writeTracesParquet(spans, 100, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rcObjects[k] = res.Data
+	return res.Data
+}
+
 type rcFixture struct {
 	fs    *faultS3
 	s     *Storage
@@ -237,26 +278,18 @@ func newRCFixtureN(t *testing.T, workers, n int, keyFmt string) *rcFixture {
 // padding) or, with incompressible, random hex: stored size ~ decoded size.
 func newRCFixtureShape(t *testing.T, workers, n int, keyFmt string, incompressible bool) *rcFixture {
 	t.Helper()
-	rng := rand.New(rand.NewSource(11))
 	fs := newFaultS3(t)
 	s := testStorageWithS3(t, fs.srv.URL)
 	s.cfg.Mode = config.ModeTraces
 	s.cfg.Query.FileWorkers = workers
-	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	base := rcBase()
 	fx := &rcFixture{fs: fs, s: s, base: base, start: base.Add(-time.Hour).UnixNano(), end: base.Add(time.Hour).UnixNano()}
 	for i := 0; i < n; i++ {
-		spans := rcSpans(base, i, rcRowsPerFile)
-		for j := range spans {
-			spans[j].Body = rcBody(i, j, incompressible, rng)
-		}
-		res, err := writeTracesParquet(spans, 100, 3)
-		if err != nil {
-			t.Fatal(err)
-		}
+		data := rcObject(t, i, incompressible)
 		key := fmt.Sprintf(keyFmt, i)
-		registerFileInMockS3(t, s, fs.mock, key, res.Data, base)
+		registerFileInMockS3(t, s, fs.mock, key, data, base)
 		fx.keys = append(fx.keys, key)
-		fx.datas = append(fx.datas, res.Data)
+		fx.datas = append(fx.datas, data)
 	}
 	return fx
 }
@@ -295,9 +328,6 @@ func TestRowRead_NoFault_ReturnsEveryRow(t *testing.T) {
 // (a) An object that cannot be read fails the read, whatever its position among
 // the objects and however many workers read them.
 func TestRowRead_UnreadableObject_FailsInsteadOfPartial(t *testing.T) {
-	if testing.Short() {
-		t.Skip("fault matrix: runs in the heavy job")
-	}
 	faults := map[string]func(t *testing.T, fx *rcFixture, idx int){
 		"s3_access_denied": func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], accessDenied) },
 		"truncated_body":   func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], truncatedBody) },
@@ -448,9 +478,6 @@ func TestRowRead_ClassifiedByTheS3Error_NotByItsText(t *testing.T) {
 // (b) The caller's cancellation or deadline during the last object's read is not
 // a complete answer.
 func TestRowRead_CallerStopsDuringLastObject_Fails(t *testing.T) {
-	if testing.Short() {
-		t.Skip("sleeps on a hung object: runs in the heavy job")
-	}
 	t.Run("deadline", func(t *testing.T) {
 		fx := newRCFixture(t, 1, rcKeyFmt) // one worker: the last object is read last
 		fx.fs.setFault(fx.keys[rcFiles-1], hang)
@@ -573,9 +600,6 @@ func TestRowRead_MultiReader_FailAndRecover(t *testing.T) {
 // Every read surface that scans objects fails on an unreadable object, and
 // tolerates a removed one.
 func TestRowRead_EverySurface_FailsOnUnreadableObject(t *testing.T) {
-	if testing.Short() {
-		t.Skip("surface matrix: runs in the heavy job")
-	}
 	surfaces := map[string]func(fx *rcFixture) error{
 		"field_names": func(fx *rcFixture) error {
 			_, err := fx.s.GetFieldNames(context.Background(), nil, mustParseQueryWithTime(t, "*", fx.start, fx.end))
@@ -957,9 +981,6 @@ func TestLiveBytesGate_ConcurrentWorkersAllFinish(t *testing.T) {
 // decoder and the consumer. A gate that estimates too low (the compressed size, a
 // constant, no footer) lets the workers pile up past it.
 func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
-	if testing.Short() {
-		t.Skip("in-flight ceiling matrix: runs in the heavy job")
-	}
 	const files = 12
 	type tcase struct {
 		name, query    string
@@ -1172,9 +1193,6 @@ func TestDecodedEstimate_Estimator(t *testing.T) {
 // today's behaviour at the DEFAULT ceiling so that it stays visible; when the gap is
 // fixed the second query finishes and this test must become that assertion.
 func TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793(t *testing.T) {
-	if testing.Short() {
-		t.Skip("stalled-consumer pin: runs in the heavy job")
-	}
 	a := newRCFixtureN(t, 12, 12, rcKeyFmt) // more workers and objects than the process has file slots (at most 8)
 	b := newRCFixtureN(t, 4, rcFiles, "traces/dt=2026-10-23/hour=10/starve-b-%d.parquet")
 	stall := make(chan struct{})
@@ -1195,9 +1213,9 @@ func TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("query A never reached its consumer")
 	}
-	time.Sleep(300 * time.Millisecond) // let A's other workers take their slots
+	time.Sleep(150 * time.Millisecond) // let A's other workers take their slots
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
 	defer cancel()
 	type result struct {
 		rows int

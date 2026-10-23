@@ -223,7 +223,7 @@
   kind: select
   origin: lh-addition
   expect: differ
-  differ_note: "Known gap, not approved as a difference; the same on the base before #503. A file worker holds a fileBudgetSem slot (at most 8 per process) while its object is read and a rgDecodeSem slot while it decodes, across a blocking writeBlock; with a stalled consumer, its query's workers keep them and another query on the process cannot take one. The test pins today's behaviour at the default ceiling (B misses its 1.5 s deadline). The fix is to release the decode slots before writeBlock blocks, or a bounded hand-off between decoder and writer. Tracked in #793."
+  differ_note: "Known gap, not approved as a difference; the same on the base before #503. A file worker holds a fileBudgetSem slot (at most 8 per process) while its object is read and a rgDecodeSem slot while it decodes, across a blocking writeBlock; with a stalled consumer, its query's workers keep them and another query on the process cannot take one. The test pins today's behaviour at the default ceiling (B misses its 0.8 s deadline). The fix is to release the decode slots before writeBlock blocks, or a bounded hand-off between decoder and writer. Tracked in #793."
   targets: [cold]
   seed: [logs.base]
   request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
