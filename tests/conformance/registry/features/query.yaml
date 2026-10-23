@@ -104,16 +104,16 @@
     - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
-    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeObjectAdmittedAlone
-    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ReservedBytesNeverPassTheCeiling
+    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
+    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
     - internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
-    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeObjectAdmittedAlone
-    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ReservedBytesNeverPassTheCeiling
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
     - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow
   docs:

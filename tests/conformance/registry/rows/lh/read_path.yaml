@@ -199,16 +199,16 @@
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
-      - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeObjectAdmittedAlone
-      - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ReservedBytesNeverPassTheCeiling
+      - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
+      - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
       - internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
-      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeObjectAdmittedAlone
-      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ReservedBytesNeverPassTheCeiling
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow
   notes: "Fixes #503. The budget used to cancel the query context and drop the block, so a read whose budget tripped while the last objects were read answered 200 with their rows missing; and it counted blocks only after they were decoded, which bounded nothing (writeBlock is synchronous, so each worker already holds one decoded block). liveBytesGate reserves per object BEFORE the file-budget and row-group-decoder slots (ctx-aware, atomic, one object larger than the ceiling is admitted alone), so the reserved bytes never pass the ceiling, a waiting worker holds no process-wide slot, and a stalled consumer cannot starve another query. The estimate is the footer's uncompressed size when cached, else the stored size times an assumed 4: an estimate, not the real decoded size. lakehouse_query_memory_budget_exceeded_total counts waits, not cancelled queries (name kept). DIRECTION: the meaning of query.max_live_bytes changes from cancel (partial or failed read) to a real reservation (slower under pressure, never partial). Measured, 40 incompressible objects x 5,000 rows, 16 workers, slow consumer: a 1 MiB ceiling held reserved bytes at 0.6 MiB and peak heap growth at 1.1-2.8 MiB; the ceiling out of reach 9.9 MiB reserved and 11.4-31.4 MiB heap growth; every row in both."

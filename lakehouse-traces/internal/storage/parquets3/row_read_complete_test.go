@@ -837,7 +837,7 @@ func TestLiveBytesGate_ContextEndReleasesWaiter(t *testing.T) {
 // An object larger than the ceiling is admitted alone, and only when nothing else
 // is reserved: no object waits for room that never comes, and none passes the
 // ceiling next to another.
-func TestLiveBytesGate_OversizeObjectAdmittedAlone(t *testing.T) {
+func TestLiveBytesGate_OversizeBlockAdmittedWhenIdle(t *testing.T) {
 	var g liveBytesGate
 	rel, err := g.reserve(context.Background(), 1<<20, 10)
 	if err != nil {
@@ -864,7 +864,7 @@ func TestLiveBytesGate_OversizeObjectAdmittedAlone(t *testing.T) {
 
 // The reserved bytes never pass the ceiling, whatever the interleaving, and every
 // worker finishes.
-func TestLiveBytesGate_ReservedBytesNeverPassTheCeiling(t *testing.T) {
+func TestLiveBytesGate_ConcurrentWorkersAllFinish(t *testing.T) {
 	var g liveBytesGate
 	const workers, rounds, size, ceiling = 8, 200, 40, 100
 	var wg sync.WaitGroup
