@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.3] - 2026-10-23
 ### Changed
 
 - **`docs/durability.md` documents a known gap of the insert buffer's read handoff, and the registry and the tests pin it (#391; documentation and tests only, no change to the Lakehouse binaries or to runtime behaviour).** An insert pod keeps a written buffer segment readable for `2 × manifest.refresh_interval + 30 s`, computed from its own refresh interval, and a select pod skips the segment's objects only while the insert pod still serves the segment. A select pod whose listing has not caught up when the segment is retired (a longer `manifest.refresh_interval` than the insert pods', or a slow or failing listing) misses the segment's rows, with status 200 and no metric, until its next complete listing; the rows are in Parquet and come back then. The page now says so, with the guidance to give every role the same refresh interval (the Helm chart does). The registry records it as the known-gap durability cells `lh.durability.select_pod_lists_after_segment_retired_logs` and `_traces`, each backed by a two-pod test (an insert pod and a select pod reading it through the buffer bridge) that pins today's behaviour.
