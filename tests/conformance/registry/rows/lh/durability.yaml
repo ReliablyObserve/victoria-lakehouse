@@ -414,3 +414,75 @@
       - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart
       - lakehouse-traces/internal/storage/parquets3/buffer_flusher_reap_crash_test.go#TestSegments_RestartAfterAnInterruptedReap
   notes: "Same fix and tests in the traces binary."
+
+- id: lh.durability.drain_plan_config_change_logs
+  title: "Logs: a restart with another insert.target_file_size in the middle of a drain finishes the drain with the plan it started with and loses no acknowledged row"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: restart_changed_target_file_size
+    mode: buffer-flush
+    signal: logs
+    guarantees: [no-loss, no-duplicate]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_ChangedMaxRowsAcrossARestart_IssueRepro
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_CrashRestartMatrix_EveryRowInItsOwnSecond
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_CrashRestartMatrix_OneCrowdedSecond
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_CrashRestartMatrix_TwoTenantsTwoHours
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_ChainOfRestartsKeepsTheFirstPlan
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_NextSegmentUsesTheConfiguredMaxRows
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_PropertyRandomMaxRows
+      - internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_TwoWritersEachRestartedWithAnotherMaxRows
+      - internal/storage/parquets3/flush_state_plan_test.go#TestFlushState_RecordsTheDrainsMaxRows
+      - internal/storage/parquets3/flush_state_plan_test.go#TestBufferFlusher_GroupRowsOutsideADrainIsTheConfiguredValue
+      - internal/storage/parquets3/flush_state_plan_test.go#TestReadFlushState_DrainingNeedsItsMaxRows
+      - internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_StateOfTheReleaseBeforeStopsStartup
+      - internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_UnknownPlanSchemeStopsStartup
+      - internal/storage/parquets3/flush_state_plan_test.go#FuzzReadFlushState
+      - internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_PinsTheBucketScheme
+      - internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_GoldenPlan
+      - internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_NotRejudgedByAFreshCardinalityLimiter
+  notes: "Fixes https://github.com/ReliablyObserve/victoria-lakehouse/issues/748 (logs binary). The state of a drain (draining_seq) records the rows per group (draining_max_rows) and the plan scheme (draining_plan) the segment was planned with; a resumed drain uses them, the next segment uses the configured value. A state of the release before (a draining segment without them) or of another plan scheme stops the process at start with the operator action; rows are never skipped. The lock of the bug is the 5-then-1000 restart case of TestAckedRows_NotRejudgedByAFreshCardinalityLimiter and the issue's reproduction (5 of 12 rows stored on main). The crash matrix kills after every upload (and with the marks lost, and between the last upload and the state commit) for a normal and for crowded seconds."
+
+- id: lh.durability.drain_plan_config_change_traces
+  title: "Traces: a restart with another insert.target_file_size in the middle of a drain finishes the drain with the plan it started with and loses no acknowledged span"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: restart_changed_target_file_size
+    mode: buffer-flush
+    signal: traces
+    guarantees: [no-loss, no-duplicate]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_ChangedMaxRowsAcrossARestart_IssueRepro
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_CrashRestartMatrix_EveryRowInItsOwnSecond
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_CrashRestartMatrix_OneCrowdedSecond
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_CrashRestartMatrix_TwoTenantsTwoHours
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_ChainOfRestartsKeepsTheFirstPlan
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_NextSegmentUsesTheConfiguredMaxRows
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_PropertyRandomMaxRows
+      - lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go#TestDrainPlan_TwoWritersEachRestartedWithAnotherMaxRows
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestFlushState_RecordsTheDrainsMaxRows
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestBufferFlusher_GroupRowsOutsideADrainIsTheConfiguredValue
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestReadFlushState_DrainingNeedsItsMaxRows
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_StateOfTheReleaseBeforeStopsStartup
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_UnknownPlanSchemeStopsStartup
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#FuzzReadFlushState
+      - lakehouse-traces/internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_PinsTheBucketScheme
+      - lakehouse-traces/internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_GoldenPlan
+      - lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_NotRejudgedByAFreshCardinalityLimiter
+  notes: "Fixes https://github.com/ReliablyObserve/victoria-lakehouse/issues/748 (traces binary). The state of a drain (draining_seq) records the rows per group (draining_max_rows) and the plan scheme (draining_plan) the segment was planned with; a resumed drain uses them, the next segment uses the configured value. A state of the release before (a draining segment without them) or of another plan scheme stops the process at start with the operator action; rows are never skipped. The lock of the bug is the 5-then-1000 restart case of TestAckedRows_NotRejudgedByAFreshCardinalityLimiter and the issue's reproduction (5 of 12 rows stored on main). The crash matrix kills after every upload (and with the marks lost, and between the last upload and the state commit) for a normal and for crowded seconds."
