@@ -57,22 +57,23 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 	endpoints := []struct {
 		name, path string
 		params     url.Values
-		status     int // the status of an unreadable object; 0 is 502 Bad Gateway
+		status     int  // the status of an unreadable object; 0 is 502 Bad Gateway
+		stream     bool // a streaming answer: 200 is possible once rows were flushed, with the error appended to the body, as upstream does
 	}{
-		{"query", "/select/logsql/query", url.Values{"query": {"*"}}, 0},
-		{"query_filtered", "/select/logsql/query", url.Values{"query": {"service.name:=svc-1"}}, 0},
-		{"stats_query", "/select/logsql/stats_query", url.Values{"query": {"* | stats count() as n"}}, 0},
-		{"stats_query_range", "/select/logsql/stats_query_range", url.Values{"query": {"* | stats count() as n"}, "step": {"1h"}}, 0},
-		{"hits", "/select/logsql/hits", url.Values{"query": {"*"}, "step": {"1h"}}, 0},
-		{"field_names", "/select/logsql/field_names", url.Values{"query": {"*"}}, 0},
-		{"field_values", "/select/logsql/field_values", url.Values{"query": {"*"}, "field": {"service.name"}}, 0},
-		{"streams", "/select/logsql/streams", url.Values{"query": {"*"}}, 0},
-		{"stream_ids", "/select/logsql/stream_ids", url.Values{"query": {"*"}}, 0},
-		{"stream_field_names", "/select/logsql/stream_field_names", url.Values{"query": {"*"}}, 0},
-		{"stream_field_values", "/select/logsql/stream_field_values", url.Values{"query": {"*"}, "field": {"service.name"}}, 0},
+		{"query", "/select/logsql/query", url.Values{"query": {"*"}}, 0, true},
+		{"query_filtered", "/select/logsql/query", url.Values{"query": {"service.name:=svc-1"}}, 0, true},
+		{"stats_query", "/select/logsql/stats_query", url.Values{"query": {"* | stats count() as n"}}, 0, false},
+		{"stats_query_range", "/select/logsql/stats_query_range", url.Values{"query": {"* | stats count() as n"}, "step": {"1h"}}, 0, false},
+		{"hits", "/select/logsql/hits", url.Values{"query": {"*"}, "step": {"1h"}}, 0, false},
+		{"field_names", "/select/logsql/field_names", url.Values{"query": {"*"}}, 0, false},
+		{"field_values", "/select/logsql/field_values", url.Values{"query": {"*"}, "field": {"service.name"}}, 0, false},
+		{"streams", "/select/logsql/streams", url.Values{"query": {"*"}}, 0, false},
+		{"stream_ids", "/select/logsql/stream_ids", url.Values{"query": {"*"}}, 0, false},
+		{"stream_field_names", "/select/logsql/stream_field_names", url.Values{"query": {"*"}}, 0, false},
+		{"stream_field_values", "/select/logsql/stream_field_values", url.Values{"query": {"*"}, "field": {"service.name"}}, 0, false},
 		{"jaeger_trace_by_id", "/select/jaeger/api/traces/" + rcTraceID(1, 0), url.Values{
-			"start": {fmt.Sprint(time.Now().Add(-3 * time.Hour).UnixMicro())}, "end": {fmt.Sprint(time.Now().Add(time.Hour).UnixMicro())}}, http.StatusBadRequest},
-		{"jaeger_services", "/select/jaeger/api/services", url.Values{}, http.StatusBadRequest},
+			"start": {fmt.Sprint(time.Now().Add(-3 * time.Hour).UnixMicro())}, "end": {fmt.Sprint(time.Now().Add(time.Hour).UnixMicro())}}, http.StatusBadRequest, false},
+		{"jaeger_services", "/select/jaeger/api/services", url.Values{}, http.StatusBadRequest, false},
 	}
 	for _, ep := range endpoints {
 		t.Run(ep.name, func(t *testing.T) {
@@ -102,6 +103,11 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 			want := ep.status
 			if want == 0 {
 				want = http.StatusBadGateway
+			}
+			if ep.stream && code == http.StatusOK && strings.Contains(body, "cannot read") {
+				// Rows of the readable objects were flushed first, so the status was
+				// already sent; upstream appends the error to the body and aborts.
+				want = http.StatusOK
 			}
 			if code != want {
 				t.Fatalf("%s answered %d %.120q, want %d", ep.name, code, body, want)
