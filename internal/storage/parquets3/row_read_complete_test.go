@@ -173,7 +173,7 @@ func corruptPageIndex(t testing.TB, data []byte) []byte {
 }
 
 const (
-	rcRowsPerFile = 700 // > one 256-row read buffer: every file emits several blocks
+	rcRowsPerFile = 300 // > one 256-row read buffer: every file emits several blocks
 	rcFiles       = 3
 )
 
@@ -225,7 +225,7 @@ func newRCFixtureN(t *testing.T, workers, n int, keyFmt string) *rcFixture {
 			}
 		}
 		var buf bytes.Buffer
-		w := parquet.NewGenericWriter[rcLogRow](&buf, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(250))
+		w := parquet.NewGenericWriter[rcLogRow](&buf, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(100))
 		if _, err := w.Write(rows); err != nil {
 			t.Fatal(err)
 		}

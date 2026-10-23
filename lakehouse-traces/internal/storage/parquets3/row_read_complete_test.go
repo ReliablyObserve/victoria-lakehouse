@@ -175,7 +175,7 @@ func corruptPageIndex(t testing.TB, data []byte) []byte {
 }
 
 const (
-	rcRowsPerFile = 700 // > one 256-row read buffer: every object emits several blocks
+	rcRowsPerFile = 300 // > one 256-row read buffer: every object emits several blocks
 	rcFiles       = 3
 )
 
@@ -227,7 +227,7 @@ func newRCFixtureN(t *testing.T, workers, n int, keyFmt string) *rcFixture {
 	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	fx := &rcFixture{fs: fs, s: s, base: base, start: base.Add(-time.Hour).UnixNano(), end: base.Add(time.Hour).UnixNano()}
 	for i := 0; i < n; i++ {
-		res, err := writeTracesParquet(rcSpans(base, i, rcRowsPerFile), 250, 3)
+		res, err := writeTracesParquet(rcSpans(base, i, rcRowsPerFile), 100, 3)
 		if err != nil {
 			t.Fatal(err)
 		}
