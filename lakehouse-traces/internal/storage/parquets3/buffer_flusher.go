@@ -575,16 +575,20 @@ func runCounts(ctx context.Context, g *membuffer.Segment, tenant logstorage.Tena
 
 // The bucket of a row, for splitting a second that holds more rows than a group:
 // upstream's `hash` pipe (xxhash64, cut to 53 bits so it is exact in a float) of
-// all of the row's fields packed as JSON (so rows that differ in any field, the
-// time included, fall in different buckets), cut into splitBuckets equal ranges.
-// The helper fields are deleted again before the rows are used.
+// the span's time, trace id and span id, cut into splitBuckets equal ranges. The key is
+// built from named fields on purpose: a pipe that packs all of a row's fields
+// follows the order of the block's columns, which changes when upstream merges
+// the parts of a segment, and the plan and the collect of a group must give a
+// row the same bucket. The helper fields are deleted again before the rows are
+// used.
 const (
 	splitBuckets      = 1024
 	splitBucketDiv    = (1 << 53) / splitBuckets // a power of two, so the division is exact in a float
+	splitKeyFormat    = `<_time>|<trace_id>|<span_id>`
 	splitBucketDelete = `delete _lh_split_k, _lh_split_h, _lh_split_b`
 )
 
-var splitBucketPipes = fmt.Sprintf(`pack_json as _lh_split_k | hash(_lh_split_k) as _lh_split_h | math floor(_lh_split_h / %d) as _lh_split_b`, splitBucketDiv)
+var splitBucketPipes = fmt.Sprintf(`format "%s" as _lh_split_k | hash(_lh_split_k) as _lh_split_h | math floor(_lh_split_h / %d) as _lh_split_b`, splitKeyFormat, splitBucketDiv)
 
 // hourEnd is the last nanosecond of the hour starting at h.
 func hourEnd(h int64) int64 {
@@ -648,9 +652,9 @@ func (f *BufferFlusher) planGroups(ctx context.Context, g *membuffer.Segment, te
 
 // splitSecond cuts a second that holds more than f.maxRows rows into bucketed
 // groups of at most f.maxRows rows each, of consecutive buckets. A bucket that
-// alone holds more than maxRows rows (rows identical in every field, the time
-// included, or more than maxRows/splitBuckets times the share of a second) cannot
-// be cut further by content: it is one group over the cap, and is logged.
+// alone holds more than maxRows rows (rows identical in the fields the bucket is
+// made of, see splitKeyFormat) cannot be cut further by content: it is one group
+// over the cap, and is logged.
 func (f *BufferFlusher) splitSecond(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) ([]flushSlice, error) {
 	counts := map[int64]int64{}
 	err := runCounts(ctx, g, tenant, "* | "+splitBucketPipes+" | stats by (_lh_split_b) count() as n", sl.start, sl.end, "_lh_split_b", func(key string, n int64) error {
@@ -678,7 +682,7 @@ func (f *BufferFlusher) splitSecond(ctx context.Context, g *membuffer.Segment, t
 			continue
 		}
 		if n > f.maxRows {
-			oversizedGroupLogger.Warnf("buffer flusher: %d rows of tenant %d:%d in %s share one bucket of a crowded second (identical in every field): they stay one group of %d rows, over the %d-row cap",
+			oversizedGroupLogger.Warnf("buffer flusher: %d rows of tenant %d:%d in %s share one bucket of a crowded second (identical in the span's time, trace id and span id): they stay one group of %d rows, over the %d-row cap",
 				n, tenant.AccountID, tenant.ProjectID, time.Unix(0, sl.start).UTC().Format(time.RFC3339), n, f.maxRows)
 		}
 		out = append(out, flushSlice{partition: sl.partition, start: sl.start, end: sl.end, rows: n, bucketed: true, bucketLo: b, bucketHi: b})

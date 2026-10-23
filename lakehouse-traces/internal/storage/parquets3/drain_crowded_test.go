@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
 )
 
 // A second that holds more rows than a group (imports, second-precision sources,
@@ -135,9 +138,9 @@ func TestDrain_CrowdedSecondIsCutIntoBoundedGroups(t *testing.T) {
 	}
 }
 
-// Rows identical in every field (the time included) cannot be told apart by their
-// content: they stay one group over the cap, and are written once. This pins the
-// documented limit of the cap.
+// Rows identical in the fields the bucket is made of (the time, stream and
+// message here) cannot be told apart: they stay one group over the cap, and are
+// written once. This pins the documented limit of the cap.
 func TestDrain_IdenticalRowsOfACrowdedSecondStayOneGroup(t *testing.T) {
 	e := newSegEnv(t)
 	base := hourAgo.UnixNano()
@@ -449,4 +452,91 @@ func encodeGroup(t *testing.T, e *segEnv, rows []schema.TraceRow) []byte {
 // groupKey is the object key of group sl of the segment with this nonce.
 func groupKey(e *segEnv, nonce string, sl flushSlice) string {
 	return e.bw.assignTraceKey(&traceGroupUpload{partition: sl.partition, accountID: segTenantA.AccountID, projectID: segTenantA.ProjectID, batchID: segmentBatchID(nonce, sl.slice)})
+}
+
+// Two writers (two insert pods, each with its own buffer and flusher) drain a
+// crowded second of the same tenant and hour into one bucket: the groups of each
+// are named by its segment's nonce, so no key is shared and no row is written
+// twice. A reader sees all of them: the objects hold every row once.
+func TestDrain_TwoWritersCrowdedSecondOfOneTenant(t *testing.T) {
+	const n, maxRows = 6000, 1000
+	e := newSegEnv(t) // writer 1, and the bucket both write to
+	base := hourAgo.UnixNano()
+	e.burst(segTenantA, n, func(i int) int64 { return base + sec(4) }, rowID)
+
+	dir2 := filepath.Join(t.TempDir(), "buffer")
+	segs2, err := membuffer.OpenSegments(membuffer.Config{Path: dir2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(segs2.Close)
+	lr := logstorage.GetLogRows(crowdedStreamFields, nil, nil, nil, "")
+	for i := 0; i < n; i++ {
+		lr.MustAdd(segTenantA, base+sec(4), crowdedFields(rowID(n+i)), 1)
+	}
+	segs2.MustAddRows(lr)
+	logstorage.PutLogRows(lr)
+	g2, ok := segs2.Seal()
+	if !ok {
+		t.Fatal("nothing sealed")
+	}
+	g1 := e.seal()
+	f1 := e.flusher(maxRows)
+	f2 := newBufferFlusher(e.bw, segs2, dir2, nil, BufferFlusherConfig{TargetBytes: maxRows * estBytesPerTraceRow, MaxAge: time.Hour, Grace: time.Minute})
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); errs[0] = f1.drain(context.Background(), g1) }()
+	go func() { defer wg.Done(); errs[1] = f2.drain(context.Background(), g2) }()
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("drains: %v, %v", errs[0], errs[1])
+	}
+	e.mustHaveExactly(2*n, "two writers")
+	e.storedOnce("two writers")
+	for _, r := range e.objectRows() {
+		if r > maxRows {
+			t.Errorf("a group of %d rows", r)
+		}
+	}
+	if g1.Nonce() == g2.Nonce() {
+		t.Error("the two segments share a nonce")
+	}
+}
+
+// A row's bucket does not depend on how the segment's blocks are laid out (which
+// columns a block has, and in what order): upstream merges the parts of a
+// segment between the plan and the collect of a group, and the two must agree.
+// The same rows, in one batch and in small batches with an extra field on some
+// of them, give the same groups.
+func TestSplitSecond_BucketsDoNotDependOnTheBlockLayout(t *testing.T) {
+	const n, maxRows = 4000, 300
+	base := hourAgo.UnixNano()
+	plan := func(batch int, extra bool) []flushSlice {
+		e := newSegEnv(t)
+		for off := 0; off < n; off += batch {
+			lr := logstorage.GetLogRows(crowdedStreamFields, nil, nil, nil, "")
+			for i := off; i < off+batch && i < n; i++ {
+				fields := crowdedFields(rowID(i))
+				if extra && i%2 == 0 {
+					fields = append(fields, logstorage.Field{Name: "a.extra", Value: "x"})
+				}
+				lr.MustAdd(segTenantA, base+sec(1)+int64(i%11), fields, 1)
+			}
+			e.segs.MustAddRows(lr)
+			logstorage.PutLogRows(lr)
+		}
+		g := e.seal()
+		f := e.flusher(maxRows)
+		groups, err := f.splitSecond(context.Background(), g, segTenantA, flushSlice{partition: partitionFromNano(base), start: base + sec(1), end: base + sec(2) - 1, rows: n})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return groups
+	}
+	one, many := plan(n, false), plan(97, true)
+	if len(one) < n/maxRows || fmt.Sprint(one) != fmt.Sprint(many) {
+		t.Fatalf("the buckets depend on the block layout:\n one batch   %v\n many batches %v", one, many)
+	}
 }

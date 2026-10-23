@@ -283,15 +283,18 @@ number of distinct seconds: the rows per hour (one query per tenant and
 segment); for an hour that holds more rows than a slice, the rows per second of
 that hour (at most 3,600 entries); for a second that holds more rows than a
 slice, the rows per bucket of that second (at most 1,025 entries), where the
-bucket is upstream's `hash` pipe over all the row's fields packed as JSON, cut
-into 1,024 equal ranges. A crowded second is therefore written as
-ceil(rows / limit) objects, each of consecutive buckets, instead of one object
-over the limit. A segment without a crowded second is planned exactly as when
-every second was counted: the same slices, the same numbers, the same bytes.
-The one remaining exception is rows that are identical in every field, the time
-included, more than a slice's worth of them: no content can tell them apart, so
-they stay one slice over the limit, and a warning (throttled to one a minute)
-says so. Keys are `<nonce>-<slice>`: the same in every process, because a sealed
+bucket is upstream's `hash` pipe over the row's time, stream and message (the
+span's time, trace id and span id in traces), cut into 1,024 equal ranges. A
+crowded second is therefore written as ceil(rows / limit) objects, each of
+consecutive buckets, instead of one object over the limit. A segment without a
+crowded second is planned exactly as when every second was counted: the same
+slices, the same numbers, the same bytes. The one remaining exception is more
+rows than a slice that are identical in those fields (the same message of the
+same stream at the same nanosecond): no content the bucket looks at can tell
+them apart, so they stay one slice over the limit, and a warning (throttled to
+one a minute) says so. The bucket is built from named fields because a pipe
+that packs all of a row's fields follows the order of the block's columns,
+which changes when upstream merges the segment's parts. Keys are `<nonce>-<slice>`: the same in every process, because a sealed
 segment is immutable.
 
 The invariant: **an object's bytes never change once uploaded, and no key is
