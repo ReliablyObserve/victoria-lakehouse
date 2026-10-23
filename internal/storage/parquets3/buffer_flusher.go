@@ -75,8 +75,10 @@ type flushSegments interface {
 //     dropped and the segment is kept readable for the grace period, then
 //     removed.
 //
-// Memory is bounded by maxRows per group, whatever the segment's size: the
-// slices are planned from per-second row counts of the segment.
+// Memory is bounded by maxRows per group, whatever the segment's size or the
+// number of rows that share a second: the groups are planned from summaries of
+// bounded size (rows per hour; per second in an hour that is over maxRows; per
+// hash bucket in a second that is over maxRows), see planGroups.
 //
 // Residuals: a PUT still in flight from a dead process can land after the
 // recovery HEAD said the object was absent, and the restarted flusher then
@@ -108,8 +110,13 @@ type BufferFlusher struct {
 	checkRan    bool // a plan or group check compared the plan with the segment
 	checkFailed bool // ... and one of them did not match
 
-	// secondCounts, when set, replaces the per-second query the plan is built
-	// from; a test sets it to build a plan that passes the plan check and then
+	// planQueries counts the summary queries planGroups ran (a test pins that a
+	// segment whose hours fit in a group costs one per tenant).
+	planQueries int
+
+	// secondCounts, when set, replaces the hour/second/bucket summaries the plan
+	// is built from (planGroups) by per-second counts cut by planSlices; a test
+	// sets it to build a plan that passes the plan check and then
 	// disagrees with the segment in a group. nil in production.
 	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error)
 
@@ -454,17 +461,23 @@ func segmentBatchID(nonce string, slice int) string {
 }
 
 // flushSlice is one group of a tenant: rows of one hour partition with
-// _time in [start, end].
+// _time in [start, end]. A bucketed group is a share of one second that holds
+// more rows than a group may (see splitSecond): of the rows in [start, end], those
+// whose bucket (splitBucketPipes) is in [bucketLo, bucketHi].
 type flushSlice struct {
 	partition  string
 	slice      int
 	start, end int64
 	rows       int64
+
+	bucketed           bool
+	bucketLo, bucketHi int64
 }
 
 // planSlices cuts a tenant's per-second row counts into groups of at most
 // maxRows rows that never cross an hour partition. A single second with more
-// rows than maxRows is one group. Deterministic for the same counts.
+// rows than maxRows is one group here; planGroups splits it (splitSecond).
+// Deterministic for the same counts.
 func planSlices(perSecond map[int64]int64, maxRows int64) []flushSlice {
 	secs := make([]int64, 0, len(perSecond))
 	for s := range perSecond {
@@ -495,56 +508,209 @@ func planSlices(perSecond map[int64]int64, maxRows int64) []flushSlice {
 // tenantSecondCounts returns the tenant's rows of g per second of _time
 // (upstream `stats by (_time:1s) count()`).
 func tenantSecondCounts(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID) (map[int64]int64, error) {
-	q, err := logstorage.ParseQueryAtTimestamp(`* | stats by (_time:1s) count() as n`, math.MaxInt64)
-	if err != nil {
-		return nil, err
-	}
-	q = q.CloneWithTimeFilter(q.GetTimestamp(), 0, math.MaxInt64)
-	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
+	return tenantTimeCounts(ctx, g, tenant, "1s", 0, math.MaxInt64)
+}
+
+// tenantTimeCounts returns the tenant's rows of g with _time in [from, to] per
+// bucket of _time (upstream `stats by (_time:<step>) count()`), keyed by the
+// bucket's start. It is the bounded summary the plan is built from: one entry
+// per hour of the segment, and one per second of an hour that holds more rows
+// than a group.
+func tenantTimeCounts(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, step string, from, to int64) (map[int64]int64, error) {
 	var mu sync.Mutex
 	out := map[int64]int64{}
+	err := runCounts(ctx, g, tenant, "* | stats by (_time:"+step+") count() as n", from, to, "_time", func(key string, n int64) error {
+		t, err := time.Parse(time.RFC3339Nano, key)
+		if err != nil {
+			return fmt.Errorf("per-%s count: _time %q: %w", step, key, err)
+		}
+		mu.Lock()
+		out[t.UnixNano()] += n
+		mu.Unlock()
+		return nil
+	})
+	return out, err
+}
+
+// runCounts runs a `stats by (<keyCol>) count() as n` query over [from, to] and
+// hands every (key, n) to add, from several goroutines.
+func runCounts(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, query string, from, to int64, keyCol string, add func(key string, n int64) error) error {
+	q, err := logstorage.ParseQueryAtTimestamp(query, math.MaxInt64)
+	if err != nil {
+		return err
+	}
+	q = q.CloneWithTimeFilter(q.GetTimestamp(), from, to)
+	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
+	var mu sync.Mutex
 	var perr error
 	err = g.RunQuery(qctx, func(_ uint, db *logstorage.DataBlock) {
-		var ts, ns []string
+		var ks, ns []string
 		for _, c := range db.GetColumns(false) {
 			switch c.Name {
-			case "_time":
-				ts = c.Values
+			case keyCol:
+				ks = c.Values
 			case "n":
 				ns = c.Values
 			}
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		for i := range ts {
-			t, err := time.Parse(time.RFC3339Nano, ts[i])
-			if err != nil {
-				perr = fmt.Errorf("per-second count: _time %q: %w", ts[i], err)
-				return
-			}
+		for i := range ks {
 			n, err := strconv.ParseInt(ns[i], 10, 64)
 			if err != nil {
-				perr = fmt.Errorf("per-second count: n %q: %w", ns[i], err)
+				perr = fmt.Errorf("count: n %q: %w", ns[i], err)
 				return
 			}
-			out[t.UnixNano()] += n
+			if err := add(ks[i], n); err != nil {
+				perr = err
+				return
+			}
 		}
 	})
 	if err == nil {
 		err = perr
 	}
-	return out, err
+	return err
+}
+
+// The bucket of a row, for splitting a second that holds more rows than a group:
+// upstream's `hash` pipe (xxhash64, cut to 53 bits so it is exact in a float) of
+// the row's time, stream and message, cut into splitBuckets equal ranges. The key is
+// built from named fields on purpose: a pipe that packs all of a row's fields
+// follows the order of the block's columns, which changes when upstream merges
+// the parts of a segment, and the plan and the collect of a group must give a
+// row the same bucket. The helper fields are deleted again before the rows are
+// used.
+const (
+	splitBuckets      = 1024
+	splitBucketDiv    = (1 << 53) / splitBuckets // a power of two, so the division is exact in a float
+	splitKeyFormat    = `<_time>|<_stream_id>|<_msg>`
+	splitBucketDelete = `delete _lh_split_k, _lh_split_h, _lh_split_b`
+)
+
+var splitBucketPipes = fmt.Sprintf(`format "%s" as _lh_split_k | hash(_lh_split_k) as _lh_split_h | math floor(_lh_split_h / %d) as _lh_split_b`, splitKeyFormat, splitBucketDiv)
+
+// hourEnd is the last nanosecond of the hour starting at h.
+func hourEnd(h int64) int64 {
+	if h > math.MaxInt64-int64(time.Hour) {
+		return math.MaxInt64
+	}
+	return h + int64(time.Hour) - 1
+}
+
+// planGroups cuts one tenant's rows of g into groups of at most f.maxRows rows,
+// from summaries whose size does not depend on the number of distinct seconds:
+// the rows per hour (one query, one entry per hour of the segment); for an hour
+// that holds more than maxRows rows, the rows per second of that hour (at most
+// 3,600 entries); for a second that holds more than maxRows rows, the rows per
+// bucket of that second (at most splitBuckets entries). An hour that fits is
+// one group, which is what planSlices makes of it too, so the plan of a segment
+// without a crowded second is the plan planSlices made from every second.
+func (f *BufferFlusher) planGroups(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID) ([]flushSlice, error) {
+	f.planQueries++
+	hours, err := tenantTimeCounts(ctx, g, tenant, "1h", 0, math.MaxInt64)
+	if err != nil {
+		return nil, err
+	}
+	starts := make([]int64, 0, len(hours))
+	for h := range hours {
+		starts = append(starts, h)
+	}
+	sort.Slice(starts, func(i, j int) bool { return starts[i] < starts[j] })
+	var out []flushSlice
+	for _, h := range starts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if n := hours[h]; n <= f.maxRows {
+			out = append(out, flushSlice{partition: partitionFromNano(h), start: h, end: hourEnd(h), rows: n})
+			continue
+		}
+		f.planQueries++
+		secs, err := tenantTimeCounts(ctx, g, tenant, "1s", h, hourEnd(h))
+		if err != nil {
+			return nil, err
+		}
+		next := 0
+		for _, sl := range planSlices(secs, f.maxRows) {
+			parts := []flushSlice{sl}
+			if sl.rows > f.maxRows {
+				f.planQueries++
+				if parts, err = f.splitSecond(ctx, g, tenant, sl); err != nil {
+					return nil, err
+				}
+			}
+			for _, p := range parts {
+				p.slice = next
+				next++
+				out = append(out, p)
+			}
+		}
+	}
+	return out, nil
+}
+
+// splitSecond cuts a second that holds more than f.maxRows rows into bucketed
+// groups of at most f.maxRows rows each, of consecutive buckets. A bucket that
+// alone holds more than maxRows rows (rows identical in the fields the bucket is
+// made of, see splitKeyFormat) cannot be cut further by content: it is one group
+// over the cap, and is logged.
+func (f *BufferFlusher) splitSecond(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) ([]flushSlice, error) {
+	counts := map[int64]int64{}
+	err := runCounts(ctx, g, tenant, "* | "+splitBucketPipes+" | stats by (_lh_split_b) count() as n", sl.start, sl.end, "_lh_split_b", func(key string, n int64) error {
+		b, err := strconv.ParseInt(key, 10, 64)
+		if err != nil {
+			return fmt.Errorf("bucket count: bucket %q: %w", key, err)
+		}
+		counts[b] += n
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	bs := make([]int64, 0, len(counts))
+	for b := range counts {
+		bs = append(bs, b)
+	}
+	sort.Slice(bs, func(i, j int) bool { return bs[i] < bs[j] })
+	var out []flushSlice
+	for _, b := range bs {
+		n := counts[b]
+		if k := len(out) - 1; k >= 0 && out[k].rows+n <= f.maxRows {
+			out[k].rows += n
+			out[k].bucketHi = b
+			continue
+		}
+		if n > f.maxRows {
+			oversizedGroupLogger.Warnf("buffer flusher: %d rows of tenant %d:%d in %s share one bucket of a crowded second (identical in the row's time, stream and message): they stay one group of %d rows, over the %d-row cap",
+				n, tenant.AccountID, tenant.ProjectID, time.Unix(0, sl.start).UTC().Format(time.RFC3339), n, f.maxRows)
+		}
+		out = append(out, flushSlice{partition: sl.partition, start: sl.start, end: sl.end, rows: n, bucketed: true, bucketLo: b, bucketHi: b})
+	}
+	return out, nil
+}
+
+var oversizedGroupLogger = logger.WithThrottler("oversized_group", time.Minute)
+
+// sliceQuery is the query that returns a group's rows.
+func sliceQuery(sl flushSlice) string {
+	if !sl.bucketed {
+		return "*"
+	}
+	return fmt.Sprintf("* | %s | filter _lh_split_b:range[%d, %d] | %s", splitBucketPipes, sl.bucketLo, sl.bucketHi, splitBucketDelete)
 }
 
 // collectSlice reads one group's rows from g and applies the keep filter. It
 // returns the rows to write and the number of rows the filter left out.
 func (f *BufferFlusher) collectSlice(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) (rows []schema.LogRow, filtered int, err error) {
-	q, err := logstorage.ParseQueryAtTimestamp("*", sl.end)
+	q, err := logstorage.ParseQueryAtTimestamp(sliceQuery(sl), sl.end)
 	if err != nil {
 		return nil, 0, err
 	}
 	q = q.CloneWithTimeFilter(q.GetTimestamp(), sl.start, sl.end)
 	qctx := logstorage.NewQueryContext(ctx, &logstorage.QueryStats{}, []logstorage.TenantID{tenant}, q, false, nil)
+	// The plan knows how many rows the group has: one allocation, no doubling.
+	rows = make([]schema.LogRow, 0, sl.rows)
 	// logstorage calls writeBlock from several goroutines.
 	var mu sync.Mutex
 	var seen int
@@ -698,11 +864,7 @@ type tenantPlan struct {
 // (errDrainInvariant). A tenant whose groups cannot be planned now is reported in
 // planErr: the other tenants are still written and the drain is retried.
 func (f *BufferFlusher) planSegment(ctx context.Context, g *membuffer.Segment) (plans []tenantPlan, planErr, err error) {
-	sc := f.secondCounts
-	if sc == nil {
-		sc = tenantSecondCounts
-	}
-	return f.planSegmentWith(ctx, g, sc, tenantRowCount)
+	return f.planSegmentWith(ctx, g, f.secondCounts, tenantRowCount)
 }
 
 // planSegmentWith is planSegment with its two per-tenant queries as parameters.
@@ -751,13 +913,23 @@ func (f *BufferFlusher) planSegmentWith(ctx context.Context, g *membuffer.Segmen
 func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID,
 	secondCounts func(context.Context, *membuffer.Segment, logstorage.TenantID) (map[int64]int64, error),
 	rowCount func(context.Context, *membuffer.Segment, logstorage.TenantID) (int64, error)) (tenantPlan, error) {
-	counts, err := secondCounts(ctx, g, tenant)
-	if err != nil {
-		return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+	tp := tenantPlan{tenant: tenant}
+	if secondCounts != nil {
+		// A test's plan: its own per-second counts, cut by planSlices.
+		counts, err := secondCounts(ctx, g, tenant)
+		if err != nil {
+			return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+		}
+		tp.slices = planSlices(counts, f.maxRows)
+	} else {
+		slices, err := f.planGroups(ctx, g, tenant)
+		if err != nil {
+			return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
+		}
+		tp.slices = slices
 	}
-	tp := tenantPlan{tenant: tenant, slices: planSlices(counts, f.maxRows)}
-	for _, n := range counts {
-		tp.rows += n
+	for _, sl := range tp.slices {
+		tp.rows += sl.rows
 	}
 	n, err := rowCount(ctx, g, tenant)
 	if err == nil {
