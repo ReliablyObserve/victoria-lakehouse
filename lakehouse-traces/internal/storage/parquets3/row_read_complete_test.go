@@ -954,14 +954,14 @@ func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
 		warm           bool
 		incompressible bool
 	}
-	var cases []tcase
-	for _, shape := range []bool{false, true} {
-		for _, warm := range []bool{false, true} {
-			for _, q := range []string{"*", "padding"} {
-				name := map[bool]string{false: "compressible", true: "incompressible"}[shape] + "/" + map[bool]string{false: "cold", true: "warm"}[warm] + "/" + map[bool]string{true: "unfiltered", false: "filtered"}[q == "*"]
-				cases = append(cases, tcase{name, q, warm, shape})
-			}
-		}
+	// Each dimension (footer cold/warm, compressible/not, filtered/not) is crossed
+	// with the others in at least one case; all eight would cost the package its
+	// CI time budget.
+	cases := []tcase{
+		{"compressible/cold/unfiltered", "*", false, false},
+		{"compressible/warm/filtered", "padding", true, false},
+		{"incompressible/cold/filtered", "padding", false, true},
+		{"incompressible/warm/unfiltered", "*", true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -991,27 +991,24 @@ func TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded(t *testing.T) {
 				return pk.Load(), mb.Load(), total.Load(), n.Load(), rows, err
 			}
 
-			// Without a ceiling: the real decoded size, and what the workers pile up to
-			// (a few attempts: whether sixteen workers overlap is a matter of scheduling).
-			var unboundedPeak, maxBlock, rowGroup, ceiling int64
-			for attempt := 0; ; attempt++ {
-				ref := newRCFixtureShape(t, 16, files, rcKeyFmt, tc.incompressible)
-				ref.s.cfg.Query.MaxLiveBytes = 8 << 30
-				var total, blocks int64
-				var rows int
-				var err error
-				unboundedPeak, maxBlock, total, blocks, rows, err = measure(ref)
-				if err != nil || rows != files*rcRowsPerFile {
-					t.Fatalf("unbounded run: %d rows, err %v", rows, err)
-				}
-				rowGroup = total / blocks // one block per row group in these objects
-				ceiling = 3 * rowGroup
-				if unboundedPeak > ceiling+maxBlock {
-					break
-				}
-				if attempt == 4 {
-					t.Fatalf("without a ceiling the workers hold only %d B in flight (ceiling %d B + block %d B): the test cannot tell a gate from none", unboundedPeak, ceiling, maxBlock)
-				}
+			// Without a ceiling: the real decoded size of a row group, and what the
+			// workers pile up to (the process-wide row-group decoder limit caps that at
+			// two on a small machine). The ceiling is three row groups, or lower when
+			// the unbounded run itself did not reach that, so that the limit
+			// (ceiling + one block) is always below what a gate-less run holds.
+			ref := newRCFixtureShape(t, 16, files, rcKeyFmt, tc.incompressible)
+			ref.s.cfg.Query.MaxLiveBytes = 8 << 30
+			unboundedPeak, maxBlock, total, blocks, rows, err := measure(ref)
+			if err != nil || rows != files*rcRowsPerFile {
+				t.Fatalf("unbounded run: %d rows, err %v", rows, err)
+			}
+			rowGroup := total / blocks // one block per row group in these objects
+			ceiling := 3 * rowGroup
+			if unboundedPeak <= ceiling+maxBlock {
+				ceiling = unboundedPeak - maxBlock - rowGroup/2
+			}
+			if ceiling < 1 || unboundedPeak <= ceiling+maxBlock {
+				t.Fatalf("without a ceiling the workers hold only %d B in flight (one block is %d B): the test cannot tell a gate from none", unboundedPeak, maxBlock)
 			}
 
 			fx := newRCFixtureShape(t, 16, files, rcKeyFmt, tc.incompressible)
