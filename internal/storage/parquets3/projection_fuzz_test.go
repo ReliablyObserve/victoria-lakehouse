@@ -102,7 +102,7 @@ func runProjectedQuery(t testing.TB, s *Storage, f *parquet.File, base time.Time
 	filter := parseFilterFromQuery(q)
 	search := func(wb logstorage.WriteDataBlockFunc) error {
 		for _, rg := range f.RowGroups() {
-			err := s.readOneRowGroup(f, rg, startNs, endNs, cols, nil, func(w uint, db *logstorage.DataBlock) {
+			err := s.readOneRowGroup(context.Background(), f, rg, startNs, endNs, cols, nil, func(w uint, db *logstorage.DataBlock) {
 				if db = filterDataBlock(db, filter); db != nil && db.RowsCount() > 0 {
 					wb(w, db)
 				}

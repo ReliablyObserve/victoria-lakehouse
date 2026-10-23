@@ -729,7 +729,7 @@ var (
 	QueryRowsTotal            = NewCounter("lakehouse_query_rows_returned_total")
 	QueryRejectedTotal        = NewCounter("lakehouse_query_rejected_total")
 	QueryFileLimitExceeded    = NewCounter("lakehouse_query_file_limit_exceeded_total")
-	QueryMemoryBudgetExceeded = NewCounter("lakehouse_query_memory_budget_exceeded_total")
+	QueryMemoryBudgetExceeded = NewCounter("lakehouse_query_memory_budget_exceeded_total") // counts waits of a file worker under query.max_live_bytes, not cancelled queries
 
 	// TenantScopeViolations counts objects/rows the read path selected that do
 	// NOT belong to the requesting tenant. The guard drops them before they can

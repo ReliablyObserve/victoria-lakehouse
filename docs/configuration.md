@@ -327,7 +327,7 @@ The **Effect** column says what a flag does to the config key it writes:
 | `-lakehouse.query.file-workers.request` | both | `query.file_workers_request` | set | `0` | Query file-workers request (always-reserved baseline) |
 | `-lakehouse.query.file-workers.scaling` | both | `query.file_workers_scaling` | set | ` ` | Query file-workers scaling policy: fixed\|linear\|expbackoff |
 | `-lakehouse.query.max-files-per-query` | both | `query.max_files_per_query` | set | `0` | Max S3 files per query before rejection (default: 0 = unlimited) |
-| `-lakehouse.query.max-live-bytes` | both | `query.max_live_bytes` | set | `0` | Per-query ceiling on in-flight DataBlock bytes; above it a file worker waits for the consumer (default: 512MiB) |
+| `-lakehouse.query.max-live-bytes` | both | `query.max_live_bytes` | set | `0` | Per-query ceiling on the estimated decoded bytes of the objects read at once; a file worker waits for earlier objects above it (default: 512MiB) |
 | `-lakehouse.query.max-rows.limit` | both | `query.max_rows_limit` | set | `0` | Query max-rows limit (hard ceiling) |
 | `-lakehouse.query.max-rows.request` | both | `query.max_rows_request` | set | `0` | Query max-rows request (operator-visible baseline) |
 | `-lakehouse.query.max-rows.scaling` | both | `query.max_rows_scaling` | set | ` ` | Query max-rows scaling policy: fixed\|linear\|expbackoff |
@@ -600,7 +600,7 @@ Bounds the cost of select queries.
 | `query.file_workers_scaling` | string | `""` | set | `-lakehouse.query.file-workers.scaling` |  | The ramp policy from file_workers_request to file_workers_limit: fixed, linear or expbackoff. |
 | `query.max_concurrent` | int | `32` | set |  | max-performance: `64`; max-cost-savings: `16`; dev: `4` | Caps concurrent select queries; a query over the cap gets HTTP 429. |
 | `query.max_files_per_query` | int | `0` | ignored | `-lakehouse.query.max-files-per-query` |  | Rejects a query that matches more S3 files than this; 0 means unlimited, leaving the memory budget as the safety net. |
-| `query.max_live_bytes` | int | `536870912` | set | `-lakehouse.query.max-live-bytes` |  | A per-query ceiling on the bytes of in-flight DataBlocks currently held by RunQuery before writeBlock has consumed them. |
+| `query.max_live_bytes` | int | `536870912` | set | `-lakehouse.query.max-live-bytes` |  | A per-query ceiling on the estimated decoded bytes of the objects RunQuery reads at once. |
 | `query.max_rows` | int | `10000000` | set |  | max-performance: `50000000`; max-cost-savings: `1000000`; dev: `100000` | The deprecated per-query row ceiling, used when max_rows_limit is unset. |
 | `query.max_rows_limit` | int | `0` | set | `-lakehouse.query.max-rows.limit` |  | The hard per-query row ceiling. |
 | `query.max_rows_request` | int | `0` | set | `-lakehouse.query.max-rows.request` |  | K8s-style request/limit/scaling for the per-query row ceiling. |

@@ -100,28 +100,34 @@
     - internal/storage/parquets3/query_limits_test.go
     - lakehouse-traces/internal/storage/parquets3/query_limits_test.go
     - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
-    - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow
+    - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
+    - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
-    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
-    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
+    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeObjectAdmittedAlone
+    - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ReservedBytesNeverPassTheCeiling
+    - internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
-    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
-    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
-    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeObjectAdmittedAlone
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ReservedBytesNeverPassTheCeiling
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
+    - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow
   docs:
     - docs/performance-machinery.md
     - docs/configuration.md
     - docs/read-path.md
   highlight: >-
-    **Query memory budget**: `-lakehouse.query.max-live-bytes` bounds the live DataBlock bytes one query may hold; a worker that reaches it waits for the consumer, so the pod is not pushed into an OOM kill and the answer is never cut short.
+    **Query memory budget**: `-lakehouse.query.max-live-bytes` bounds the estimated decoded bytes of the objects one query reads at once; a file worker reserves an object's estimate before it takes any slot and waits when the ceiling is full, so the pod is not pushed into an OOM kill, other queries are not starved, and the answer is never cut short.
   description: >-
     Cold queries hold decoded row groups in memory while they stream results. The budget makes
-    that bounded and observable: a worker whose block would exceed it waits until the consumer
-    has drained the bytes in flight (counted), instead of pushing the pod into an OOM kill that
-    takes every other query with it. The wait never cancels the read or drops a block, so the
-    answer is complete.
+    that bounded and observable: a file worker reserves an estimate of an object's decoded size
+    (counted when it has to wait) before it takes any process-wide slot, instead of pushing the pod
+    into an OOM kill that takes every other query with it. The wait never cancels the read or drops
+    a block, so the answer is complete, and a stalled consumer holds no slot another query needs.
 
 - id: lh.feature.query.resource_bounds
   title: K8s-style resource bounds for query surfaces
@@ -153,7 +159,7 @@
   area: query
   readme_section: Read Path
   surfaces: [flag]
-  rows: [lh.query.read_complete_or_fail]
+  rows: [lh.query.read_complete_or_fail, lh.query.removed_source_mid_query]
   tests:
     - internal/storage/parquets3/worker_cap_test.go
     - internal/storage/parquets3/query_memory_budget_test.go#TestAcquireFileBudget_BoundsConcurrency

@@ -81,9 +81,46 @@ func readRowGroupColumnarKeys(
 
 	// First pass: read timestamp column to build row filter mask.
 	// This determines which rows pass the time range filter.
-	rowMask, passCount, err := columnarRowMask(allCols, chunks, numRows, startNs, endNs, bitmap)
-	if err != nil {
-		return nil, err
+	var rowMask []bool
+	var tsValues []int64
+	tsIdx := -1
+	for i, path := range allCols {
+		if path[0] == "timestamp_unix_nano" {
+			tsIdx = i
+			break
+		}
+	}
+	if tsIdx >= 0 {
+		var err error
+		tsValues, err = readInt64Column(chunks[tsIdx], numRows)
+		if err != nil {
+			return nil, err
+		}
+		rowMask = make([]bool, numRows)
+		for i, ts := range tsValues {
+			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
+				continue
+			}
+			if ts >= startNs && ts <= endNs {
+				rowMask[i] = true
+			}
+		}
+	} else {
+		rowMask = make([]bool, numRows)
+		for i := range rowMask {
+			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
+				continue
+			}
+			rowMask[i] = true
+		}
+	}
+
+	// Count passing rows for pre-allocation.
+	passCount := 0
+	for _, pass := range rowMask {
+		if pass {
+			passCount++
+		}
 	}
 	if passCount == 0 {
 		return nil, nil
@@ -158,48 +195,6 @@ func readRowGroupColumnarKeys(
 	db.SetColumns(blockCols)
 	orderColumnsLikeUpstream(db)
 	return db, nil
-}
-
-// columnarRowMask is the first pass of the columnar read: the rows of the row
-// group that lie in [startNs, endNs] and pass the pre-where bitmap, and how many
-// they are. A timestamp column that cannot be read is an error, not an empty mask.
-func columnarRowMask(allCols [][]string, chunks []parquet.ColumnChunk, numRows int, startNs, endNs int64, bitmap []bool) ([]bool, int, error) {
-	tsIdx := -1
-	for i, path := range allCols {
-		if path[0] == "timestamp_unix_nano" {
-			tsIdx = i
-			break
-		}
-	}
-	rowMask := make([]bool, numRows)
-	if tsIdx >= 0 {
-		tsValues, err := readInt64Column(chunks[tsIdx], numRows)
-		if err != nil {
-			return nil, 0, err
-		}
-		for i, ts := range tsValues {
-			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
-				continue
-			}
-			if ts >= startNs && ts <= endNs {
-				rowMask[i] = true
-			}
-		}
-	} else {
-		for i := range rowMask {
-			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
-				continue
-			}
-			rowMask[i] = true
-		}
-	}
-	passCount := 0
-	for _, pass := range rowMask {
-		if pass {
-			passCount++
-		}
-	}
-	return rowMask, passCount, nil
 }
 
 // readInt64Column reads all values from an int64 column chunk. A page or value

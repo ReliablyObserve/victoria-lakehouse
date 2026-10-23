@@ -103,7 +103,7 @@ var (
 
 	queryFileWorkers      = flag.Int("lakehouse.query.file-workers", 0, "Number of parallel file workers for queries (default: 64)")
 	queryMaxFilesPerQuery = flag.Int("lakehouse.query.max-files-per-query", 0, "Max S3 files per query before rejection (default: 0 = unlimited)")
-	queryMaxLiveBytes     = flag.Int64("lakehouse.query.max-live-bytes", 0, "Per-query ceiling on in-flight DataBlock bytes; above it a file worker waits for the consumer (default: 512MiB)")
+	queryMaxLiveBytes     = flag.Int64("lakehouse.query.max-live-bytes", 0, "Per-query ceiling on the estimated decoded bytes of the objects read at once; a file worker waits for earlier objects above it (default: 512MiB)")
 
 	s3ReadAhead       = flag.Int("lakehouse.s3.read-ahead-bytes", 0, "S3 read-ahead base window in bytes (default: 2MB)")
 	s3CoalesceGap     = flag.Int("lakehouse.s3.coalesce-gap-bytes", 0, "Merge S3 range reads with gaps smaller than this (default: 1MB)")

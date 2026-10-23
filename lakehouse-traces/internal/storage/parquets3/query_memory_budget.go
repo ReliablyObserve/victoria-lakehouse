@@ -9,6 +9,7 @@ import (
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
@@ -18,56 +19,74 @@ import (
 // query_memory_budget.go for the rationale.
 const defaultMaxLiveBytes int64 = 512 * 1024 * 1024
 
-// liveBytesGate is the per-query ceiling on the bytes of DataBlock rows held
-// between the decoder and the consumer (query.max_live_bytes). A worker that
-// finds the ceiling reached WAITS until the consumer has drained enough; it is
-// never cancelled and never drops its block. The query used to be cancelled
-// instead, which answered 200 with the rows of the files still to be read (or
-// of the file being read) missing.
+// liveBytesGate is the per-query ceiling on the decoded bytes of the objects a
+// query is reading at once (query.max_live_bytes). A file worker RESERVES an
+// estimate of the object's decoded size before it takes any process-wide slot
+// (file budget, row-group decoder) or opens the object, and waits for the
+// reservation when the bytes already reserved would pass the ceiling. The wait
+// holds nothing, so a query whose consumer is slow or stalled cannot starve the
+// other queries of slots; it is ctx-aware; and it never cancels the read or
+// drops a block (the query used to be cancelled instead, which answered 200 with
+// rows missing).
 //
-// The wait is ctx-aware, so a query its caller gave up on (or that hit the row
-// ceiling) is released at once, and it is evaluated against the bytes already
-// in flight, not the block waiting: a block larger than the ceiling is admitted
-// as soon as nothing else is in flight, so no block can wait forever. The bytes
-// held in flight stay within the ceiling plus, at most, one block per worker.
+// The reservation is atomic: the bytes reserved never pass the ceiling, except
+// by one object larger than the ceiling, which is admitted alone when nothing
+// else is reserved (so no object can wait for room that never comes). The
+// estimate is the object's uncompressed size from its footer when the footer is
+// cached, else its stored size times an assumed expansion
+// (assumedDecodeExpansion): a conservative bound, since a worker decodes one row
+// group of the object at a time.
 type liveBytesGate struct {
 	live    atomic.Int64
+	peak    atomic.Int64 // the high-water mark of live, for the tests and the ceiling's metric
 	waiters atomic.Int32
+	logged  atomic.Bool
 	mu      sync.Mutex
 	cond    *sync.Cond
 }
 
-// add counts n bytes as in flight.
-func (g *liveBytesGate) add(n int64) { g.live.Add(n) }
+// assumedDecodeExpansion is the assumed ratio of an object's decoded bytes to its
+// stored bytes when its footer is not at hand (assumed, not measured: zstd-compressed
+// logs and spans decode to several times their size).
+const assumedDecodeExpansion = 4
 
-// release uncounts n bytes and wakes the workers waiting for room.
-func (g *liveBytesGate) release(n int64) {
-	g.live.Add(-n)
-	if g.waiters.Load() > 0 {
-		g.wake()
+// tryReserve reserves n bytes unless that would pass max while other bytes are reserved.
+func (g *liveBytesGate) tryReserve(n, max int64) bool {
+	for {
+		cur := g.live.Load()
+		if cur != 0 && cur+n > max {
+			return false
+		}
+		if g.live.CompareAndSwap(cur, cur+n) {
+			for {
+				p := g.peak.Load()
+				if cur+n <= p || g.peak.CompareAndSwap(p, cur+n) {
+					return true
+				}
+			}
+		}
 	}
 }
 
-func (g *liveBytesGate) wake() {
-	g.mu.Lock()
-	if g.cond != nil {
-		g.cond.Broadcast()
+// reserve blocks until n bytes can be reserved against max, or ctx ends. The
+// returned release must be called once the bytes are no longer held.
+func (g *liveBytesGate) reserve(ctx context.Context, n, max int64) (func(), error) {
+	if n < 1 {
+		n = 1
 	}
-	g.mu.Unlock()
-}
-
-// waitBelow returns once fewer than max bytes are in flight, or false when ctx
-// ends first. The first wait of a query is logged once (logged) and every wait
-// is counted in lakehouse_query_memory_budget_exceeded_total. The fast path is
-// one atomic load.
-func (g *liveBytesGate) waitBelow(ctx context.Context, max int64, logged *atomic.Bool) bool {
-	if g.live.Load() < max {
-		return true
+	release := func() {
+		g.live.Add(-n)
+		if g.waiters.Load() > 0 {
+			g.wake()
+		}
+	}
+	if g.tryReserve(n, max) {
+		return release, nil
 	}
 	metrics.QueryMemoryBudgetExceeded.Inc()
-	if logged.CompareAndSwap(false, true) {
-		logger.Warnf("query memory budget reached: live=%d, max=%d; waiting for the consumer",
-			g.live.Load(), max)
+	if g.logged.CompareAndSwap(false, true) {
+		logger.Warnf("query memory budget reached: reserved=%d, want=%d, max=%d; waiting for earlier objects to be consumed",
+			g.live.Load(), n, max)
 	}
 	stop := context.AfterFunc(ctx, g.wake)
 	defer stop()
@@ -79,13 +98,65 @@ func (g *liveBytesGate) waitBelow(ctx context.Context, max int64, logged *atomic
 	}
 	g.waiters.Add(1)
 	defer g.waiters.Add(-1)
-	for g.live.Load() >= max {
-		if ctx.Err() != nil {
-			return false
+	for !g.tryReserve(n, max) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		g.cond.Wait()
 	}
-	return true
+	return release, nil
+}
+
+func (g *liveBytesGate) wake() {
+	g.mu.Lock()
+	if g.cond != nil {
+		g.cond.Broadcast()
+	}
+	g.mu.Unlock()
+}
+
+// liveGateHook, when set (tests only), receives each query's gate as it is made.
+var liveGateHook func(*liveBytesGate)
+
+type liveGateKey struct{}
+
+type liveGateRef struct {
+	g   *liveBytesGate
+	max int64
+}
+
+// withLiveBytesGate attaches the query's gate to ctx for queryFile.
+func withLiveBytesGate(ctx context.Context, g *liveBytesGate, max int64) context.Context {
+	return context.WithValue(ctx, liveGateKey{}, liveGateRef{g: g, max: max})
+}
+
+// reserveLiveBytes reserves the estimated decoded size of the object against the
+// query's ceiling; a query without a gate (QuerySpecificFiles) reserves nothing.
+func (s *Storage) reserveLiveBytes(ctx context.Context, fi manifest.FileInfo) (func(), error) {
+	ref, ok := ctx.Value(liveGateKey{}).(liveGateRef)
+	if !ok {
+		return func() {}, nil
+	}
+	return ref.g.reserve(ctx, s.estimateDecodedBytes(fi), ref.max)
+}
+
+// estimateDecodedBytes: the uncompressed size of the object's row groups from its
+// cached footer, else the stored size times assumedDecodeExpansion.
+func (s *Storage) estimateDecodedBytes(fi manifest.FileInfo) int64 {
+	if s.footerCache != nil {
+		if cached, ok := s.footerCache.Get(fi.Key); ok && cached != nil && cached.File != nil {
+			if md := cached.File.Metadata(); md != nil {
+				var total int64
+				for _, rg := range md.RowGroups {
+					total += rg.TotalByteSize
+				}
+				if total > 0 {
+					return total
+				}
+			}
+		}
+	}
+	return fi.Size * assumedDecodeExpansion
 }
 
 // defaultMaxRowsPerBlock caps the number of rows in a single DataBlock
@@ -166,11 +237,16 @@ var rgDecodeSem = func() chan struct{} {
 	return make(chan struct{}, n)
 }()
 
-// acquireRGDecode blocks until a row-group decoder slot is available.
-// Returns a release func that must be called when decoding is complete.
-func acquireRGDecode() func() {
-	rgDecodeSem <- struct{}{}
-	return func() { <-rgDecodeSem }
+// acquireRGDecode blocks until a row-group decoder slot is available, or ctx
+// ends (a query its caller gave up on stops waiting at once). Returns a release
+// func that must be called when decoding is complete; callers defer it right away.
+func acquireRGDecode(ctx context.Context) (func(), error) {
+	select {
+	case rgDecodeSem <- struct{}{}:
+		return func() { <-rgDecodeSem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // defaultMaxFileResidentBytes caps the cumulative bytes of parquet-file

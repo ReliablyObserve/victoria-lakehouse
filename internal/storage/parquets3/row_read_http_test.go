@@ -9,6 +9,7 @@ package parquets3
 // Mirrored in lakehouse-traces/internal/storage/parquets3/row_read_http_test.go.
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -54,18 +55,19 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 	endpoints := []struct {
 		name, path string
 		params     url.Values
+		status     int // the status of an unreadable object; 0 is 502 Bad Gateway
 	}{
-		{"query", "/select/logsql/query", url.Values{"query": {"*"}}},
-		{"query_filtered", "/select/logsql/query", url.Values{"query": {"service.name:=svc-1"}}},
-		{"stats_query", "/select/logsql/stats_query", url.Values{"query": {"* | stats count() as n"}}},
-		{"stats_query_range", "/select/logsql/stats_query_range", url.Values{"query": {"* | stats count() as n"}, "step": {"1h"}}},
-		{"hits", "/select/logsql/hits", url.Values{"query": {"*"}, "step": {"1h"}}},
-		{"field_names", "/select/logsql/field_names", url.Values{"query": {"*"}}},
-		{"field_values", "/select/logsql/field_values", url.Values{"query": {"*"}, "field": {"service.name"}}},
-		{"streams", "/select/logsql/streams", url.Values{"query": {"*"}}},
-		{"stream_ids", "/select/logsql/stream_ids", url.Values{"query": {"*"}}},
-		{"stream_field_names", "/select/logsql/stream_field_names", url.Values{"query": {"*"}}},
-		{"stream_field_values", "/select/logsql/stream_field_values", url.Values{"query": {"*"}, "field": {"service.name"}}},
+		{"query", "/select/logsql/query", url.Values{"query": {"*"}}, 0},
+		{"query_filtered", "/select/logsql/query", url.Values{"query": {"service.name:=svc-1"}}, 0},
+		{"stats_query", "/select/logsql/stats_query", url.Values{"query": {"* | stats count() as n"}}, 0},
+		{"stats_query_range", "/select/logsql/stats_query_range", url.Values{"query": {"* | stats count() as n"}, "step": {"1h"}}, 0},
+		{"hits", "/select/logsql/hits", url.Values{"query": {"*"}, "step": {"1h"}}, 0},
+		{"field_names", "/select/logsql/field_names", url.Values{"query": {"*"}}, 0},
+		{"field_values", "/select/logsql/field_values", url.Values{"query": {"*"}, "field": {"service.name"}}, 0},
+		{"streams", "/select/logsql/streams", url.Values{"query": {"*"}}, 0},
+		{"stream_ids", "/select/logsql/stream_ids", url.Values{"query": {"*"}}, 0},
+		{"stream_field_names", "/select/logsql/stream_field_names", url.Values{"query": {"*"}}, 0},
+		{"stream_field_values", "/select/logsql/stream_field_values", url.Values{"query": {"*"}, "field": {"service.name"}}, 0},
 	}
 	for _, ep := range endpoints {
 		t.Run(ep.name, func(t *testing.T) {
@@ -87,6 +89,17 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 			t.Logf("HTTP unreadable %-20s -> %d %.110q", ep.name, code, body)
 			if rcComplete(code, body) {
 				t.Fatalf("%s answered %d %q with an unreadable object", ep.name, code, body)
+			}
+			// 502 Bad Gateway, the status upstream gives a read whose storage node is
+			// unavailable. Jaeger's handlers format the error with %s, which drops its
+			// status: they stay 400 until an export patch of VictoriaTraces keeps it
+			// (issue #773); the test pins that, it does not endorse it.
+			want := ep.status
+			if want == 0 {
+				want = http.StatusBadGateway
+			}
+			if code != want {
+				t.Fatalf("%s answered %d %.120q, want %d", ep.name, code, body, want)
 			}
 
 			fx = newRCFixture(t, 4, rcKeyFmt)

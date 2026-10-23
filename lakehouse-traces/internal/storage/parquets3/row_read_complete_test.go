@@ -31,6 +31,7 @@ import (
 	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
@@ -213,6 +214,11 @@ func rcSpans(base time.Time, file, n int) []schema.TraceRow {
 
 // newRCFixture registers rcFiles span objects of rcRowsPerFile spans each.
 func newRCFixture(t *testing.T, workers int, keyFmt string) *rcFixture {
+	return newRCFixtureN(t, workers, rcFiles, keyFmt)
+}
+
+// newRCFixtureN registers n objects.
+func newRCFixtureN(t *testing.T, workers, n int, keyFmt string) *rcFixture {
 	t.Helper()
 	fs := newFaultS3(t)
 	s := testStorageWithS3(t, fs.srv.URL)
@@ -220,7 +226,7 @@ func newRCFixture(t *testing.T, workers int, keyFmt string) *rcFixture {
 	s.cfg.Query.FileWorkers = workers
 	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	fx := &rcFixture{fs: fs, s: s, base: base, start: base.Add(-time.Hour).UnixNano(), end: base.Add(time.Hour).UnixNano()}
-	for i := 0; i < rcFiles; i++ {
+	for i := 0; i < n; i++ {
 		res, err := writeTracesParquet(rcSpans(base, i, rcRowsPerFile), 250, 3)
 		if err != nil {
 			t.Fatal(err)
@@ -329,6 +335,34 @@ func TestRowRead_RemovedObject_StaysTolerated(t *testing.T) {
 	}
 }
 
+// KNOWN GAP (#772): a source object a compaction deleted while the query ran is
+// skipped silently, though its rows are in the merged object. The compactor
+// publishes the merge and deletes its sources at once, and a query lists once, so
+// the query answers without those rows and without an error. This test pins that
+// behaviour so that the gap stays visible; when #772 is fixed it must be turned
+// into the assertion that every row arrives.
+func TestRowRead_RemovedSourceMidQuery_KnownGap772(t *testing.T) {
+	fx := newRCFixture(t, 1, rcKeyFmt) // one worker: the objects are read one after the other
+	source := fx.keys[1]
+	// The merged object holds the source's rows; the query's listing does not have it.
+	fx.fs.mock.putFile("traces/dt=2026-10-23/hour=10/compacted-merge.parquet", fx.datas[1])
+	fx.fs.setFault(source, func(w http.ResponseWriter, r *http.Request) {
+		// The compactor deletes the source just before the query reads it.
+		fx.fs.mock.mu.Lock()
+		delete(fx.fs.mock.files, source)
+		fx.fs.mock.mu.Unlock()
+		fx.fs.clearFault(source)
+		fx.fs.mock.handler(w, r)
+	})
+	rows, err := fx.query(t, context.Background(), "*", nil)
+	if err != nil {
+		t.Fatalf("RunQuery: %v; the gap pinned here is a silent skip", err)
+	}
+	if want := (rcFiles - 1) * rcRowsPerFile; rows != want {
+		t.Fatalf("rows = %d, want %d (the rows of the deleted source are missing: known gap #772)", rows, want)
+	}
+}
+
 // A key that spells "404" must not turn an unreadable object into a missing one.
 func TestRowRead_KeyContaining404_IsNotAMissingObject(t *testing.T) {
 	key := "traces/dt=2026-10-23/hour=10/part-404.parquet"
@@ -413,20 +447,20 @@ func TestRowRead_LiveBytesBudget_WaitsNeverDrops(t *testing.T) {
 	for _, workers := range []int{2, 3} {
 		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
 			fx := newRCFixture(t, workers, rcKeyFmt)
-			fx.s.cfg.Query.MaxLiveBytes = 1 // every block in flight reaches the ceiling
+			fx.s.cfg.Query.MaxLiveBytes = 1 // one object at a time: a second worker must wait
 
 			start := metrics.QueryMemoryBudgetExceeded.Get()
+			var first sync.Once
 			rows, err := fx.query(t, context.Background(), "*", func(db *logstorage.DataBlock) {
-				// A slow consumer, paced by the budget itself: hold each block until
-				// another worker has reached the ceiling behind it (it waits and
-				// counts), or for 150 ms. The objects have several row groups, so a
-				// worker always has a next block to bring to the gate while this one
-				// is consumed.
-				seen := metrics.QueryMemoryBudgetExceeded.Get()
-				deadline := time.Now().Add(150 * time.Millisecond)
-				for metrics.QueryMemoryBudgetExceeded.Get() <= seen && time.Now().Before(deadline) {
-					time.Sleep(time.Millisecond)
-				}
+				// Hold the first block until another worker has reached the ceiling
+				// behind it: it cannot reserve while this object's bytes are held, so
+				// the wait is certain, not a matter of timing.
+				first.Do(func() {
+					deadline := time.Now().Add(10 * time.Second)
+					for metrics.QueryMemoryBudgetExceeded.Get() <= start && time.Now().Before(deadline) {
+						time.Sleep(time.Millisecond)
+					}
+				})
 			})
 			if err != nil {
 				t.Fatalf("RunQuery: %v, the budget must make workers wait, not fail the read", err)
@@ -435,7 +469,7 @@ func TestRowRead_LiveBytesBudget_WaitsNeverDrops(t *testing.T) {
 				t.Fatalf("rows = %d, want %d: the budget dropped blocks", rows, want)
 			}
 			if metrics.QueryMemoryBudgetExceeded.Get() <= start {
-				t.Fatal("the budget never tripped: the test does not exercise it")
+				t.Fatal("no worker waited at the budget: the test does not exercise it")
 			}
 		})
 	}
@@ -715,89 +749,139 @@ func TestRowRead_FailureStopsTheOtherWorkers(t *testing.T) {
 	}
 }
 
+// A worker waiting for a row-group decoder slot stops waiting when its query's
+// context ends, instead of holding its place until a slot frees.
+func TestAcquireRGDecode_StopsWaitingWhenContextEnds(t *testing.T) {
+	var held []func()
+	for i := 0; i < cap(rgDecodeSem); i++ {
+		rel, err := acquireRGDecode(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, rel)
+	}
+	defer func() {
+		for _, r := range held {
+			r()
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	if _, err := acquireRGDecode(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the deadline", err)
+	}
+	if time.Since(began) > 5*time.Second {
+		t.Fatal("the wait did not end with the context")
+	}
+}
+
 // --- liveBytesGate --------------------------------------------------------
 
 func TestLiveBytesGate_WaitsForRelease(t *testing.T) {
 	var g liveBytesGate
-	var logged atomic.Bool
-	g.add(100)
-	done := make(chan bool)
-	go func() { done <- g.waitBelow(context.Background(), 100, &logged) }()
+	rel, err := g.reserve(context.Background(), 100, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error)
+	go func() {
+		r, err := g.reserve(context.Background(), 10, 100)
+		if err == nil {
+			r()
+		}
+		done <- err
+	}()
 	select {
 	case <-done:
-		t.Fatal("waitBelow returned while the bytes in flight reached the ceiling")
+		t.Fatal("reserve returned while the bytes reserved filled the ceiling")
 	case <-time.After(50 * time.Millisecond):
 	}
-	g.release(100)
+	rel()
 	select {
-	case ok := <-done:
-		if !ok {
-			t.Fatal("waitBelow gave up although room was made")
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reserve gave up although room was made: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("waitBelow was not woken by the release")
+		t.Fatal("reserve was not woken by the release")
 	}
 }
 
 func TestLiveBytesGate_ContextEndReleasesWaiter(t *testing.T) {
 	var g liveBytesGate
-	var logged atomic.Bool
-	g.add(100)
+	if _, err := g.reserve(context.Background(), 100, 100); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan bool)
-	go func() { done <- g.waitBelow(ctx, 10, &logged) }()
+	done := make(chan error)
+	go func() {
+		_, err := g.reserve(ctx, 10, 100)
+		done <- err
+	}()
 	time.Sleep(20 * time.Millisecond)
 	cancel()
 	select {
-	case ok := <-done:
-		if ok {
-			t.Fatal("waitBelow reported room after the context ended")
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want the cancellation", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("a cancelled query stayed blocked at the budget")
 	}
-}
-
-// A block larger than the ceiling is admitted as soon as nothing else is in
-// flight: no block can wait for room that never comes.
-func TestLiveBytesGate_OversizeBlockAdmittedWhenIdle(t *testing.T) {
-	var g liveBytesGate
-	var logged atomic.Bool
-	if !g.waitBelow(context.Background(), 10, &logged) {
-		t.Fatal("an idle gate refused a block")
-	}
-	g.add(1 << 20) // larger than the ceiling
-	g.release(1 << 20)
-	if !g.waitBelow(context.Background(), 10, &logged) {
-		t.Fatal("the gate stayed closed after the oversize block was released")
+	if got := g.live.Load(); got != 100 {
+		t.Fatalf("live = %d, a cancelled waiter must reserve nothing", got)
 	}
 }
 
-func TestLiveBytesGate_ConcurrentWorkersAllFinish(t *testing.T) {
+// An object larger than the ceiling is admitted alone, and only when nothing else
+// is reserved: no object waits for room that never comes, and none passes the
+// ceiling next to another.
+func TestLiveBytesGate_OversizeObjectAdmittedAlone(t *testing.T) {
 	var g liveBytesGate
-	var logged atomic.Bool
-	const workers, blocks, size, ceiling = 8, 200, 40, 100
-	var inFlight, peak atomic.Int64
+	rel, err := g.reserve(context.Background(), 1<<20, 10)
+	if err != nil {
+		t.Fatalf("an idle gate refused an oversize object: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		r, _ := g.reserve(context.Background(), 1, 10)
+		r()
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("an object was admitted next to an oversize one")
+	case <-time.After(50 * time.Millisecond):
+	}
+	rel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the gate stayed closed after the oversize object was released")
+	}
+}
+
+// The reserved bytes never pass the ceiling, whatever the interleaving, and every
+// worker finishes.
+func TestLiveBytesGate_ReservedBytesNeverPassTheCeiling(t *testing.T) {
+	var g liveBytesGate
+	const workers, rounds, size, ceiling = 8, 200, 40, 100
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for b := 0; b < blocks; b++ {
-				if !g.waitBelow(context.Background(), ceiling, &logged) {
-					t.Error("waitBelow gave up on a live context")
+			for b := 0; b < rounds; b++ {
+				rel, err := g.reserve(context.Background(), size, ceiling)
+				if err != nil {
+					t.Error(err)
 					return
 				}
-				g.add(size)
-				cur := inFlight.Add(size)
-				for {
-					p := peak.Load()
-					if cur <= p || peak.CompareAndSwap(p, cur) {
-						break
-					}
+				if cur := g.live.Load(); cur > ceiling {
+					t.Errorf("reserved %d bytes, ceiling %d", cur, ceiling)
 				}
-				inFlight.Add(-size)
-				g.release(size)
+				rel()
 			}
 		}()
 	}
@@ -809,10 +893,141 @@ func TestLiveBytesGate_ConcurrentWorkersAllFinish(t *testing.T) {
 		t.Fatal("workers deadlocked at the gate")
 	}
 	if g.live.Load() != 0 {
-		t.Fatalf("live = %d after every block was released", g.live.Load())
+		t.Fatalf("live = %d after every reservation was released", g.live.Load())
 	}
-	// Bounded by the ceiling plus one block per worker (the check and the add are not atomic).
-	if limit := int64(ceiling + workers*size); peak.Load() > limit {
-		t.Fatalf("peak in flight %d exceeds ceiling + one block per worker (%d)", peak.Load(), limit)
+	if g.peak.Load() > ceiling {
+		t.Fatalf("high-water mark %d passed the ceiling %d", g.peak.Load(), ceiling)
 	}
+}
+
+// The ceiling bounds the decoded bytes in flight for real: with sixteen workers
+// and a consumer slower than the decoders, the high-water mark of the bytes
+// reserved stays within the ceiling plus one object, while every row arrives. A
+// gate that counts but does not wait (the budget as a bare counter) lets every
+// worker reserve at once and fails this.
+func TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded(t *testing.T) {
+	const files = 12
+	fx := newRCFixtureN(t, 16, files, rcKeyFmt)
+	var gatePtr atomic.Pointer[liveBytesGate]
+	liveGateHook = func(g *liveBytesGate) { gatePtr.Store(g) }
+	t.Cleanup(func() { liveGateHook = nil })
+
+	// One object is estimated at about E bytes; a ceiling of 2.5 E lets two be
+	// read at once, of twelve.
+	var est int64
+	for i := range fx.keys {
+		if e := fx.s.estimateDecodedBytes(fx.info(i)); e > est {
+			est = e
+		}
+	}
+	ceiling := est * 5 / 2
+	fx.s.cfg.Query.MaxLiveBytes = ceiling
+
+	waits := metrics.QueryMemoryBudgetExceeded.Get()
+	// The high-water mark is also sampled from the outside, so a gate that stops
+	// recording its own mark cannot hide a breach.
+	var sampled atomic.Int64
+	stopSampler, samplerDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(samplerDone)
+		for {
+			select {
+			case <-stopSampler:
+				return
+			default:
+			}
+			if g := gatePtr.Load(); g != nil {
+				if cur := g.live.Load(); cur > sampled.Load() {
+					sampled.Store(cur)
+				}
+			}
+			time.Sleep(50 * time.Microsecond)
+		}
+	}()
+	rows, err := fx.query(t, context.Background(), "*", func(*logstorage.DataBlock) { time.Sleep(2 * time.Millisecond) })
+	close(stopSampler)
+	<-samplerDone
+	gate := gatePtr.Load()
+	if err != nil || rows != files*rcRowsPerFile {
+		t.Fatalf("%d rows of %d, err %v: the ceiling must make workers wait, not drop rows", rows, files*rcRowsPerFile, err)
+	}
+	var maxEst int64
+	for i := range fx.keys {
+		if e := fx.s.estimateDecodedBytes(fx.info(i)); e > maxEst {
+			maxEst = e
+		}
+	}
+	t.Logf("MEASURED ceiling=%d B, largest object estimate=%d B, high-water mark of reserved bytes=%d B, waits=%d", ceiling, maxEst, gate.peak.Load(), metrics.QueryMemoryBudgetExceeded.Get()-waits)
+	if peak := gate.peak.Load(); peak > ceiling+maxEst {
+		t.Fatalf("high-water mark %d B passed the ceiling %d B by more than one object (%d B)", peak, ceiling, maxEst)
+	}
+	if got := sampled.Load(); got > ceiling+maxEst {
+		t.Fatalf("sampled reserved bytes %d B passed the ceiling %d B by more than one object (%d B)", got, ceiling, maxEst)
+	}
+	if gate.peak.Load() < est {
+		t.Fatalf("high-water mark %d B is below one object (%d B): nothing was reserved", gate.peak.Load(), est)
+	}
+	if metrics.QueryMemoryBudgetExceeded.Get() <= waits {
+		t.Fatal("no worker ever waited at the ceiling: the test does not exercise it")
+	}
+}
+
+// A query whose consumer is stalled does not starve the others of the
+// process-wide slots: its workers wait at the budget holding nothing, so another
+// query (own storage, normal budget) finishes inside its deadline.
+func TestRowRead_StalledConsumerDoesNotStarveOtherQueries(t *testing.T) {
+	a := newRCFixtureN(t, 12, 12, rcKeyFmt) // more workers and objects than the process has file slots (at most 8)
+	a.s.cfg.Query.MaxLiveBytes = 1          // one object at a time
+	b := newRCFixtureN(t, 4, rcFiles, "logs/dt=2026-05-10/hour=14/starve-b-%d.parquet")
+	if strings.HasPrefix(a.keys[0], "traces/") {
+		b = newRCFixtureN(t, 4, rcFiles, "traces/dt=2026-10-23/hour=10/starve-b-%d.parquet")
+	}
+
+	stall := make(chan struct{})
+	started := make(chan struct{}, 1)
+	aDone := make(chan error, 1)
+	var aRows atomic.Int64
+	go func() {
+		q := mustParseQueryWithTime(t, "*", a.start, a.end)
+		aDone <- a.s.RunQuery(context.Background(), nil, q, func(_ uint, db *logstorage.DataBlock) {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-stall
+			aRows.Add(int64(db.RowsCount()))
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("query A never reached its consumer")
+	}
+	time.Sleep(200 * time.Millisecond) // let A's other workers reach the budget
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	began := time.Now()
+	rows, err := b.query(t, ctx, "*", nil)
+	if err != nil || rows != rcFiles*rcRowsPerFile {
+		close(stall)
+		<-aDone
+		t.Fatalf("query B: %d rows, err %v after %s: a stalled consumer of query A starved it", rows, err, time.Since(began))
+	}
+	t.Logf("query B finished in %s while query A's consumer was stalled", time.Since(began).Round(time.Millisecond))
+
+	close(stall)
+	select {
+	case err := <-aDone:
+		if err != nil || aRows.Load() != int64(12*rcRowsPerFile) {
+			t.Fatalf("query A: %d rows, err %v; want every row", aRows.Load(), err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("query A did not finish once its consumer resumed")
+	}
+}
+
+// info is the manifest entry the estimate reads (key and stored size) of object i.
+func (fx *rcFixture) info(i int) manifest.FileInfo {
+	return manifest.FileInfo{Key: fx.keys[i], Size: int64(len(fx.datas[i]))}
 }

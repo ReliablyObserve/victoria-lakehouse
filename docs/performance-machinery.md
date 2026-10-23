@@ -282,7 +282,7 @@ hit rate as high as possible without blowing the memory budget".
 | **Adaptive workers** | `internal/resourcebounds` + `cfg.Query.FileWorkersRequest/Limit` | Workers scale up under low load and down under cgroup memory pressure. | request 4, limit 16 |
 | **Row-group decode semaphore (`rgDecodeSem`)** | `query_memory_budget.go` | Caps in-flight parquet row-group decodes; prevents OOM. | scaled from `MaxLiveBytes` |
 | **Process-wide file budget (`fileBudgetSem`)** | `query_memory_budget.go` | Caps cumulative resident bytes across files (default 256 MiB) + max 8 concurrent files. | 256 MiB / 8 files |
-| **Max-live-bytes budget** | `cfg.Query.MaxLiveBytes` | Per-query memory ceiling: a file worker whose block would exceed it waits for the consumer (never cancels the read, never drops a block). | 512 MiB |
+| **Max-live-bytes budget** | `cfg.Query.MaxLiveBytes` | Per-query ceiling on the estimated decoded bytes of the objects read at once: a file worker reserves an object's estimate before it takes any slot or opens it and waits, holding nothing, when the reserved bytes would pass the ceiling (never cancels the read, never drops a block). | 512 MiB |
 | **Concurrent-select cap** | `cfg.Query.MaxConcurrent` | Global ceiling on simultaneous queries; reports 429 above. | 8 |
 | **Footer prefetch parallel fan-out** | `footer_prefetch.go` | Before the per-file worker pool runs, fan out 16-way footer fetches for candidate files. 64 K tail + two-phase fetch for MB-scale trace footers. | 16 |
 | **TraceIndex lookup parallelism** | `lakehouse-traces/trace_index_lookup.go` | 16-way concurrent footer KV reads when answering trace-by-id. | 16 |
