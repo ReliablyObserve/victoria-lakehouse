@@ -265,6 +265,7 @@ and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 | **Object store unreachable or slow** | Nothing is refused. Sealed segments wait on disk; each failed drain is retried with the same bytes after a back-off (1 s doubling to 30 s). Past the volume's free-space floor inserts get 429. |
 | **A segment whose rows the drain cannot all plan** | The segment is stalled (`lakehouse_buffer_stalled_segments` = 1) and not committed; the plan check uploads nothing, a group check can fire after earlier groups were uploaded (§2.1); an error is logged and `lakehouse_buffer_flush_errors_total{stage="invariant"}` rises (§2.1 and its runbook, `lh.durability.drain_plan_mismatch_*`); the plan is made again on every attempt, so a mismatch that does not repeat clears. Inserts continue until the buffer volume's floor answers 429. |
 | **Pod restarts while a segment drains** | The segment is found again; groups already stored are recognised (§3) and not sent again. |
+| **A select pod lists a committed segment's objects only after the insert pod retired the segment** | Known gap, #391: the segment's rows are in Parquet, but the select pod's answers miss them (HTTP 200) until its next complete listing; nothing counts it (§2.3, `lh.durability.select_pod_lists_after_segment_retired_*`). |
 | **Pod loses its disk before a segment drained** | The rows of undrained segments are lost (§2.4). |
 | **Already-written data** | Immutable Parquet on S3; survives everything. |
 | **A delete (tombstone)** | The definition object is created in S3 before the API returns (never overwritten); every pod rebuilds its view from the bucket, so it survives `kill -9`, a lost disk and a pod move. See §3.1. |
@@ -522,7 +523,26 @@ Every query takes a `bufferView` **before** it uses its object list:
 The scan then drops every object whose key carries one of those nonces
 (`lakehouse_buffer_view_excluded_objects_total`). A peer keeps a committed
 segment readable for the grace so that a select node has listed its objects
-before the peer stops serving the rows. Once the grace has passed the segment is
+before the peer stops serving the rows. That holds only while the select
+node's listing keeps up with the insert pod's grace, which the insert pod computes
+from its **own** `manifest.refresh_interval` (`2 × refresh_interval + 30 s`) and
+cannot check against what the readers have listed. **Known gap, #391**: if a
+select pod has not completed a listing that includes the segment's objects by the
+time the insert pod retires the segment, the segment's rows are missing from that
+select pod's answers (status 200, no error, no metric) until its next complete
+listing. This happens when the select pods' `manifest.refresh_interval` is longer
+than the insert pods' (measured in #391: insert pods at 30 s, a select pod at 5m,
+10,000 acknowledged rows missing for 147 s), or when a select pod's listing takes
+longer than the grace or fails (a full LIST at large object counts, throttling, an
+S3 problem on the read side). The rows are in Parquet and come back with the next
+complete listing; nothing is lost from the bucket. Until #391 is fixed: give every
+role the same `manifest.refresh_interval` (the Helm chart does), and watch the
+select pods' `lakehouse_manifest_last_complete_refresh_timestamp_seconds`. The
+alert `LakehouseManifestNoCompleteRefresh` fires only after
+`max(4 × refresh_interval, 15 min)`, well after this gap opens (about one grace).
+The registry cells `lh.durability.select_pod_lists_after_segment_retired_*` pin
+the behaviour (`TestBufferView_RetiredBeforeTheSelectPodListed_KnownGap391`, both
+binaries). Once the grace has passed the segment is
 **retired**: queries that start from then on read its rows from Parquet, while
 the queries that already hold it finish on it. It is closed and its directory
 removed at the first flusher tick (1 s) after the last of those queries ends,
