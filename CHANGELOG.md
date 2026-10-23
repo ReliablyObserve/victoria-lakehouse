@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A product merge is no longer lost when the Auto Release run of a later merge is the one that completes (CI only; no change to the Lakehouse binaries or to runtime behaviour).** Release runs are serialised and GitHub keeps one pending run per group, so in a burst of merges the runs of the middle merges are cancelled; the release decision looked at the pushed commit alone, so a docs, CI or `[skip release]` merge at the end of the burst hid the product merge before it (#736 on 2026-10-23, released only by a later product merge). The decision (`scripts/ci/release_product_check.py`) is now made on the commits since the last release tag: it releases when any of them is a product change without a `[skip release]` marker in its subject or its pull request title, so the next run that completes releases the lost change whatever its own commit is. The marker of the pushed commit no longer ends the decision, a release's own metadata merge still never releases, and a re-run of a finished run, or of an older one, releases nothing. A pull request title that cannot be read still fails closed (no release, the run turns red). See [Release notes](docs/release-notes.md#which-merges-release) (#756).
+
 ## [0.167.7] - 2026-10-23
 
 ### Fixed

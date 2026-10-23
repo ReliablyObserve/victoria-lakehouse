@@ -188,9 +188,13 @@ class DryRun(unittest.TestCase):
                          "github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)")
         self.assertNotIn("if", JOBS["build"]["steps"][0])
 
-    def test_the_skip_check_that_refuses_other_branches_is_skipped_in_a_dry_run(self):
-        step = next(s for s in JOBS["decide"]["steps"] if s.get("id") == "skip_release")
-        self.assertEqual(step["if"], "inputs.dry_run != true")
+    def test_a_dry_run_is_a_manual_run_and_the_range_check_never_skips_it(self):
+        # the range check (release_product_check.py) returns "release" for workflow_dispatch before any
+        # ref or tag test, so a dry run from any branch always builds; there is no separate skip step
+        step = next(s for s in JOBS["decide"]["steps"] if s.get("id") == "skip")
+        self.assertNotIn("if", step)
+        self.assertEqual(step["env"]["EVENT_NAME"], "${{ github.event_name }}")
+        self.assertNotIn("skip_release", [s.get("id") for s in JOBS["decide"]["steps"]])
 
 
 TAG_RE = re.search(r"TAG_RE='([^']+)'", step_run("decide", "Determine version bump")).group(1)
@@ -251,9 +255,9 @@ class VersionValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             out = pathlib.Path(tmp) / "out"
 
-            def run(skip_release="", skip_product="", nxt="v1.2.3", dry=""):
+            def run(skip_product="", nxt="v1.2.3", dry=""):
                 out.write_text("")
-                env = dict(os.environ, SKIP_RELEASE=skip_release, SKIP_PRODUCT=skip_product, NEXT=nxt,
+                env = dict(os.environ, SKIP_PRODUCT=skip_product, NEXT=nxt,
                            DRY_RUN_INPUT=dry, GITHUB_OUTPUT=str(out))
                 result = subprocess.run(["bash", "-e", "-c", script], capture_output=True, text=True, env=env, cwd=tmp)
                 return result, dict(l.split("=", 1) for l in out.read_text().splitlines())
@@ -264,7 +268,7 @@ class VersionValidation(unittest.TestCase):
             self.assertEqual(got["dry_run"], "true")
             for dry in ("True", "1", "yes", "false", " true"):
                 self.assertEqual(run(dry=dry)[1]["dry_run"], "false", dry)
-            result, got = run(skip_release="true", nxt="")
+            result, got = run(skip_product="true", nxt="")
             self.assertEqual((result.returncode, got["release"]), (0, "false"))
             result, got = run(skip_product="true")
             self.assertEqual((result.returncode, got["release"]), (0, "false"))

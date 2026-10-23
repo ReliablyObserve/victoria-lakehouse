@@ -72,31 +72,16 @@ jobs:
       dry_run: ${{ steps.final.outputs.dry_run }}
       next: ${{ steps.final.outputs.next }}
     steps:
-      # `[skip release]` counts in the commit subject OR in the title of the PR
-      # that produced the pushed commit (GitHub's default squash subject for a
-      # one-commit PR is the commit subject, so a marker in the PR title alone is
-      # lost). The PR is found from the pushed SHA, so every merge method works;
-      # a job re-run re-reads the title, so editing it and re-running is the fix.
-      # If the title cannot be read after three tries the push is not released
-      # and the run turns red: start this workflow by hand (workflow_dispatch).
+      # The release decision (a later step, scripts/ci/release_product_check.py) looks at every
+      # commit since the last release tag, not at the pushed commit alone: runs are serialised
+      # and GitHub keeps one pending run per group, so the run of a middle merge of a burst can
+      # be cancelled (#756). The full history and all tags are needed for that range.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check skip release
-        id: skip_release
-        # A dry run is a manual run, which is never skipped; the script would only refuse
-        # its branch.
-        if: inputs.dry_run != true
-        run: python3 scripts/ci/release_skip.py
-        env:
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-
       - name: Determine version bump
-        if: steps.skip_release.outputs.skip != 'true'
         id: version
         run: |
           # Only tags of the exact form vMAJOR.MINOR.PATCH take part: a tag with
@@ -246,27 +231,31 @@ jobs:
           PR_INPUT: ${{ inputs.pr }}
 
       - name: Check for skip conditions
-        if: steps.skip_release.outputs.skip != 'true'
         id: skip
-        # A merge that changes nothing that ships is not released. The decision
-        # (scripts/ci/release_product_check.py) runs the registry gate's classifier
-        # on the pushed commit against its parent; Go module and toolchain files,
-        # a changed Dockerfile base-image digest or tag and the upstream pins still
-        # release, and so does every doubt (a manual run, several commits in one
-        # push, a classifier error). The script never exits non-zero: a failed
-        # step would stop the release job.
+        # Is any commit since the last release tag owed a release? The decision
+        # (scripts/ci/release_product_check.py) walks tag..HEAD: a commit is owed when it has no
+        # `[skip release]` marker (in its subject or in the title of the pull request that produced
+        # it; the title is read from the API only for a commit that would otherwise release) and
+        # is a product change per the registry gate's classifier, run on the commit against its
+        # parent. Go module and toolchain files, a changed Dockerfile base-image digest or tag and
+        # the upstream pins still release, and so does every doubt (a manual run, a merge commit,
+        # a classifier error). Only a title that cannot be read fails closed: no release, the run
+        # turns red, start this workflow by hand (workflow_dispatch). A job re-run re-reads the
+        # title, so editing it and re-running works. The marker of the pushed commit does not hide
+        # an earlier owed commit, and a run at a commit already released owes nothing.
         run: python3 scripts/ci/release_product_check.py
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
+          LATEST_TAG: ${{ steps.version.outputs.latest_tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # The one decision the other jobs read: release only when neither check skipped,
+      # The one decision the other jobs read: release unless the range check skipped,
       # and only with a plain version. dry_run is exactly true or false.
       - name: Publish the decision
         id: final
         run: |
           RELEASE=false
-          if [ "$SKIP_RELEASE" != true ] && [ "$SKIP_PRODUCT" != true ]; then
+          if [ "$SKIP_PRODUCT" != true ]; then
             RELEASE=true
           fi
           DRY_RUN=false
@@ -284,7 +273,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "release=$RELEASE dry_run=$DRY_RUN next=$NEXT"
         env:
-          SKIP_RELEASE: ${{ steps.skip_release.outputs.skip }}
           SKIP_PRODUCT: ${{ steps.skip.outputs.skip }}
           NEXT: ${{ steps.version.outputs.next }}
           DRY_RUN_INPUT: ${{ inputs.dry_run }}
