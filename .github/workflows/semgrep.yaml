@@ -1,0 +1,73 @@
+name: Semgrep
+
+# Static analysis with Semgrep, the Go and generic security rule packs of the Semgrep registry.
+# REPORT ONLY: the job never fails on findings; it prints finding counts in the job summary and
+# keeps the SARIF as a workflow artifact. It is NOT uploaded to code scanning, so it does not
+# enter the code-scanning merge gate. Not a required check, and not gated by the CI scope.
+#
+# Network: the rule packs (p/...) are downloaded from semgrep.dev at run time. Semgrep itself is
+# installed from the hashed lock .github/semgrep-requirements.txt (pip --require-hashes). Metrics
+# are off and no Semgrep account or token is used. A failure to download the rules fails the job,
+# so an empty scan is never read as "no findings".
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semgrep-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  semgrep:
+    name: semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install semgrep
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/semgrep-venv"
+          "$RUNNER_TEMP/semgrep-venv/bin/pip" install --quiet --require-hashes --only-binary=:all: \
+            -r .github/semgrep-requirements.txt
+
+      - name: Semgrep scan
+        env:
+          SEMGREP_SEND_METRICS: "off"
+          SEMGREP_ENABLE_VERSION_CHECK: "0"
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/semgrep-venv/bin/semgrep" scan \
+            --config p/default \
+            --config p/dockerfile \
+            --config p/github-actions \
+            --config p/golang \
+            --config p/owasp-top-ten \
+            --config p/secrets \
+            --metrics=off \
+            --sarif \
+            --output semgrep.sarif
+
+      - name: Summarise findings
+        if: always() && hashFiles('semgrep.sarif') != ''
+        run: python3 -I scripts/ci/semgrep_sarif_summary.py semgrep.sarif >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SARIF
+        if: always() && hashFiles('semgrep.sarif') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: semgrep-sarif
+          path: semgrep.sarif
+          retention-days: 30
