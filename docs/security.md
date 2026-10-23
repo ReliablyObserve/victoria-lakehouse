@@ -357,6 +357,20 @@ Each tenant gets its own S3 bucket with independent:
 
 Full documentation: [Multi-Tenancy](multi-tenancy.md)
 
+### Parquet footers read from the bucket are untrusted bytes
+
+A Parquet footer is parsed before any data is read, and it comes from an object anyone with write access to the bucket (or a corrupted copy) controls. parquet-go v0.32.0 sizes its allocations from what the footer declares, and recurses with its nesting, before it validates any of it. On the prefetch and footer-cache path (`ParseFooterFromBytes`) the footer is therefore checked first, against the bytes that exist and against limits parquet-go enforces anyway:
+
+- the declared footer length must fit the bytes in hand and the 64 MiB policy cap;
+- every list or set the footer declares must fit the bytes that hold it, with one budget across the whole footer. A Thrift list is allocated from its declared size before one element is read, so an 850-byte footer could ask for 26 GiB (measured, `alloc_space`) and end the process with a Go runtime fatal error that no `recover` catches. Allocation for lists is then at most about 190 times the footer length (the largest element, a `ColumnChunk`, is 560 bytes for at least 3 encoded bytes; sizes from `unsafe.Sizeof`);
+- containers (lists, sets, maps, structs) nest at most 32 levels. Real footers nest about 6. Before lists and maps counted, a footer of 8 MiB of nested list headers ended the process with a stack overflow (measured);
+- the schema nests at most `parquet.MaxColumnDepth` (255) levels, and leaf columns times row groups times 3 is at most the footer length (every row group carries one `ColumnChunk` per leaf, at least 3 bytes each). parquet-go allocates one pointer per leaf and row group, and one path string per schema element and ancestor, before checking either. Measured with the list-size check alone: a 51 KB footer of 3000 leaves in 3000 row groups allocated 73.5 MB, 6000 by 6000 (102 KB) 291 MB, and a schema chain of 8000 groups (48 KB) 515 MB; all three are now rejected with under 3 KB allocated;
+- a rejected footer counts under `lakehouse_footer_parse_rejected_total{reason}` (`thrift_bounds_exceeded` for the checks above) and the file is treated as unreadable, never as empty.
+
+Files written by any standard Parquet writer pass unchanged; each check is a lower bound of the encoding or a limit parquet-go enforces itself.
+
+What stays on parquet-go: a schema that is deep but within 255 levels still costs one string header per ancestor of each element. The worst shape the checks accept (a 255-deep chain with 4,000 leaves at the bottom, a 25.5 KB footer) allocated 18.5 MB, 724 times the footer (measured). Scaled to a footer at the 64 MiB cap that would be tens of GiB (assumed: linear extrapolation, not run). Closing it needs either a cap on the number of schema elements or the upstream parquet-go fix; the other `parquet.OpenFile` call sites are tracked in #744.
+
 ## S3 Access
 
 Victoria Lakehouse requires read-only S3 access:
