@@ -147,16 +147,31 @@ func TestCheckFooterThriftBounds_Structure(t *testing.T) {
 		"varint overflow":    {0x15, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, tcStop},
 		"unknown type":       {0x1E, tcStop},
 	}
+	// Two lists of 6 empty structs: each fits the budget alone (18 of 29), the
+	// pair does not (36), so only a budget shared across the footer rejects it.
+	pad := append([]byte{0x18, 0x0A}, make([]byte, 10)...)
+	twoLists := append(append([]byte(nil), pad...), 0x19, 0x6C, 0, 0, 0, 0, 0, 0, 0x19, 0x6C, 0, 0, 0, 0, 0, 0, tcStop)
+	bad["footer-wide budget"] = twoLists
+	// Empty structs are one byte each on the wire but never occur in parquet;
+	// a list of them is how a small footer would claim a large allocation.
+	bad["empty struct elements"] = []byte{0x19, 0x6C, 0, 0, 0, 0, 0, 0, tcStop}
+	// A binary length of 2^64-1 must not wrap the read position.
+	bad["binary length wraps"] = []byte{0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, tcStop}
 	for name, b := range bad {
 		if err := checkFooterThriftBounds(b); err == nil {
 			t.Fatalf("%s %x: want an error", name, b)
 		}
 	}
-	// Nesting past the depth cap must error, not overflow the stack.
-	deep := []byte{}
+	// Nesting past the depth cap must error, not overflow the stack. The
+	// nesting is well formed (every struct is closed), so only the cap rejects it.
+	var deep []byte
 	for i := 0; i < footerThriftMaxDepth+8; i++ {
 		deep = append(deep, 0x1C)
 	}
+	for i := 0; i < footerThriftMaxDepth+8; i++ {
+		deep = append(deep, tcStop)
+	}
+	deep = append(deep, tcStop)
 	if err := checkFooterThriftBounds(deep); err == nil {
 		t.Fatal("over-deep nesting must be rejected")
 	}

@@ -166,10 +166,11 @@ func (g *footerGuard) element(typ byte, depth int) error {
 }
 
 // charge takes n elements of at least minBytes each out of the footer-wide
-// budget, rejecting a declared size the remaining bytes cannot hold.
+// budget, rejecting a declared size the remaining budget cannot hold. The
+// division keeps the comparison free of integer overflow for any n.
 func (g *footerGuard) charge(n uint64, minBytes int) error {
-	if n > uint64(g.remaining()) || n*uint64(minBytes) > uint64(g.budget) {
-		return fmt.Errorf("thrift footer declares %d collection elements but only %d bytes remain (budget %d)", n, g.remaining(), g.budget)
+	if n > uint64(g.budget/minBytes) {
+		return fmt.Errorf("thrift footer declares %d collection elements but only %d bytes of budget remain", n, g.budget)
 	}
 	g.budget -= int(n) * minBytes
 	return nil
