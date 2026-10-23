@@ -82,6 +82,14 @@
     - lakehouse-traces/internal/storage/parquets3/trace_index_lookup_test.go#TestFindTraceIDInFooterMeta_Hit
     - lakehouse-traces/internal/storage/parquets3/trace_index_lookup_integration_test.go#TestLookupTraceIndex_AggregatesAcrossFiles
     - internal/traceindex/traceindex_fuzz_test.go#FuzzUnmarshalIndex
+    - internal/traceindex/traceindex_bound_test.go#TestUnmarshal_DeclaredCountBoundedByPayload
+    - internal/traceindex/traceindex_bound_test.go#TestUnmarshal_ExactFitAccepted
+    - internal/traceindex/traceindex_bound_test.go#TestUnmarshal_BoundIsExact
+    - internal/traceindex/traceindex_bound_test.go#TestUnmarshal_CapRejectsOversizedCount
+    - internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_DeclaredCountBounded
+    - internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_RoundTripUnchanged
+    - lakehouse-traces/internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_DeclaredCountBounded
+    - lakehouse-traces/internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_RoundTripUnchanged
   docs:
     - docs/read-path.md
     - docs/open-parquet-format.md
@@ -90,8 +98,9 @@
   description: >-
     Replacing VT's internal high-cardinality index rows with a footer index keeps cold files
     plain Parquet while still answering the trace UX's most important query — "show me this
-    trace" — in one or two reads. The decoder is fuzzed, because a corrupt footer must degrade to
-    a miss, never to a panic.
+    trace" — in one or two reads. The decoder is fuzzed and its declared entry count is bounded by the
+    bytes that can hold it, because a corrupt or hostile footer must degrade to a miss, never to
+    a panic or a multi-GB allocation.
 
 - id: lh.feature.traces.trace_by_id_fastpath
   title: Trace-by-id fast path and Loki-to-Tempo drilldown
