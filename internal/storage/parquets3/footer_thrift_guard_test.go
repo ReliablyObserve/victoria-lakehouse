@@ -2,9 +2,13 @@ package parquets3
 
 import (
 	"encoding/binary"
+	"math"
 	"math/rand"
 	"runtime"
 	"testing"
+
+	"github.com/parquet-go/parquet-go/encoding/thrift"
+	"github.com/parquet-go/parquet-go/format"
 )
 
 // footerAllocBound is the most a footer parse may allocate for an input of n
@@ -188,5 +192,111 @@ func TestParseFooterFromBytes_MutatedFootersStayBounded(t *testing.T) {
 		if bound := footerAllocBound(len(m)); alloc > bound {
 			t.Fatalf("iter %d: mutated footer allocated %d bytes (bound %d): %x", i, alloc, bound, m)
 		}
+	}
+}
+
+// TestParseFooterFromBytes_ScalarFieldsDoNotDriveAllocation re-encodes a real
+// footer with its integer fields pushed to extremes (the ones parquet-go sizes
+// slices or reads from) and requires every variant to stay inside the linear
+// bound, so a size that is not a list length cannot reintroduce the nightly
+// out-of-memory exit.
+func TestParseFooterFromBytes_ScalarFieldsDoNotDriveAllocation(t *testing.T) {
+	obj := logsObject(t, 3000, 1000)
+	n := footerTotal(obj)
+	orig, _, err := ParseFooterFromBytes("orig.parquet", obj[len(obj)-n:], int64(len(obj)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := orig.File.Metadata()
+
+	mutations := map[string]func(m *format.FileMetaData){
+		"root num_children max": func(m *format.FileMetaData) {
+			m.Schema[0].NumChildren = thrift.New[int32](math.MaxInt32)
+		},
+		"root num_children negative": func(m *format.FileMetaData) {
+			m.Schema[0].NumChildren = thrift.New[int32](-1)
+		},
+		"leaf num_children max": func(m *format.FileMetaData) {
+			m.Schema[len(m.Schema)-1].NumChildren = thrift.New[int32](math.MaxInt32)
+		},
+		"num_rows max": func(m *format.FileMetaData) { m.NumRows = math.MaxInt64 },
+		"row group num_rows max": func(m *format.FileMetaData) {
+			m.RowGroups[0].NumRows = math.MaxInt64
+		},
+		"column num_values max": func(m *format.FileMetaData) {
+			m.RowGroups[0].Columns[0].MetaData.NumValues = math.MaxInt64
+		},
+		"column sizes max": func(m *format.FileMetaData) {
+			c := &m.RowGroups[0].Columns[0].MetaData
+			c.TotalCompressedSize, c.TotalUncompressedSize = math.MaxInt64, math.MaxInt64
+			c.DataPageOffset, c.IndexPageOffset = math.MaxInt64, math.MaxInt64
+		},
+		"column bloom length max": func(m *format.FileMetaData) {
+			c := &m.RowGroups[0].Columns[0].MetaData
+			c.BloomFilterOffset, c.BloomFilterLength = 1, math.MaxInt32
+		},
+		"column index length max": func(m *format.FileMetaData) {
+			c := &m.RowGroups[0].Columns[0]
+			c.ColumnIndexOffset, c.ColumnIndexLength = 1, math.MaxInt32
+			c.OffsetIndexOffset, c.OffsetIndexLength = 1, math.MaxInt32
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			md := *base // shallow copy; mutate deep copies of what is touched
+			md.Schema = append([]format.SchemaElement(nil), base.Schema...)
+			md.RowGroups = append([]format.RowGroup(nil), base.RowGroups...)
+			for i := range md.RowGroups {
+				md.RowGroups[i].Columns = append([]format.ColumnChunk(nil), base.RowGroups[i].Columns...)
+			}
+			mutate(&md)
+			meta, err := thrift.Marshal(new(thrift.CompactProtocol), &md)
+			if err != nil {
+				t.Fatal(err)
+			}
+			footer := footerWithMeta(meta)
+			alloc := allocatedBy(func() {
+				_, _, _ = ParseFooterFromBytes("scalar.parquet", footer, int64(len(obj)))
+			})
+			if bound := footerAllocBound(len(footer)); alloc > bound {
+				t.Fatalf("footer of %d bytes allocated %d bytes (bound %d)", len(footer), alloc, bound)
+			}
+		})
+	}
+}
+
+// BenchmarkParseFooterBytes is the per-file cost of the guarded footer parse
+// (the prefetch path every cold first read takes). "guard" is the thrift size
+// walk alone; "parse" is ParseFooterFromBytes end to end, so main vs branch
+// shows what the walk adds to a parse. Compare with
+//
+//	go test -run '^$' -bench ParseFooterBytes -benchmem -count=10 | benchstat
+func BenchmarkParseFooterBytes(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		rows, rg int
+	}{{"small_1rg", 9000, 9000}, {"mid_3rg", 9000, 3000}, {"large_400rg", 20000, 50}} {
+		obj := logsObject(b, tc.rows, tc.rg)
+		n := footerTotal(obj)
+		footer := obj[len(obj)-n:]
+		b.Run(tc.name+"/parse", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(n))
+			for i := 0; i < b.N; i++ {
+				if _, _, err := ParseFooterFromBytes("k", footer, int64(len(obj))); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run(tc.name+"/guard", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(n))
+			meta := footer[:n-8]
+			for i := 0; i < b.N; i++ {
+				if err := checkFooterThriftBounds(meta); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
