@@ -311,9 +311,6 @@ func (g *footerGuard) fileMetaDataField(id int, typ byte, depth int) (bool, erro
 	if typ != tcList {
 		return false, nil
 	}
-	if depth > footerThriftMaxDepth {
-		return false, errors.New("thrift footer nesting too deep")
-	}
 	switch id {
 	case fileMetaDataSchema:
 		_, err := g.list(depth, g.schemaElement)

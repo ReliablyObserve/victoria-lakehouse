@@ -128,6 +128,7 @@ func TestCheckFooterThriftBounds_Structure(t *testing.T) {
 		{0x14, 0x02, tcStop},                   // i16
 		{0x15, 0x80, 0x01, tcStop},             // i32, multi-byte varint
 		{0x06, 0x04, 0x09, tcStop},             // i64 with its field id spelled out (delta 0)
+		{0x29, 0x1C, 0x51, tcStop, tcStop},     // a SchemaElement whose field 5 is a bool, not num_children
 		{0x17, 1, 2, 3, 4, 5, 6, 7, 8, tcStop}, // double
 		{0x18, 0x03, 'a', 'b', 'c', tcStop},    // binary
 		{0x19, 0x35, 1, 2, 3, tcStop},          // list<i32> of 3
@@ -577,6 +578,18 @@ func TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries(t *testing.T) {
 		t.Fatal("10 leaves x 10 row groups in a short footer must fail even when a later empty row_groups follows")
 	}
 
+	// Field ids spelled out (delta 0 form) are the same fields.
+	explicit := []byte{0x09, 0x04, 10<<4 | tcStruct} // field 2: list of 10 structs
+	for i := 0; i < 10; i++ {
+		explicit = append(explicit, 0x15, 0x04, tcStop)
+	}
+	explicit = append(explicit, 0x09, 0x08, 10<<4|tcStruct) // field 4: list of 10 structs
+	explicit = append(explicit, make([]byte, 10)...)
+	explicit = append(explicit, tcStop)
+	if err := checkFooterThriftBounds(explicit); err == nil {
+		t.Fatal("10 leaves x 10 row groups must fail when their field ids are spelled out too")
+	}
+
 	// A chain of groups, each with one child, ending in a leaf: depth is the
 	// number of open ancestors of the last element.
 	chain := func(levels int) []byte {
@@ -596,6 +609,30 @@ func TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries(t *testing.T) {
 	}
 	if err := checkFooterThriftBounds(chain(parquet.MaxColumnDepth + 1)); err == nil {
 		t.Fatalf("a schema nested %d levels must fail", parquet.MaxColumnDepth+1)
+	}
+
+	// A second branch is as deep as its own chain plus the root: the first
+	// branch closing must not reset the depth of what follows.
+	branches := func(levels int) []byte {
+		m := &format.FileMetaData{Version: 1}
+		m.Schema = append(m.Schema, format.SchemaElement{Name: "root", NumChildren: thrift.New[int32](2)})
+		m.Schema = append(m.Schema, format.SchemaElement{Name: "a", NumChildren: thrift.New[int32](1)})
+		m.Schema = append(m.Schema, format.SchemaElement{Type: thrift.New(format.Int64), Name: "x"})
+		for i := 0; i < levels; i++ {
+			m.Schema = append(m.Schema, format.SchemaElement{Name: "g", NumChildren: thrift.New[int32](1)})
+		}
+		m.Schema = append(m.Schema, format.SchemaElement{Type: thrift.New(format.Int64), Name: "y"})
+		meta, err := thrift.Marshal(new(thrift.CompactProtocol), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return meta
+	}
+	if err := checkFooterThriftBounds(branches(parquet.MaxColumnDepth - 1)); err != nil {
+		t.Fatalf("a second branch whose leaf is at depth %d must pass: %v", parquet.MaxColumnDepth, err)
+	}
+	if err := checkFooterThriftBounds(branches(parquet.MaxColumnDepth)); err == nil {
+		t.Fatalf("a second branch whose leaf is at depth %d must fail", parquet.MaxColumnDepth+1)
 	}
 }
 
