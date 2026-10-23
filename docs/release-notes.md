@@ -22,22 +22,27 @@ Released at 2026-10-22
 ## How they are produced
 
 The build job of the release workflow (`.github/workflows/auto-release.yaml`) runs
-`scripts/ci/release_notes.py --version Unreleased` on the commit it releases and puts the output in
-front of the artifacts section. The script uses the standard library only, reads no network and renders the same text
-for the same input. The `[Unreleased]` section is the source because the section of the new
-version is created only by the release-metadata pull request that follows the release. Releases
-are cut one at a time (merge, wait for the release, merge the release-metadata pull request),
-so `[Unreleased]` holds exactly the entries of that release. When a release is cut before the
-previous release-metadata pull request has merged, `[Unreleased]` still holds the previous
-release's entries as well; the script leaves out every bullet that the `[Unreleased]` section had
-at the previous release tag (`--after-tag`, which the job takes from `git describe`), so they are
-not repeated. If that tag cannot be read, all entries are rendered and a warning is printed.
+`scripts/ci/changelog_fragments.py assemble` and then `scripts/ci/release_notes.py --version X.Y.Z` on the
+commit it releases, and puts the output in front of the artifacts section. The script uses the standard
+library only, reads no network and renders the same text for the same input. The source is the
+`changelog.d/` fragments present at the release commit (see `changelog.d/README.md` in the repository):
+`assemble` builds the `## [X.Y.Z]` section of the workspace's `CHANGELOG.md` from them, and the notes are
+rendered from that section. The section reaches `main` only through the release-metadata pull request that
+follows the release, which also deletes the fragments. When a release is cut before the previous
+release-metadata pull request has merged, the tree still holds the previous release's fragments; `assemble`
+leaves out every fragment file (same path and same bytes) that the previous release tag already had
+(`--after-tag`, the newest plain `vX.Y.Z` tag reachable from the parent commit, from `changelog_fragments.py previous-tag`; any other tag is ignored), so a fragment is released once; a later fragment that
+reuses the name of a released one has other bytes and is released. A fragment merged after the release commit is not in the
+checkout and lands in the next release. If the tag cannot be read, all fragments are released. Until the first
+release that contains `changelog.d/`, bullets still hand-written under `[Unreleased]` are assembled too, and
+the notes leave out the ones `[Unreleased]` had at the previous tag.
 
 To render the notes of any released version, or to preview the entries of a pull request:
 
 ```bash
 python3 scripts/ci/release_notes.py --version 0.157.6
-python3 scripts/ci/release_notes.py --version Unreleased --date 2026-10-22
+python3 scripts/ci/release_notes.py --version Unreleased --date 2026-10-22   # hand-written [Unreleased] bullets only
+python3 scripts/ci/changelog_fragments.py check                              # validate the changelog.d fragments
 ```
 
 Warnings (an unknown subsection) go to stderr; the notes go to stdout.
@@ -69,11 +74,11 @@ Warnings (an unknown subsection) go to stderr; the notes go to stdout.
 
 Behaviour that an operator has to act on when upgrading (a flag, an endpoint or a default that
 changes, a format that is no longer read) is written as one bullet each under a
-`### Update notes` subsection of the same `[Unreleased]` section, with the issue or pull request
-number:
+`### Update notes` subsection of the version's section of `CHANGELOG.md` (there is no fragment kind for it yet), with
+the issue or pull request number:
 
 ```markdown
-## [Unreleased]
+## [0.168.0] - 2026-10-30
 
 ### Update notes
 

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,10 +100,11 @@ func TestParseChangelogAdded_File(t *testing.T) {
 	if _, err := ParseChangelogAdded("testdata/features/nope.md"); err == nil {
 		t.Fatal("want an error for a missing changelog")
 	}
-	bullets, err := ParseChangelogAdded("../../../CHANGELOG.md")
+	cl, err := ParseChangelog("../../../CHANGELOG.md") // CHANGELOG.md and the added fragments next to it
 	if err != nil {
 		t.Fatal(err)
 	}
+	bullets := cl.Added
 	if len(bullets) == 0 {
 		t.Fatal("the real changelog has Added bullets")
 	}
@@ -241,4 +243,89 @@ func semverLess(a, b string) bool {
 		}
 	}
 	return false
+}
+
+// writeFragment writes changelog.d/<name> under dir.
+func writeFragment(t *testing.T, dir, name, text string) {
+	t.Helper()
+	d := filepath.Join(dir, ChangelogFragmentDir)
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d, name), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestParseChangelog_ReadsAddedFragments pins that an `added` fragment is an `### Added` bullet of the
+// Unreleased version, so a feature can claim an unreleased lead-in before the release assembles it,
+// and that fragments of other kinds, the README and strays are not Added bullets.
+func TestParseChangelog_ReadsAddedFragments(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG.md"), []byte(sampleChangelog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeFragment(t, dir, "7.added.md", "- **Fragment feature (#7).** a long\n  wrapped body.\n")
+	writeFragment(t, dir, "8.fixed.md", "- **A fix.** not added\n")
+	writeFragment(t, dir, "README.md", "- **Not a fragment.** readme\n")
+	writeFragment(t, dir, "9.added.md.bak", "- **Stray.** x\n")
+	writeFragment(t, dir, "10.added.md", "no bullet at all\n")
+	// a symlink to a real bullet (the release refuses it), a name over the cap (a 82-character stem) and a name
+	// with a newline are not fragments either
+	if err := os.Symlink("7.added.md", filepath.Join(dir, ChangelogFragmentDir, "11.added.md")); err != nil {
+		t.Fatal(err)
+	}
+	writeFragment(t, dir, strings.Repeat("a", 82)+".added.md", "- **Too long a name.** x\n")
+	writeFragment(t, dir, "nl.added.md\n", "- **Newline in the name.** x\n")
+
+	cl, err := ParseChangelog(filepath.Join(dir, "CHANGELOG.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cl.HasLeadIn("Fragment feature (#7).") {
+		t.Fatalf("an added fragment is an Added bullet; lead-ins: %v", cl.Added)
+	}
+	for _, lead := range []string{"A fix.", "Not a fragment.", "Stray.", "Too long a name.", "Newline in the name."} {
+		if cl.HasLeadIn(lead) {
+			t.Errorf("%q must not be an Added bullet", lead)
+		}
+	}
+	n := 0
+	for _, b := range cl.Added {
+		if b.LeadIn == "Fragment feature (#7)." {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("the symlink to 7.added.md must not be read as a second fragment: the bullet appears %d times", n)
+	}
+	if !cl.HasLeadIn("New thing.") || !cl.HasLeadIn("Second thing.") {
+		t.Error("the bullets of CHANGELOG.md itself must still be read")
+	}
+	f := &Feature{ChangelogBullets: []string{"Fragment feature (#7)."}}
+	if got := cl.FeatureVersions(f); len(got) != 1 || got[0] != ChangelogUnreleased {
+		t.Errorf("a feature claiming a fragment's lead-in is unreleased, got %v", got)
+	}
+	// a changelog with no changelog.d next to it behaves as before
+	lone := t.TempDir()
+	if err := os.WriteFile(filepath.Join(lone, "CHANGELOG.md"), []byte(sampleChangelog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cl, err = ParseChangelog(filepath.Join(lone, "CHANGELOG.md")); err != nil || cl.HasLeadIn("Fragment feature (#7).") {
+		t.Fatalf("no fragment directory: err=%v", err)
+	}
+}
+
+func TestParseChangelog_FragmentDirIsNotAFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG.md"), []byte(sampleChangelog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// changelog.d is a file, not a directory: reading it is an error, not a silent "no fragments"
+	if err := os.WriteFile(filepath.Join(dir, ChangelogFragmentDir), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseChangelog(filepath.Join(dir, "CHANGELOG.md")); err == nil {
+		t.Fatal("want an error when changelog.d cannot be read")
+	}
 }

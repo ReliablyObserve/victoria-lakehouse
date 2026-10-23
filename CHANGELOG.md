@@ -5,7 +5,16 @@ All notable changes to Victoria Lakehouse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- Do not add entries here. A change is documented by a fragment in changelog.d/ (see changelog.d/README.md);
+     the release assembles the fragments into the next version section and removes them. -->
+
 ## [Unreleased]
+
+### Changed
+
+- **Tests, registry and docs only (no change to the Lakehouse binaries or to runtime behaviour): `stats sum()` / `avg()` over zero-padded, oversized, duration or byte-size strings is a documented known difference, and the projection-equivalence fuzz test no longer fails on it (both binaries; #689).** Upstream VictoriaLogs parses a constant column with `tryParseFloat64` and a string column with `tryParseNumber`, so the answer for such a value depends on how rows are split into blocks, and hot and cold cut blocks differently. The pins are not patched. `FuzzProjectionEquivalence` and `TestProjectionEquivalence_Random` now compare the rows that feed a final ungrouped `sum()` / `avg()` exactly and leave out only the final value, only when a value of the field is in that class (decided by upstream's own engine, guarded by `TestSumAvgBlockShape_ExclusionClassIsExact`). Registry rows `vl.pipe.stats.sum_avg_block_shape` and `vt.select.logsql_query.stats_sum_avg_block_shape` record it as `expect: differ`, and `docs/parity-and-gaps.md` explains it.
+
+## [0.167.11] - 2026-10-23
 
 ### Fixed
 
