@@ -142,6 +142,18 @@ func TestMarshal_OverLongIDsAreLeftOutAndEveryOtherIDIsListed(t *testing.T) {
 	}
 }
 
+// TestListed: Listed counts exactly what Marshal lists.
+func TestListed(t *testing.T) {
+	all, short := mixedEntries(MaxTraceIDLen + 1)
+	if Listed(all) != len(short) || Listed(nil) != 0 {
+		t.Fatalf("Listed = %d, want %d", Listed(all), len(short))
+	}
+	got, _ := Unmarshal(Marshal(all))
+	if len(got) != Listed(all) {
+		t.Fatalf("Marshal lists %d, Listed says %d", len(got), Listed(all))
+	}
+}
+
 // TestMarshal_AllIDsOverLongListsNothing: a file whose IDs are all too long
 // gets a valid, empty index (it lists every short ID, and there are none).
 func TestMarshal_AllIDsOverLongListsNothing(t *testing.T) {

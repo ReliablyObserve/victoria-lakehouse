@@ -18,6 +18,10 @@ const traceIndexMetadataKey = traceindex.MetadataKey
 // TraceIndexEntry mirrors the public traceindex.Entry.
 type TraceIndexEntry = traceindex.Entry
 
+// listedTraceIndexEntries is the number of entries marshalTraceIndex lists:
+// the over-long IDs it leaves out are not counted (#768).
+func listedTraceIndexEntries(entries []TraceIndexEntry) int { return traceindex.Listed(entries) }
+
 func computeTraceIndex(rows []schema.TraceRow) []TraceIndexEntry {
 	return traceindex.Compute(rows)
 }

@@ -900,10 +900,11 @@ func (s *Storage) filterFilesByTraceIdx(ctx context.Context, files []manifest.Fi
 	return out
 }
 
-// anyTraceIDNotIndexable reports whether a queried id is longer than the index
-// can list (65,535 bytes). The writer leaves such ids out of every file's
-// index, so the index cannot say the file lacks them: with any such id in the
-// query the file is kept and the span scan decides (#768).
+// anyTraceIDNotIndexable reports whether a queried id is one the index can
+// never list: longer than 65,535 bytes (the writer leaves such ids out) or
+// empty (spans without a trace_id are stored but never indexed). The index
+// cannot say the file lacks them: with any such id in the query the file is
+// kept and the span scan decides (#768).
 func anyTraceIDNotIndexable(tidSet map[string]bool) bool {
 	for id := range tidSet {
 		if !traceIDIndexable(id) {
@@ -957,9 +958,8 @@ func traceIdxClassifyFile(meta *format.FileMetaData, tidSet map[string]bool) str
 //   - _trace_idx KV parses cleanly and contains at least one of the
 //     queried trace IDs                        → keep.
 //   - _trace_idx KV parses cleanly and contains none of them → DROP.
-//   - a queried id is longer than the index can list (65,535 bytes) → keep
-//     (the writer leaves such ids out of the index, so its absence proves
-//     nothing).
+//   - a queried id the index can never list (longer than 65,535 bytes, or
+//     empty) → keep (its absence from the index proves nothing).
 //   - No _trace_idx KV at all (other KVs only) → keep (same reason
 //     as the first case — index just not written for this file).
 func traceIdxKeepFile(meta *format.FileMetaData, tidSet map[string]bool) bool {

@@ -140,10 +140,22 @@ func Partition(traceID string) uint16 {
 // proves nothing and the file must be scanned.
 func Indexable(traceID string) bool { return len(traceID) <= MaxTraceIDLen }
 
+// Listed returns how many of the entries Marshal lists (those with an
+// Indexable ID).
+func Listed(entries []Entry) int {
+	n := 0
+	for _, e := range entries {
+		if Indexable(e.TraceID) {
+			n++
+		}
+	}
+	return n
+}
+
 // Marshal encodes index entries to binary.
 //
-// The index lists every trace ID of at most MaxTraceIDLen bytes in the
-// file, and no other: an ID the uint16 length prefix cannot describe is left
+// The index lists every non-empty trace ID of at most MaxTraceIDLen bytes in
+// the file (Compute never produces an entry for the empty ID), and no other: an ID the uint16 length prefix cannot describe is left
 // out (its length would wrap and the payload would decode into other
 // entries, #768), and the rest are still listed. A reader may therefore
 // conclude that an Indexable ID absent from the index is absent from the

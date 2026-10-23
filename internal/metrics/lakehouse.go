@@ -869,7 +869,8 @@ var (
 	// WriterTraceIdxEntriesTotal sums the per-flush trace-ID count
 	// going into the `_trace_idx` footer KV. Lets operators see
 	// the cardinality going into the KV without parsing it back
-	// out of S3.
+	// out of S3. It counts the entries listed, not the over-long IDs the
+	// index leaves out (#768).
 	WriterTraceIdxEntriesTotal = NewCounter(
 		"lakehouse_writer_trace_idx_entries_total")
 
@@ -880,8 +881,9 @@ var (
 	//                      still lists every other ID of the file)
 	//   entries_over_cap — files written without any index because more than
 	//                      1<<20 IDs would be listed (counted per file)
-	// Trace-by-ID scans a file for an ID its index cannot list (always
-	// correct, only slower). Expected 0.
+	// Trace-by-ID scans a file for an ID its index cannot list (the index
+	// cannot make that wrong, only slower). Counted again when a compaction
+	// rewrites the same data. Expected 0.
 	WriterTraceIdxOmittedTotal = NewCounterVec(
 		"lakehouse_writer_trace_idx_omitted_total", "reason")
 

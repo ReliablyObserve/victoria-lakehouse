@@ -604,7 +604,7 @@ func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLev
 	if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
 		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
 		metrics.WriterTraceIdxBuildsTotal.Inc()
-		metrics.WriterTraceIdxEntriesTotal.Add(len(tidxEntries))
+		metrics.WriterTraceIdxEntriesTotal.Add(listedTraceIndexEntries(tidxEntries))
 		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
 	}
 

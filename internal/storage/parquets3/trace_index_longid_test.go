@@ -7,6 +7,7 @@ import (
 
 	"github.com/parquet-go/parquet-go"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
@@ -56,9 +57,15 @@ func footerIndexOf(t *testing.T, data []byte) (string, bool) {
 func TestWriteTracesParquet_LongTraceIDsAreLeftOutOfTheIndexAndNothingElse(t *testing.T) {
 	for _, n := range []int{traceindex.MaxTraceIDLen + 1, traceindex.MaxTraceIDLen + 5, 1 << 17} {
 		rows, want := longIDFile(t, n)
+		entriesBefore := metrics.WriterTraceIdxEntriesTotal.Get()
 		res, err := writeTracesParquet(rows, 10, 3)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// The entries counter counts the entries listed, not the over-long
+		// IDs the index leaves out.
+		if d := metrics.WriterTraceIdxEntriesTotal.Get() - entriesBefore; d != uint64(len(want)) {
+			t.Fatalf("long IDs of %d bytes: trace_idx_entries_total grew by %d, want the %d listed", n, d, len(want))
 		}
 		v, ok := footerIndexOf(t, res.Data)
 		if !ok {

@@ -239,3 +239,46 @@ func TestTraceIndex_LongTraceIDColdTraceByID(t *testing.T) {
 		t.Fatalf("absent short id returned %d spans", got)
 	}
 }
+
+// TestTraceIndex_EmptyTraceIDIsNotPrunedByTheIndex: spans without a trace_id
+// are stored (VictoriaTraces keeps them, it only skips their index rows) but
+// traceindex.Compute never lists them, so the index cannot say a file lacks
+// the empty id. `trace_id:=""` must keep the file in both pre-filter paths
+// (traceIdxClassifyFile is the production one, traceIdxKeepFile the bool
+// twin) and return the row; a query naming only a short absent id still drops.
+func TestTraceIndex_EmptyTraceIDIsNotPrunedByTheIndex(t *testing.T) {
+	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
+	mk := func(tid string, i int) schema.TraceRow {
+		ts := base.Add(time.Duration(i) * time.Second).UnixNano()
+		return schema.TraceRow{
+			TimestampUnixNano: ts, StartTimeUnixNano: schema.Int64Ptr(ts), DurationNs: schema.Int64Ptr(5),
+			TraceID: tid, SpanID: fmt.Sprintf("%016x", i), SpanName: "op", ServiceName: "alpha",
+			Stream: `{resource_attr:service.name="alpha"}`, StreamID: fmt.Sprintf("%048x", 7),
+		}
+	}
+	res, err := writeTracesParquet([]schema.TraceRow{mk("", 0), mk("a-short", 1)}, 10, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := footerMeta(t, res.Data)
+	empty := map[string]bool{"": true}
+	if !traceIdxKeepFile(meta, empty) {
+		t.Fatal("traceIdxKeepFile drops a file that holds a span with an empty trace_id")
+	}
+	if got := traceIdxClassifyFile(meta, empty); got == "dropped" {
+		t.Fatalf("traceIdxClassifyFile (the production path) drops it: %q", got)
+	}
+	if traceIdxKeepFile(meta, map[string]bool{"absent-short": true}) || traceIdxClassifyFile(meta, map[string]bool{"absent-short": true}) != "dropped" {
+		t.Fatal("a short absent id must still drop the file")
+	}
+
+	mock := newMockS3Server()
+	t.Cleanup(mock.close)
+	s := testStorageWithS3(t, mock.url())
+	s.cfg.Mode = config.ModeTraces
+	registerFileInMockS3(t, s, mock, fmt.Sprintf("traces/dt=%s/hour=%02d/empty.parquet", base.Format("2006-01-02"), base.Hour()), res.Data, base)
+	run := tracesRunner(t, s, base.Add(-time.Hour).UnixNano(), base.Add(time.Hour).UnixNano())
+	if got := len(run(context.Background(), `trace_id:=""`)); got != 1 {
+		t.Fatalf(`trace_id:="" returned %d rows, want 1`, got)
+	}
+}

@@ -217,7 +217,7 @@ per pod (10 pods in the cluster, 50 M global), `footer_max_bytes
 | **Row-group bloom (in parquet footer)** | `parquet.SplitBlockFilter(10, …)` in `writer.go::writeLogsParquet` / `writeTracesParquet` | `service.name`, `k8s.*`, `host.name`, `trace_id`, `deployment.environment` get per-row-group blooms inside the parquet footer. `storage_query.go::bloomFilterSkip` consults them after the file is opened. | in footer cache (B) | ~5 % of parquet bytes | 10–50 % of row groups |
 | **Token bloom KV per row group** | `token_bloom.go::tokenBloomSkip` + `extractSearchTokens` | Free-text tokens (`_msg:contains("OOM")`) checked against a trigram bloom in the footer KV per row group. | in footer cache | ~2 % of parquet bytes | 50–95 % on selective tokens |
 | **Time-range row-group skip** | `storage_query.go::rowGroupMatchesTimeRange` | Timestamp column min/max vs query `[startNs, endNs]`. | in footer cache | 0 | 50–90 % for narrow windows |
-| **Trace_idx pre-filter** (traces only) | `lakehouse-traces/storage_query.go::filterFilesByTraceIdx` (`1e3cf28`) | After bloom narrowing, drops files whose `_trace_idx` footer KV doesn't list any queried trace ID. Best-effort only — never authoritative (relaxed in `f083c8e` because the index lags fresh ingest). | in footer cache | ~500 B per file (_trace_idx KV) | up to 100 % on trace-by-id lookups |
+| **Trace_idx pre-filter** (traces only) | `lakehouse-traces/storage_query.go::filterFilesByTraceIdx` (`1e3cf28`) | After bloom narrowing, drops files whose `_trace_idx` footer KV doesn't list any queried trace ID (the index lists every non-empty ID of at most 65,535 bytes; a query naming the empty ID or an ID longer than that keeps the file and the span scan decides: every file that survives the bloom and time narrowing is scanned, #768). Best-effort only — never authoritative (relaxed in `f083c8e` because the index lags fresh ingest). | in footer cache | ~500 B per file (_trace_idx KV) | up to 100 % on trace-by-id lookups |
 | **Trace-id smart-cache fast path** | `smartcache.FindFilesByTraceID` | After a writer or reader has touched a trace ID, the smart cache maps it back to the file key directly. Bypasses bloom + column stats entirely. | bounded by L1 size | 0 | 100 % on cache hit |
 | **`_trace_idx` footer KV positive lookup** | `lakehouse-traces/trace_index_lookup.go::LookupTraceIndex` | VT's trace-by-id Tempo handler asks for the (start, end) bound; we emit it straight from the footer KV. On miss we fall through to VT's natural `rewriteTraceIndexQuery` (per `f083c8e`). | in footer cache | (same _trace_idx as above) | sub-ms on hit |
 
@@ -593,12 +593,12 @@ Today's coverage:
 | 4A.4 file-level bloom | `lakehouse_parquet_files_skipped_bloom_total` | ✅ |
 | 4A.5 row-group bloom | `lakehouse_parquet_row_groups_skipped_total{reason="bloom"}` | ✅ |
 | 4A.6 token bloom | `lakehouse_parquet_row_groups_skipped_total{reason="token_bloom"}` | ✅ |
-| 4A.8 trace_idx pre-filter | `lakehouse_trace_idx_prefilter_files_total{result="dropped\|kept_match\|kept_unindexed\|kept_unattested\|kept_error"}` | ✅ |
+| 4A.8 trace_idx pre-filter | `lakehouse_trace_idx_prefilter_files_total{result="dropped\|kept_match\|kept_unindexed\|kept_unattested\|kept_error"}` (`kept_unindexed` also when a queried id is empty or longer than 65,535 bytes) | ✅ |
 | 4A.9 trace-id smart cache | `lakehouse_trace_id_cache_hits_total` | ✅ |
 | 4A.10 LookupTraceIndex | `lakehouse_trace_index_lookups_total{result}` | ✅ |
 | 4B caches | `lakehouse_cache_*_total / _bytes` (multiple) | ✅ |
 | 4C parallelism | `lakehouse_resourcebound_query_file_workers_*` | ✅ |
-| 4D writer artifacts | `lakehouse_writer_{bloom_builds,bloom_values,label_extractions,label_values,trace_idx_builds,trace_idx_entries}_total{mode}` + matching `_duration_seconds` histograms | ✅ |
+| 4D writer artifacts | `lakehouse_writer_{bloom_builds,bloom_values,label_extractions,label_values,trace_idx_builds,trace_idx_entries}_total{mode}` + matching `_duration_seconds` histograms; `lakehouse_writer_trace_idx_omitted_total{reason}` counts what a `_trace_idx` could not list (`id_over_limit` per ID, `entries_over_cap` per file; `trace_idx_entries` counts the entries listed) | ✅ |
 | 4E progressive zstd | `lakehouse_compaction_compression_ratio{output_level}` (histogram) + `lakehouse_compaction_compression_level_used{output_level}` (gauge) | ✅ |
 | 4F lifecycle | `lakehouse_startup_*`, `lakehouse_manifest_*` (rich) | ✅ |
 | 4G federation | none on the LH side; federation lives in vtselect/vlselect | — |
