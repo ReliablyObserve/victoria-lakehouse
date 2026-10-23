@@ -5,6 +5,9 @@ All notable changes to Victoria Lakehouse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- Do not add entries here. A change is documented by a fragment in changelog.d/ (see changelog.d/README.md);
+     the release assembles the fragments into the next version section and removes them. -->
+
 ## [Unreleased]
 
 ## [0.167.11] - 2026-10-23

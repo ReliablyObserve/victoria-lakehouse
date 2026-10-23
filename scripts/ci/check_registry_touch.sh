@@ -257,8 +257,8 @@ fi
 # the catalog, and must ship the regenerated documents. "Adds or extends a
 # feature" is decided from the PR's changes, by any of four independent signals:
 #
-#   1. a `### Added` bullet lead-in in CHANGELOG.md that the merge base does not
-#      have (the bold lead-in is what the catalog gate matches on — see
+#   1. a `### Added` bullet lead-in in CHANGELOG.md, or in a changelog.d/*.added.md
+#      fragment, that the merge base does not have (the bold lead-in is what the catalog gate matches on — see
 #      tests/conformance/registry/changelog.go);
 #   2. a route or handler registration, or a `lakehouse.*` flag definition,
 #      added or removed in non-test Go under internal/, cmd/ or
@@ -272,7 +272,7 @@ fi
 # keys) between the merge base and HEAD instead of grepping the diff, so moving
 # text around is never mistaken for a new capability. That matters most for
 # signal 1: after every release the release workflow opens a "release metadata"
-# PR that moves the `[Unreleased]` bullets under a new version heading, and
+# PR that moves the `[Unreleased]` bullets (the changelog.d fragments) under a new version heading, and
 # that PR adds no lead-in to the `### Added` sections — while a `### Fixed` or
 # `### Changed` bullet was never an `### Added` one.
 #
@@ -287,7 +287,17 @@ feature_signals=""
 # `## [version]` heading resets the section, a `### <name>` heading sets it,
 # and a bullet has a lead-in when its line opens with `- **` in column 0.
 added_leadins() {
-  git show "$1:CHANGELOG.md" 2>/dev/null | awk '
+  {
+    git show "$1:CHANGELOG.md" 2>/dev/null || true
+    # An `added` fragment is an `### Added` bullet of the release that is not cut yet. Each file
+    # gets its own heading pair, so a wrapped lead-in cannot run into the next file.
+    local frag
+    while IFS= read -r frag; do
+      [[ -z "$frag" ]] && continue
+      printf '\n## [fragment]\n\n### Added\n\n'
+      git show "$1:$frag" 2>/dev/null || true
+    done <<< "$(git ls-tree -r --name-only "$1" -- changelog.d 2>/dev/null | grep -E '^changelog\.d/[^/]+\.added\.md$' || true)"
+  } | awk '
     # A lead-in may be WRAPPED: the entries are long and the file is wrapped at
     # 96 columns, so the closing ** can sit on a later line. Reading only the
     # first line then gives a truncated fragment as the feature key — silently,
@@ -318,7 +328,7 @@ added_leadins() {
   ' | sort -u || true
 }
 
-if grep -qFx 'CHANGELOG.md' <<< "$changed"; then
+if grep -qE '^(CHANGELOG\.md|changelog\.d/.*)$' <<< "$changed"; then
   while IFS= read -r lead; do
     [[ -z "$lead" ]] && continue
     feature_signals="$feature_signals
