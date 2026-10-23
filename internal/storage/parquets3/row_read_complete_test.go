@@ -219,7 +219,7 @@ func newRCFixture(t *testing.T, workers int, keyFmt string) *rcFixture {
 			}
 		}
 		var buf bytes.Buffer
-		w := parquet.NewGenericWriter[rcLogRow](&buf, parquet.Compression(&parquet.Zstd))
+		w := parquet.NewGenericWriter[rcLogRow](&buf, parquet.Compression(&parquet.Zstd), parquet.MaxRowsPerRowGroup(250))
 		if _, err := w.Write(rows); err != nil {
 			t.Fatal(err)
 		}
@@ -418,20 +418,17 @@ func TestRowRead_LiveBytesBudget_WaitsNeverDrops(t *testing.T) {
 			fx.s.cfg.Query.MaxLiveBytes = 1 // every block in flight reaches the ceiling
 
 			start := metrics.QueryMemoryBudgetExceeded.Get()
-			var first sync.Once
 			rows, err := fx.query(t, context.Background(), "*", func(db *logstorage.DataBlock) {
-				first.Do(func() {
-					// Hold the consumer so the other workers pile up behind it with
-					// blocks of every object left. A worker that reaches the ceiling
-					// waits (and counts); one that got past it before the block in
-					// flight was counted waits on the consumer instead, and reaches
-					// the ceiling with its next block once the consumer is released.
-					deadline := time.Now().Add(100 * time.Millisecond)
-					for metrics.QueryMemoryBudgetExceeded.Get() <= start && time.Now().Before(deadline) {
-						time.Sleep(time.Millisecond)
-					}
-				})
-				time.Sleep(25 * time.Millisecond) // a slow consumer: the other workers' next blocks arrive while this one is consumed
+				// A slow consumer, paced by the budget itself: hold each block until
+				// another worker has reached the ceiling behind it (it waits and
+				// counts), or for 150 ms. The objects have several row groups, so a
+				// worker always has a next block to bring to the gate while this one
+				// is consumed.
+				seen := metrics.QueryMemoryBudgetExceeded.Get()
+				deadline := time.Now().Add(150 * time.Millisecond)
+				for metrics.QueryMemoryBudgetExceeded.Get() <= seen && time.Now().Before(deadline) {
+					time.Sleep(time.Millisecond)
+				}
 			})
 			if err != nil {
 				t.Fatalf("RunQuery: %v, the budget must make workers wait, not fail the read", err)
