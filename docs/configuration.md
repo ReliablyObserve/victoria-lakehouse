@@ -854,6 +854,7 @@ binary reads; that list is informational and drives the "Not read." marks above.
 | `--httpListenAddr` | `:9428` / `:10428` (auto) | HTTP listen address |
 | `--loggerLevel` | `INFO` | Log level (DEBUG, INFO, WARN, ERROR) |
 | `--internaldelete.enable` | `false` | Upstream's flag: serve the cluster delete protocol (`/internal/delete/*`). Off: every request gets upstream's "disabled" answer. On: also needs `delete.enabled: true`; `run_task` registers a tombstone scoped to the task's `tenant_ids` (see [deletion-strategy.md](deletion-strategy.md#cluster-delete-protocol-internaldelete)). The logs binary also lists VictoriaLogs' other select flags (`-search.maxQueryDuration`, `-select.disable`, …); the lakehouse `/select/*` path does not read them yet, so setting one makes lakehouse-logs refuse to start |
+| `--search.maxQueryDuration` | `30s` | Upstream's flag, traces binary only: the deadline of every Jaeger and Tempo request, as on VictoriaTraces. A request may lower it with its `timeout` argument, never raise it. The LogsQL routes of the traces binary keep `query.timeout`; the logs binary refuses the flag. See [read-path.md](read-path.md#jaeger-and-tempo-query-deadline-traces) |
 | `--delete.enable` | `false` | Upstream's flag: serve upstream's delete API (`/delete/run_task`, `/delete/stop_task`, `/delete/active_tasks`). Off: every `/delete/*` path the lakehouse does not serve itself gets upstream's "disabled" answer. On: also needs `delete.enabled: true`; `run_task` (POST only, other methods answer 405) registers a tombstone scoped to the request's tenant. Not the same switch as `delete.enabled`, which governs the tombstone machinery and the lakehouse's own `/delete/logsql/*` / `/delete/tracessql/*` API (see [deletion-strategy.md](deletion-strategy.md#upstream-delete-api-delete)) |
 
 ## Timeout Summary
@@ -862,6 +863,7 @@ binary reads; that list is informational and drives the "Not read." marks above.
 |---|---|---|---|
 | S3 single request | 30s | 3x exponential (200ms base) | Range read, HEAD, ListObjects |
 | Query execution | 60s | No retry | Client gets 504 if exceeded |
+| Jaeger / Tempo query (traces) | 30s | No retry | `-search.maxQueryDuration`, lowered by `timeout=`; upstream's answer when exceeded |
 | Storage node discovery poll | 10s | Next refresh cycle (5m) | Background |
 | Peer cache request | 5s | Falls back to S3 | Must be < query timeout |
 | SQS long poll | 20s | Immediate re-poll | AWS max |

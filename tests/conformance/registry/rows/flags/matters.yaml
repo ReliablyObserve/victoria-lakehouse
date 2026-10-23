@@ -441,3 +441,17 @@
   pending: true
   refs: { doc: docs/security.md, tests: [lakehouse-traces/buffer_query_mount_test.go, internal/buffer/handler_auth_test.go] }
   notes: "VictoriaTraces registers the flag in vtselect, which the traces binary cannot link; lakehouse-traces/internal_select.go registers VictoriaTraces' exact declaration (TestInternalSelectDisableFlag_IsVictoriaTracesDeclaration checks it against the vendored source). Before #384 the traces binary had no such flag. Same behaviour as the logs row: /internal/select/* and /internal/buffer/query answer upstream's 400 when it is set. Default off, as upstream."
+
+- id: vt.flag.search_max_query_duration
+  title: "-search.maxQueryDuration — Jaeger and Tempo deadline, upstream's flag and default; LogsQL on the traces binary keeps query.timeout"
+  surface: vt
+  kind: flag
+  origin: native
+  expect: differ
+  differ_note: "Jaeger and Tempo requests run under the flag (default 30s, lowered by 'timeout') exactly as on VictoriaTraces, through a drift-tested copy of vtselect's logic (lakehouse-traces/search_max_query_duration.go, selectapi/query_deadline.go). The traces binary's LogsQL routes (/select/logsql/*, /select/tenant_ids) still run under query.timeout (default 1m), not the flag, so a LogsQL query between 30s and 1m that upstream would cut off is answered. Moving them is a default change that needs the owner."
+  targets: [hot, cold]
+  upstream: { flag: search.maxQueryDuration }
+  compare: { type: status }
+  layers: [api]
+  pending: true
+  refs: { doc: docs/read-path.md, tests: [lakehouse-traces/search_max_query_duration_test.go#TestSearchMaxQueryDuration_MatchesVendoredVTSelect, lakehouse-traces/search_max_query_duration_test.go#TestNewSelectHandler_JaegerAndTempoDeadlineIsTheFlag] }

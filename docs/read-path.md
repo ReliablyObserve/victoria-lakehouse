@@ -30,6 +30,29 @@ VictoriaTraces v0.12.0 hides a span from the LogsQL query APIs until it is `-sea
 
 Two limits to know. Each process computes "now minus the offset" from its own clock, so near the boundary a span can be visible on one tier and not on the other for as long as the clocks differ. And the cold tier answers `options(time_offset=...)` by filtering on the shifted range but returns `_time` unshifted (hot storage returns it shifted); this is independent of the latency offset (registry row `vt.select.logsql_query.time_offset_time_column`).
 
+### Jaeger and Tempo query deadline (traces)
+
+VictoriaTraces runs every non-tail request of `/select/*` under `context.WithTimeout(ctx, d)`, where `d` is `-search.maxQueryDuration` (default 30s), lowered by the request's `timeout` argument and never raised by it (`d <= 0` or `d` above the flag means the flag; an unparsable `timeout` is a 400, `cannot parse duration at 'timeout=...' arg`). That includes the Jaeger and Tempo handlers. `lakehouse-traces` cannot link `vtselect` (its flags collide with VictoriaLogs' `internalselect`), so it carries a drift-tested copy of that logic (`lakehouse-traces/internal/selectapi/query_deadline.go`, `lakehouse-traces/search_max_query_duration.go`, held to the vendored `app/vtselect/main.go` by `TestGetMaxQueryDuration_MatchesVendoredVTSelect`, `TestQueryContext_MatchesVendoredVTSelectRequestHandler` and `TestSearchMaxQueryDuration_MatchesVendoredVTSelect`) and registers upstream's flag under upstream's name, default and help text. Before [#778](https://github.com/ReliablyObserve/victoria-lakehouse/issues/778) these routes ran with no deadline at all, so a stalled S3 read or a stalled consumer held the query, and the file-budget and row-group decode slots it had taken, until the client went away.
+
+| Route | Deadline before | Deadline now |
+|---|---|---|
+| Jaeger trace-by-ID `/select/jaeger/api/traces/<id>` and `/api/traces/<id>` | none | `-search.maxQueryDuration` / `timeout` |
+| Jaeger search `/select/jaeger/api/traces`, `/api/traces` | none | same |
+| Jaeger services and operations `/select/jaeger/api/services[/<svc>/operations]`, `/api/services[/...]` | none | same |
+| Jaeger dependencies `/select/jaeger/api/dependencies`, `/api/dependencies` | none | same |
+| Tempo search and TraceQL `/select/tempo/api/search` | none | same |
+| Tempo tags and tag values `/select/tempo/api/v2/search/tags`, `.../tag/<tag>/values` | none | same |
+| Tempo trace-by-ID `/select/tempo/api/traces/<id>`, `/api/v2/traces/<id>` | none | same |
+| TraceQL metrics `/select/tempo/api/metrics/query_range` | none | same |
+| LogsQL `/select/logsql/*` and `/select/tenant_ids` on the traces binary | `query.timeout` | unchanged: `query.timeout` (default 1m) |
+| Jaeger gRPC (`traces.jaeger_grpc_addr`) | not served: the setting has no listener in this binary | not applicable |
+
+The status code and text of a request that hits the deadline are upstream's: the handlers receive the timed-out context and answer as they do on a hot VictoriaTraces node (`TestJaegerTempoRoutes_DeadlineAnswerIsUpstreams` compares both). The cold read path already watches the context end to end (the file-budget, decode and download waits, and the S3 reads), so a stalled read ends at the deadline and releases its slots (`TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots`: every object hung on each Jaeger and Tempo route, the deadline error within the deadline, the file-budget slot shown held during the stall (on the routes that take one: search, Tempo search, tags, tag values and TraceQL metrics; trace-by-ID, services and operations read through the trace index and the stream catalog and take none) and back to zero after, the next query served, no goroutine left; `TestJaegerTempoDeadline_StalledConsumerFreesDecodeSlots`: a consumer that stalls while workers hold row-group decode slots, shown held and then released at the deadline. A row group's bytes are fetched before it is decoded, so a stalled S3 read never holds a decode slot; only a stalled consumer does). Each request derives its own context, so the deadline is per request and per pod; nothing is shared between instances.
+
+Cost, measured on one host (macOS arm64, Apple M5 Pro, an in-memory store that answers at once so only the handler's own work shows; `go test -bench 'Handler$' -count=10` on `main` and on the branch, interleaved, `benchstat`): time per request is not significantly different on any of the four routes (Jaeger services 3.92 us -> 3.85 us, trace-by-ID 133.0 us -> 140.5 us, Tempo search 96.7 us -> 98.9 us, Tempo tags 92.5 us -> 113.7 us; p between 0.22 and 0.80, run-to-run spread 13-41 %), allocations rise by 4 to 8 per request (one context, its timer and the parsed `timeout`; +0.5 % to +6.4 %) and bytes by 0.2 % to 3.3 % (Jaeger services 8.02 KiB -> 8.29 KiB). The deadline adds no S3 request and changes no read: zero S3 reads before and after, per query class.
+
+Not covered: upstream also admits Jaeger and Tempo requests through `-search.maxConcurrentRequests` / `-search.maxQueueDuration`; the traces binary has no admission control on those routes (the LogsQL routes have `query.max_concurrent`); tracked in [#800](https://github.com/ReliablyObserve/victoria-lakehouse/issues/800). The logs binary is unaffected: it serves `/select/*` through VictoriaLogs' own handlers and its own `query.timeout`, and refuses `-search.maxQueryDuration` (`cmd/lakehouse-logs/upstream_flags.go`).
+
 ### Field enumeration
 
 `field_values`, `streams` and `stream_ids` return every value in the window with its exact hit count, as VictoriaLogs does. Per selected object:

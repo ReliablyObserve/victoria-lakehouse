@@ -128,3 +128,32 @@
   compare: { type: trace }
   layers: [api]
   pending: true
+
+- id: vt.select.jaeger_tempo_query_deadline
+  title: "Jaeger and Tempo requests run under -search.maxQueryDuration (default 30s), lowered by the 'timeout' argument; a stalled S3 read ends at the deadline with upstream's answer and frees its file-budget slot (a stalled consumer frees its row-group decode slots)"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, params: { timeout: "30s" } }
+  compare: { type: status }
+  layers: [api, chaos]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_StalledReadEndsAtTheDeadline
+      - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_DeadlineAnswerIsUpstreams
+      - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_TimeoutArgument
+      - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_DefaultIsUpstreams
+      - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_DeadlineFreesTheWorkers
+      - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_ClientCancelEndsTheRead
+      - lakehouse-traces/internal/selectapi/query_deadline_drift_test.go#TestGetMaxQueryDuration_MatchesVendoredVTSelect
+      - lakehouse-traces/internal/selectapi/query_deadline_drift_test.go#TestQueryContext_MatchesVendoredVTSelectRequestHandler
+      - lakehouse-traces/internal/storage/parquets3/query_deadline_http_test.go#TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots
+      - lakehouse-traces/internal/storage/parquets3/query_deadline_http_test.go#TestJaegerTempoDeadline_StalledConsumerFreesDecodeSlots
+      - lakehouse-traces/search_max_query_duration_test.go#TestNewSelectHandler_JaegerAndTempoDeadlineIsTheFlag
+  notes: "Fixes #778. Upstream's vtselect.RequestHandler wraps every non-tail request in context.WithTimeout(ctx, getMaxQueryDuration(r)); the traces binary cannot link vtselect, so selectapi carries a drift-tested copy and registers the flag (lakehouse-traces/search_max_query_duration.go). Surfaces (all had no deadline before): Jaeger trace-by-ID, search, services, operations, dependencies (select and bare /api aliases); Tempo search/TraceQL, tags, tag values, trace-by-ID v1 and v2; TraceQL metrics. The deadline answer is the handlers' own (not a status of the wrapper's making). Not covered: upstream's -search.maxConcurrentRequests / -search.maxQueueDuration admission on these routes (tracked in #800). The logs binary is unaffected."
