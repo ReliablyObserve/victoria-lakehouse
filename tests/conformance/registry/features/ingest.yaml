@@ -100,6 +100,8 @@
     - internal/storage/parquets3/drain_crowded_test.go#TestDrain_ObjectsAreByteIdenticalToThePerSecondPlansWithoutACrowdedSecond
     - internal/storage/parquets3/drain_crowded_test.go#TestDrain_TwoWritersCrowdedSecondOfOneTenant
     - internal/storage/parquets3/drain_crowded_test.go#TestSplitSecond_BucketsDoNotDependOnTheBlockLayout
+    - internal/storage/parquets3/drain_crowded_test.go#TestHourEnd
+    - internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_QueryErrorsAreReturned
     - internal/storage/parquets3/drain_memory_test.go#TestDrainHeap_DoesNotGrowWithRowsPerSecond
     - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_CrowdedSecondIsCutIntoBoundedGroups
     - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_IdenticalRowsOfACrowdedSecondStayOneGroup
@@ -111,6 +113,8 @@
     - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_ObjectsAreByteIdenticalToThePerSecondPlansWithoutACrowdedSecond
     - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestDrain_TwoWritersCrowdedSecondOfOneTenant
     - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestSplitSecond_BucketsDoNotDependOnTheBlockLayout
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestHourEnd
+    - lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go#TestPlanGroups_QueryErrorsAreReturned
     - lakehouse-traces/internal/storage/parquets3/drain_memory_test.go#TestDrainHeap_DoesNotGrowWithRowsPerSecond
     - internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesLogs_CountsEveryStringColumn
     - lakehouse-traces/internal/storage/parquets3/raw_bytes_test.go#TestEstimateRawBytesTraces_CountsEveryStringColumn

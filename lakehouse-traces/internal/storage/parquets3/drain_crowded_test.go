@@ -3,6 +3,7 @@ package parquets3
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"path/filepath"
@@ -375,7 +376,6 @@ func TestDrain_CrowdedSecondResumesWithoutDuplicates(t *testing.T) {
 			if restart {
 				e.restart()
 				f = e.flusher(1000)
-				g = e.segs.Pending()[0]
 			}
 			e.failFn.Store(func(string) bool { return false })
 			e.drainAll(f)
@@ -538,5 +538,38 @@ func TestSplitSecond_BucketsDoNotDependOnTheBlockLayout(t *testing.T) {
 	one, many := plan(n, false), plan(97, true)
 	if len(one) < n/maxRows || fmt.Sprint(one) != fmt.Sprint(many) {
 		t.Fatalf("the buckets depend on the block layout:\n one batch   %v\n many batches %v", one, many)
+	}
+}
+
+// An hour ends one nanosecond before the next, and the last hour of int64 time
+// ends at its last nanosecond rather than overflowing.
+func TestHourEnd(t *testing.T) {
+	h := hourAgo.UnixNano()
+	if got := hourEnd(h); got != h+int64(time.Hour)-1 {
+		t.Errorf("hourEnd = %d, want %d", got, h+int64(time.Hour)-1)
+	}
+	if got := hourEnd(int64(1<<63-1) - 5); got != 1<<63-1 {
+		t.Errorf("hourEnd near the end of int64 time = %d, want the maximum", got)
+	}
+}
+
+// A plan whose summary query fails, or is cancelled, returns the error and no
+// groups: the drain retries it, it never writes from a partial plan.
+func TestPlanGroups_QueryErrorsAreReturned(t *testing.T) {
+	e := newSegEnv(t)
+	e.burst(segTenantA, 3000, func(i int) int64 { return hourAgo.UnixNano() + sec(5) }, rowID)
+	g := e.seal()
+	f := e.flusher(500)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Upstream's query returns what it had, without an error, on a cancelled
+	// context: the tenant's plan looks at the context, as it did before.
+	if _, err := f.planTenant(ctx, g, segTenantA, nil, tenantRowCount); !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled plan returned %v, want context.Canceled", err)
+	}
+	e.segs.Close()
+	e.segs = nil
+	if got, err := f.planGroups(context.Background(), g, segTenantA); err == nil || got != nil {
+		t.Errorf("a plan over a closed segment returned %v, %v; want the error", got, err)
 	}
 }
