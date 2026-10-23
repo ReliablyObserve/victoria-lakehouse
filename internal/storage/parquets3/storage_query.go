@@ -161,10 +161,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	if maxLiveBytes <= 0 {
 		maxLiveBytes = defaultMaxLiveBytes
 	}
-	liveGate := &liveBytesGate{}
-	if liveGateHook != nil {
-		liveGateHook(liveGate)
-	}
+	liveGate := newQueryLiveGate()
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -231,6 +228,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				return
 			}
 			rowsEmitted.Add(int64(db.RowsCount()))
+			defer trackInflightBlock(db)()
 			wbMu.Lock()
 			func() {
 				defer func() {
@@ -1144,14 +1142,6 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	// openParquetFile to either range-read or full-download; the budget
 	// is a soft ceiling that bounds the wildcard-fanout case (which
 	// always full-downloads, per queryColumns returning nil for `*`).
-	// Reserve the object's decoded bytes against the query's ceiling first, holding
-	// no slot while waiting: a stalled consumer then cannot starve other queries.
-	relLive, liveErr := s.reserveLiveBytes(ctx, fi)
-	if liveErr != nil {
-		return liveErr
-	}
-	defer relLive()
-
 	relFB, fbErr := acquireFileBudget(ctx, fi.Size)
 	if fbErr != nil {
 		return fbErr
@@ -1300,8 +1290,16 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			return ctx.Err()
 		}
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readOneRowGroup(ctx, f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr, storage.IsFieldNamesQuery(ctx)); err != nil {
-			return err
+		// Reserve the row group's decoded bytes against the query's ceiling, from the
+		// footer already read (no request is added); the wait ends with the context.
+		relLive, liveErr := reserveRowGroup(ctx, f, m.idx, projectedCols, fi.Size)
+		if liveErr != nil {
+			return liveErr
+		}
+		rgErr := s.readOneRowGroup(ctx, f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr, storage.IsFieldNamesQuery(ctx))
+		relLive()
+		if rgErr != nil {
+			return rgErr
 		}
 	}
 

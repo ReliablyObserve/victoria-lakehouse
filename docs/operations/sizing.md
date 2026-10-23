@@ -70,7 +70,7 @@ Per pod, steady state:
                                       lakehouse_catalog_resident_bytes
   + Smart cache (L1)               ≈ cfg.cache.memory_mb MiB
   + Buffer restore (segment parts)    ≈ 100 MiB peak during startup
-  + Per-query decoded objects (max_live_bytes)  default 512 MiB (estimated) × query.max_concurrent (default 32)
+  + Per-query decoded row groups (max_live_bytes)  default 512 MiB (estimated) × query.max_concurrent (default 32)
   + Background goroutine pools     ≈ 100-200 MiB
   + Go runtime overhead            ≈ 300 MiB
   ────────────────────────────────────────────────
@@ -295,15 +295,17 @@ query:
 
 - **`query.max_concurrent` × `query.max_live_bytes`** is the
   worst-case memory burst from queries, in the unit of the ceiling: an
-  ESTIMATE of the decoded bytes of the objects a query reads at once (an
-  object's footer uncompressed size, else four times its stored size, so
-  neither the real decoded size nor the parquet-go buffers are exact), plus
-  one object larger than the ceiling when it is read alone. The defaults
-  (32 × 512 MiB = 16 GiB) apply regardless of cluster size; on a small pod
-  lower `max_concurrent`, or it will OOM-kill before the disk fills. The
-  process-wide `fileBudgetSem` (256 MiB) and the row-group decoder limit
-  bound the rest. A query over the ceiling waits for its own earlier objects
-  and takes no slot while it waits.
+  ESTIMATE of the decoded bytes of the row groups a query decodes at once.
+  Per row group and projected column the estimate is the larger of the
+  footer's uncompressed size and the value count times the longest min/max
+  statistic (or the text width of a number), so it covers a compressible
+  or dictionary-encoded column that is small on disk and large decoded; it
+  is not the real heap (parquet-go buffers and the strings' headers are not
+  in it), and one row group larger than the ceiling is read alone. The
+  defaults (32 × 512 MiB = 16 GiB) apply regardless of cluster size; on a
+  small pod lower `max_concurrent`, or it will OOM-kill before the disk
+  fills. The process-wide `fileBudgetSem` (256 MiB) and the row-group
+  decoder limit bound the rest.
 
 - **Every manifest refresh is a full enumeration.** First-ever boot
   and every periodic refresh list every key under the tenant

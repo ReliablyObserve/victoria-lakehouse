@@ -70,7 +70,7 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 		{"streams", "/select/logsql/streams", url.Values{"query": {"*"}}, 0, false},
 		{"stream_ids", "/select/logsql/stream_ids", url.Values{"query": {"*"}}, 0, false},
 		{"stream_field_names", "/select/logsql/stream_field_names", url.Values{"query": {"*"}}, 0, false},
-		{"stream_field_values", "/select/logsql/stream_field_values", url.Values{"query": {"*"}, "field": {"service.name"}}, 0, false},
+		{"stream_field_values", "/select/logsql/stream_field_values", url.Values{"query": {"*"}, "field": {"resource_attr:service.name"}}, 0, false},
 		{"jaeger_trace_by_id", "/select/jaeger/api/traces/" + rcTraceID(1, 0), url.Values{
 			"start": {fmt.Sprint(time.Now().Add(-3 * time.Hour).UnixMicro())}, "end": {fmt.Sprint(time.Now().Add(time.Hour).UnixMicro())}}, http.StatusBadRequest, false},
 		{"jaeger_services", "/select/jaeger/api/services", url.Values{}, http.StatusBadRequest, false},

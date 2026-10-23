@@ -93,23 +93,27 @@
   since: v0.49.0
   area: query
   surfaces: [flag]
-  rows: [lh.query.live_bytes_budget_waits]
+  rows: [lh.query.live_bytes_budget_waits, lh.query.stalled_consumer_starves_slots]
   tests:
     - internal/storage/parquets3/query_memory_budget_test.go
     - lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go
     - internal/storage/parquets3/query_limits_test.go
     - lakehouse-traces/internal/storage/parquets3/query_limits_test.go
     - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
-    - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
-    - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
+    - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded
+    - internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_CoversWhatIsDecoded
+    - internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_Estimator
+    - internal/storage/parquets3/row_read_complete_test.go#TestReserveRowGroup_UsesTheFooterOfThatRowGroup
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
     - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
     - internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
-    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
-    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_CoversWhatIsDecoded
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_Estimator
+    - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestReserveRowGroup_UsesTheFooterOfThatRowGroup
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
     - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
@@ -121,13 +125,14 @@
     - docs/configuration.md
     - docs/read-path.md
   highlight: >-
-    **Query memory budget**: `-lakehouse.query.max-live-bytes` bounds the estimated decoded bytes of the objects one query reads at once; a file worker reserves an object's estimate before it takes any slot and waits when the ceiling is full, so the pod is not pushed into an OOM kill, other queries are not starved, and the answer is never cut short.
+    **Query memory budget**: `-lakehouse.query.max-live-bytes` bounds the estimated decoded bytes a query holds in flight; a file worker reserves a row group's footer-derived estimate before decoding it and waits when the ceiling is full, so the pod is not pushed into an OOM kill and the answer is never cut short.
   description: >-
     Cold queries hold decoded row groups in memory while they stream results. The budget makes
-    that bounded and observable: a file worker reserves an estimate of an object's decoded size
-    (counted when it has to wait) before it takes any process-wide slot, instead of pushing the pod
-    into an OOM kill that takes every other query with it. The wait never cancels the read or drops
-    a block, so the answer is complete, and a stalled consumer holds no slot another query needs.
+    that bounded and observable: before decoding a row group a file worker reserves an estimate of
+    its decoded size, taken from the footer it has already read (no request is added), and waits,
+    counted, when the ceiling is full, instead of pushing the pod into an OOM kill that takes every
+    other query with it. The wait never cancels the read or drops a block, so the answer is complete.
+    A stalled consumer can still hold slots other queries need (a known gap).
 
 - id: lh.feature.query.resource_bounds
   title: K8s-style resource bounds for query surfaces

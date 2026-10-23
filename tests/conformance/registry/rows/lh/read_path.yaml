@@ -180,7 +180,7 @@
   notes: "Fixes #503. A Lakehouse safety guarantee for the cold tier (hot VictoriaLogs reads local parts and has no unreadable-object case; its FATAL on a corrupt part is not comparable). processOneFile logged an error other than a 404 and dropped the object, fileWorkerLoop recorded a cancellation only at the top of its next iteration, and RunQuery returned a recorded error only when its own context was cancelled, so a failing or cancelled last object, or an unreadable object anywhere, gave 200 with rows missing. Now processOneFile returns the error, the first one stops the other workers and RunQuery returns it (cannot read <key>: <cause>), wrapped in httpserver.ErrorWithStatusCode 502, the status upstream gives a read whose storage node is unavailable (netselect getFirstError); the caller's own cancellation or deadline is returned unwrapped. field_values, streams, stream_ids and stream_field_* (scanFieldValuesParallel) behave alike, and so do the readers below them: a page or chunk that cannot be read inside an object (readInt64Column, readScalarColumnFormatted, readMapColumnToBlockColsKeys, scanProjectedFieldValues) returns its error. A failure is classified as a missing object by the S3 error it carries (s3reader.IsNotFound), never by its text. The trace-by-ID footer index (LookupTraceIndex) reports a miss, so that the span scan answers, when a footer could not be read. Jaeger stays 400 because VictoriaTraces formats the error with %s (#773). DIRECTION: a read that answered 200 with rows missing now answers 502 (logs endpoints, stats included); allow_partial_response is not implemented. NOT touched: query.max_rows (#774), QuerySpecificFiles (#750), unflushed-buffer/peer reads (#381), and the compaction swap (#772, row lh.query.removed_source_mid_query)."
 
 - id: lh.query.live_bytes_budget_waits
-  title: "query.max_live_bytes bounds the estimated decoded bytes of the objects a query reads at once: a file worker reserves an object's estimate before it takes any slot or opens it and waits, holding nothing, when the reserved bytes would pass the ceiling; it never cancels the read or drops a block, and a stalled consumer does not starve other queries"
+  title: "query.max_live_bytes bounds the estimated DECODED bytes in flight of a query: before it decodes a row group a file worker reserves that row group's footer-derived estimate and waits, ctx-aware, when the reserved bytes would pass the ceiling; it never cancels the read or drops a block, and it adds no request"
   surface: lh
   kind: select
   origin: lh-addition
@@ -195,23 +195,47 @@
     doc: docs/read-path.md
     tests:
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
-      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
-      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
+      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded
+      - internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_CoversWhatIsDecoded
+      - internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_Estimator
+      - internal/storage/parquets3/row_read_complete_test.go#TestReserveRowGroup_UsesTheFooterOfThatRowGroup
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
       - internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
-      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_HighWaterMarkIsBounded
-      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumerDoesNotStarveOtherQueries
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_CoversWhatIsDecoded
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_Estimator
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestReserveRowGroup_UsesTheFooterOfThatRowGroup
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow
-  notes: "Fixes #503. The budget used to cancel the query context and drop the block, so a read whose budget tripped while the last objects were read answered 200 with their rows missing; and it counted blocks only after they were decoded, which bounded nothing (writeBlock is synchronous, so each worker already holds one decoded block). liveBytesGate reserves per object BEFORE the file-budget and row-group-decoder slots (ctx-aware, atomic, one object larger than the ceiling is admitted alone), so the reserved bytes never pass the ceiling, a waiting worker holds no process-wide slot, and a stalled consumer cannot starve another query. The estimate is the footer's uncompressed size when cached, else the stored size times an assumed 4: an estimate, not the real decoded size. lakehouse_query_memory_budget_exceeded_total counts waits, not cancelled queries (name kept). DIRECTION: the meaning of query.max_live_bytes changes from cancel (partial or failed read) to a real reservation (slower under pressure, never partial). Measured, 40 incompressible objects x 5,000 rows, 16 workers, slow consumer: a 1 MiB ceiling held reserved bytes at 0.6 MiB and peak heap growth at 1.1-2.8 MiB; the ceiling out of reach 9.9 MiB reserved and 11.4-31.4 MiB heap growth; every row in both."
+  notes: "Fixes #503. The budget used to cancel the query context and drop the block, so a read whose budget tripped while the last objects were read answered 200 with their rows missing; and it counted blocks only after they were decoded, which bounded nothing (writeBlock is synchronous, so each worker already holds one decoded block). liveBytesGate now reserves per ROW GROUP (the unit that is decoded) before decoding it, from the footer the worker has already read (decodedEstimate: per projected column the larger of the uncompressed size and values x the longest statistic or type width; never the compressed size), so cold and warm footers behave alike and no request is added. The reserved bytes never pass the ceiling, except by one row group larger than it, admitted alone; the wait is ctx-aware, as is the row-group decoder wait. Scaled throughput model (objects of 1/64 of production, ceiling 4.5 objects, file budget 2.5 objects, 20 ms S3 latency, 40 objects, benchstat n=10): cold wildcard 653.6 ms before #503, 655.4 ms on #751, 649.4 ms here; warm phrase 172.2 / 169.6 / 150.4 ms, all within noise; a per-OBJECT reservation (the first version of this follow-up) was +122 % and +149 %. The wait holds the object's file-budget slot (the worker has opened it): a stalled consumer can still starve other queries of slots, see lh.query.stalled_consumer_starves_slots (#793). lakehouse_query_memory_budget_exceeded_total counts waits, not cancelled queries (name kept)."
+
+- id: lh.query.stalled_consumer_starves_slots
+  title: "A query whose consumer is stalled holds the process-wide file-budget and row-group-decoder slots other queries need, at any query.max_live_bytes: the other query waits out its deadline (known gap, #793)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: differ
+  differ_note: "Known gap, not approved as a difference; the same on the base before #503. A file worker holds a fileBudgetSem slot (at most 8 per process) while its object is read and a rgDecodeSem slot while it decodes, across a blocking writeBlock; with a stalled consumer, its query's workers keep them and another query on the process cannot take one. The test pins today's behaviour at the default ceiling (B misses its 1.5 s deadline). The fix is to release the decode slots before writeBlock blocks, or a bounded hand-off between decoder and writer. Tracked in #793."
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [chaos]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793
+  notes: "Issue: https://github.com/ReliablyObserve/victoria-lakehouse/issues/793. When fixed, TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793 must become the assertion that the second query finishes."
 
 - id: lh.query.removed_source_mid_query
   title: "A source object a compaction deleted while a query ran is skipped silently although its rows are in the merged object: the query answers without those rows and without an error (known gap, #772)"

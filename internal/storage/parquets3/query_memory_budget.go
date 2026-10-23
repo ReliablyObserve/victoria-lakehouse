@@ -8,9 +8,11 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+	"github.com/parquet-go/parquet-go"
+	"github.com/parquet-go/parquet-go/format"
 
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
 // defaultMaxLiveBytes caps the bytes of in-flight DataBlock rows a single
@@ -21,23 +23,20 @@ import (
 // and per-config via QueryConfig.MaxLiveBytes.
 const defaultMaxLiveBytes int64 = 512 * 1024 * 1024
 
-// liveBytesGate is the per-query ceiling on the decoded bytes of the objects a
-// query is reading at once (query.max_live_bytes). A file worker RESERVES an
-// estimate of the object's decoded size before it takes any process-wide slot
-// (file budget, row-group decoder) or opens the object, and waits for the
-// reservation when the bytes already reserved would pass the ceiling. The wait
-// holds nothing, so a query whose consumer is slow or stalled cannot starve the
-// other queries of slots; it is ctx-aware; and it never cancels the read or
-// drops a block (the query used to be cancelled instead, which answered 200 with
-// rows missing).
+// liveBytesGate is the per-query ceiling on the DECODED bytes in flight
+// (query.max_live_bytes). Before a worker decodes a row group it RESERVES an
+// estimate of the row group's decoded size, taken from the footer it has already
+// read (decodedEstimate: no request is added), and waits for the reservation when
+// the bytes already reserved would pass the ceiling. The reserved bytes never pass
+// the ceiling, except by one row group larger than it, which is admitted alone (so
+// nothing waits for room that never comes). The wait is ctx-aware and never
+// cancels the read or drops a block (the query used to be cancelled instead,
+// which answered 200 with rows missing). A worker that waits has opened its
+// object, so it holds that object's file-budget slot: a stalled consumer can
+// still hold slots another query needs (see docs/read-path.md).
 //
-// The reservation is atomic: the bytes reserved never pass the ceiling, except
-// by one object larger than the ceiling, which is admitted alone when nothing
-// else is reserved (so no object can wait for room that never comes). The
-// estimate is the object's uncompressed size from its footer when the footer is
-// cached, else its stored size times an assumed expansion
-// (assumedDecodeExpansion): a conservative bound, since a worker decodes one row
-// group of the object at a time.
+// The unit is the row group (what is decoded at once, 8-16 MiB in production),
+// not the object, so a 128 MiB object does not take a 512 MiB ceiling for itself.
 type liveBytesGate struct {
 	live    atomic.Int64
 	peak    atomic.Int64 // the high-water mark of live, for the tests and the ceiling's metric
@@ -47,9 +46,8 @@ type liveBytesGate struct {
 	cond    *sync.Cond
 }
 
-// assumedDecodeExpansion is the assumed ratio of an object's decoded bytes to its
-// stored bytes when its footer is not at hand (assumed, not measured: zstd-compressed
-// logs and spans decode to several times their size).
+// assumedDecodeExpansion is the assumed ratio of decoded to stored bytes, used only
+// when a footer carries no sizes for a row group (assumed, not measured).
 const assumedDecodeExpansion = 4
 
 // tryReserve reserves n bytes unless that would pass max while other bytes are reserved.
@@ -117,8 +115,32 @@ func (g *liveBytesGate) wake() {
 	g.mu.Unlock()
 }
 
+// inflightBlockHook, when set (tests only), is told the bytes of each block as it
+// leaves the decoder for the consumer (positive) and when the consumer is done with it (negative).
+var inflightBlockHook func(delta int64)
+
 // liveGateHook, when set (tests only), receives each query's gate as it is made.
 var liveGateHook func(*liveBytesGate)
+
+// newQueryLiveGate makes the gate of one query (and shows it to the tests).
+func newQueryLiveGate() *liveBytesGate {
+	g := &liveBytesGate{}
+	if liveGateHook != nil {
+		liveGateHook(g)
+	}
+	return g
+}
+
+// trackInflightBlock tells the tests' hook about a block on its way to the
+// consumer; the returned func tells it the consumer is done with it.
+func trackInflightBlock(db *logstorage.DataBlock) func() {
+	if inflightBlockHook == nil {
+		return func() {}
+	}
+	sz := dataBlockApproxBytes(db)
+	inflightBlockHook(sz)
+	return func() { inflightBlockHook(-sz) }
+}
 
 type liveGateKey struct{}
 
@@ -132,33 +154,87 @@ func withLiveBytesGate(ctx context.Context, g *liveBytesGate, max int64) context
 	return context.WithValue(ctx, liveGateKey{}, liveGateRef{g: g, max: max})
 }
 
-// reserveLiveBytes reserves the estimated decoded size of the object against the
-// query's ceiling; a query without a gate (QuerySpecificFiles) reserves nothing.
-func (s *Storage) reserveLiveBytes(ctx context.Context, fi manifest.FileInfo) (func(), error) {
+// reserveRowGroup reserves the estimated decoded size of row group idx of f
+// against the query's ceiling; a query without a gate (QuerySpecificFiles)
+// reserves nothing.
+func reserveRowGroup(ctx context.Context, f *parquet.File, idx int, projected map[string]bool, storedSize int64) (func(), error) {
 	ref, ok := ctx.Value(liveGateKey{}).(liveGateRef)
 	if !ok {
 		return func() {}, nil
 	}
-	return ref.g.reserve(ctx, s.estimateDecodedBytes(fi), ref.max)
+	return ref.g.reserve(ctx, decodedEstimate(f.Metadata(), idx, projected, storedSize), ref.max)
 }
 
-// estimateDecodedBytes: the uncompressed size of the object's row groups from its
-// cached footer, else the stored size times assumedDecodeExpansion.
-func (s *Storage) estimateDecodedBytes(fi manifest.FileInfo) int64 {
-	if s.footerCache != nil {
-		if cached, ok := s.footerCache.Get(fi.Key); ok && cached != nil && cached.File != nil {
-			if md := cached.File.Metadata(); md != nil {
-				var total int64
-				for _, rg := range md.RowGroups {
-					total += rg.TotalByteSize
-				}
-				if total > 0 {
-					return total
-				}
-			}
-		}
+// decodedWidthOfType is the least width in bytes of the text a value of a fixed-width
+// physical type decodes to (an int64 timestamp becomes an RFC 3339 string of ~30
+// bytes); 0 for the variable-length types, which the statistics describe.
+func decodedWidthOfType(t format.Type) int64 {
+	switch t {
+	case format.Boolean:
+		return 5
+	case format.Int32:
+		return 12
+	case format.Int64:
+		return 32
+	case format.Float:
+		return 16
+	case format.Double:
+		return 24
 	}
-	return fi.Size * assumedDecodeExpansion
+	return 0
+}
+
+// decodedEstimate is the estimate of the decoded bytes of row group idx for the
+// projected columns (nil: every column but the storage-bookkeeping ones, as the
+// unprojected scan reads): per column the larger of its chunk's uncompressed size
+// and its value count times the longest of its min/max statistics and the text width of its type (a dictionary-encoded
+// column is small on disk and large decoded), summed. It never reads the
+// compressed size: compressible data decodes to several times it. A row group
+// without sizes falls back to the object's stored size times assumedDecodeExpansion
+// shared by its row groups.
+func decodedEstimate(md *format.FileMetaData, idx int, projected map[string]bool, storedSize int64) int64 {
+	fallback := func(rowGroups int) int64 {
+		if rowGroups < 1 {
+			rowGroups = 1
+		}
+		if e := storedSize * assumedDecodeExpansion / int64(rowGroups); e > 0 {
+			return e
+		}
+		return 1
+	}
+	if md == nil || idx < 0 || idx >= len(md.RowGroups) {
+		return fallback(1)
+	}
+	var total int64
+	for _, c := range md.RowGroups[idx].Columns {
+		m := c.MetaData
+		if len(m.PathInSchema) == 0 {
+			continue
+		}
+		top := m.PathInSchema[0]
+		if projected != nil && !projected[top] {
+			continue
+		}
+		if projected == nil && schema.IsInternalColumn(top) {
+			continue
+		}
+		col := m.TotalUncompressedSize
+		longest := len(m.Statistics.MinValue)
+		if n := len(m.Statistics.MaxValue); n > longest {
+			longest = n
+		}
+		if w := decodedWidthOfType(m.Type); w > int64(longest) {
+			longest = int(w) // a number decodes to its text, which is longer than its binary form
+		}
+		if v := m.NumValues * int64(longest); v > col {
+			col = v
+		}
+		total += col
+	}
+	if total <= 0 {
+		return fallback(len(md.RowGroups))
+	}
+	return total
 }
 
 // defaultMaxRowsPerBlock caps the number of rows in a single DataBlock
