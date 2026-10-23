@@ -2,7 +2,9 @@ package registry
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -131,13 +133,70 @@ type Changelog struct {
 	Added    []ChangelogBullet // every top-level `### Added` bullet, in file order
 }
 
-// ParseChangelog reads the changelog at path.
+// ChangelogFragmentDir is the directory, next to CHANGELOG.md, whose files are the
+// bullets of the release that has not been cut yet (see changelog.d/README.md).
+const ChangelogFragmentDir = "changelog.d"
+
+// fragmentAdded matches the name of an `### Added` fragment, changelog.d/<name>.added.md.
+var fragmentAdded = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,80}\.added\.md$`)
+
+// FragmentName matches the name of a fragment of any kind; the same pattern as FRAGMENT_NAME_RE of
+// scripts/ci/check_changelog_pr.py and the release workflow (Go's `$` is end of text, never before a
+// trailing newline).
+var FragmentName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,80}\.(added|changed|deprecated|removed|fixed|security)\.md$`)
+
+// ParseChangelog reads the changelog at path, and the `added` fragments of the
+// changelog.d directory next to it: each is an `### Added` bullet of the
+// `Unreleased` version, the way it reads in CHANGELOG.md once the release has
+// assembled it. Fragments come first, as the newest entries of the file.
 func ParseChangelog(path string) (*Changelog, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return ParseChangelogBytes(data), nil
+	c := ParseChangelogBytes(data)
+	frags, err := ParseFragmentsAdded(filepath.Join(filepath.Dir(path), ChangelogFragmentDir))
+	if err != nil {
+		return nil, err
+	}
+	c.Added = append(frags, c.Added...)
+	return c, nil
+}
+
+// ParseFragmentsAdded returns the bullet of every `*.added.md` file of dir, in
+// file-name order, as `Unreleased` `### Added` bullets. A missing directory has
+// none; a symlink or other non-regular file is not a fragment. A file that holds no bullet contributes nothing: the changelog gate
+// (scripts/ci/check_changelog_pr.py) is what rejects it.
+func ParseFragmentsAdded(dir string) ([]ChangelogBullet, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		// Type().IsRegular() is false for a symlink: the release refuses one, so the catalog does not read it.
+		if e.Type().IsRegular() && fragmentAdded.MatchString(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	var out []ChangelogBullet
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		text := normalizeSpace(string(data))
+		if !strings.HasPrefix(text, "- ") {
+			continue
+		}
+		text = strings.TrimPrefix(text, "- ")
+		out = append(out, ChangelogBullet{Version: ChangelogUnreleased, LeadIn: leadIn(text), Text: text, Line: 1})
+	}
+	return out, nil
 }
 
 // ParseChangelogBytes is ParseChangelog on an in-memory changelog.

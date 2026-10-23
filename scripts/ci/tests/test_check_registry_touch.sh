@@ -12,9 +12,9 @@ unset GITHUB_STEP_SUMMARY
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECKER="$SCRIPT_DIR/../check_registry_touch.sh"
-MATERIALIZE="$SCRIPT_DIR/../materialize_unreleased.sh"
+ASSEMBLE="$SCRIPT_DIR/../changelog_fragments.py"
 [[ -f "$CHECKER" ]] || { echo "checker not found at $CHECKER" >&2; exit 2; }
-[[ -f "$MATERIALIZE" ]] || { echo "release script not found at $MATERIALIZE" >&2; exit 2; }
+[[ -f "$ASSEMBLE" ]] || { echo "release script not found at $ASSEMBLE" >&2; exit 2; }
 
 pass=0
 fail=0
@@ -205,19 +205,12 @@ rewrite() {
   awk "$program" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
-# materialize_release <version>: the release workflow's CHANGELOG step — the
-# very script .github/workflows/auto-release.yaml runs, which turns
-# `## [Unreleased]` into an empty [Unreleased] followed by `## [<version>]`.
-# That script relies on GNU sed expanding `\n` in a replacement, which BSD sed
-# (macOS) does not do; there the identical edit is applied with awk instead, so
-# the case models the same transformation on every developer machine while CI
-# (GNU sed) runs the real script.
+# materialize_release <version>: the release workflow's CHANGELOG step, the very script
+# .github/workflows/auto-release.yaml runs (scripts/ci/changelog_fragments.py assemble): it
+# turns `## [Unreleased]` into an empty [Unreleased] followed by `## [<version>]`, with the
+# bullets still under [Unreleased] and the changelog.d fragments of the fixture repo in it.
 materialize_release() {
-  if sed --version >/dev/null 2>&1; then
-    CHANGELOG=CHANGELOG.md bash "$MATERIALIZE" "$1"
-  else
-    rewrite CHANGELOG.md '{ print } /^## \[Unreleased\]$/ { print ""; print "## ['"$1"'] - 2026-01-01" }'
-  fi
+  python3 "$ASSEMBLE" --root . assemble --version "$1" --date 2026-01-01 >/dev/null
 }
 
 # reassemble_release <version>: a hand-assembled release-metadata PR — the
@@ -333,6 +326,18 @@ PRECONDITION='grep -q "^## \[9\.9\.9\] - " CHANGELOG.md' \
   run_case "a new '### Added' lead-in is still a feature signal alongside a materialization" fail \
   "CHANGELOG.md: a new '### Added' bullet: A brand new feature." \
   added_bullet_then_release
+# changelog.d fragments (the release assembles them into CHANGELOG.md): an `added` one is an `### Added` bullet
+PRECONDITION='test -f changelog.d/7.added.md' \
+  run_case "a new changelog.d added fragment is a feature signal" fail \
+  "CHANGELOG.md: a new '### Added' bullet: A fragment feature." \
+  bash -c 'mkdir -p changelog.d && printf -- "- **A fragment feature.** text.\n" > changelog.d/7.added.md'
+PRECONDITION='test -f changelog.d/7.fixed.md' \
+  run_case "a new changelog.d fixed fragment is not a feature signal" ok "registry-touch check OK" \
+  bash -c 'mkdir -p changelog.d && printf -- "- **A fragment fix.** text.\n" > changelog.d/7.fixed.md'
+PRECONDITION='test -f changelog.d/7.added.md' \
+  run_case "a wrapped lead-in of an added fragment is read whole" fail \
+  "CHANGELOG.md: a new '### Added' bullet: A fragment feature whose lead-in wraps." \
+  bash -c 'mkdir -p changelog.d && printf -- "- **A fragment feature whose\n  lead-in wraps.** text.\n" > changelog.d/7.added.md'
 
 echo
 echo "== registrations and config keys are compared as sets =="

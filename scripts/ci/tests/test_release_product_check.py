@@ -317,7 +317,7 @@ class ProductPaths(unittest.TestCase):
     def test_tests_docs_ci_and_scripts_do_not_release(self):
         for p in ("internal/x/a_test.go", "internal/x/testdata/a.json", "docs/a.md", "README.md", "scripts/bench/run.sh", "scripts/ci/gate.sh",
                   ".github/workflows/ci.yaml", "tests/e2e/a.go", "tests/conformance/registry/features/a.yaml", "deployment/docker/docker-compose-e2e.yml",
-                  "deployment/docker/Dockerfile.loki", "Dockerfile.datagen", "website/src/a.ts", "CHANGELOG.md", "dashboards/a.json"):
+                  "deployment/docker/Dockerfile.loki", "Dockerfile.datagen", "website/src/a.ts", "CHANGELOG.md", "changelog.d/1.fixed.md", "dashboards/a.json"):
             with self.subTest(p):
                 v = self.one({p: "a\n"}, {p: "b\n"})
                 self.assertTrue(v.skip, f"{p}: {v.reason}")

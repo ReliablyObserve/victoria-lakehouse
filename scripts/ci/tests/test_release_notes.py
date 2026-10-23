@@ -475,8 +475,8 @@ class WorkflowWiring(unittest.TestCase):
     def test_notes_come_from_the_generator(self):
         step = self.step()
         self.assertIn("scripts/ci/release_notes.py", step)
-        self.assertIn("--version Unreleased", step)
-        self.assertIn('--after-tag "$(git describe --tags --abbrev=0 "$VERSION^"', step)
+        self.assertIn('--version "${VERSION#v}"', step)
+        self.assertIn('--after-tag "$(python3 scripts/ci/changelog_fragments.py previous-tag --rev "$VERSION^"', step)
         self.assertNotIn("extract_changelog_section.sh", step)
 
     def test_notes_precede_the_artifacts_section(self):
@@ -498,7 +498,7 @@ class WorkflowWiring(unittest.TestCase):
             shutil.copy(os.path.join(ROOT, "scripts/ci/release_notes.py"), os.path.join(tmp, "scripts/ci"))
             with open(os.path.join(tmp, "CHANGELOG.md"), "w", encoding="utf-8") as f:
                 f.write(
-                    "## [Unreleased]\n\n### Fixed\n\n"
+                    "## [Unreleased]\n\n## [1.2.3] - 2026-01-01\n\n### Fixed\n\n"
                     "- **Quoting.** keeps `$(touch PWNED)`, $(touch PWNED2), `id` and $HOME (#5).\n\n"
                     "## [1.0.0] - 2026-01-01\n"
                 )

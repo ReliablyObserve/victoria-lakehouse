@@ -9,7 +9,7 @@ import pathlib
 import re
 import subprocess
 import sys
-from typing import Iterable
+from typing import Callable, Iterable, NamedTuple
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -65,6 +65,8 @@ EXEMPT_PATH_PREFIXES = (
 
 NON_RELEASE_PATH_PREFIXES = (
     "docs/",
+    # A changelog fragment documents a change; it is not one.
+    "changelog.d/",
 )
 
 NON_RELEASE_FILES = {
@@ -507,22 +509,25 @@ def _subheadings(sections: list[tuple[str, list[str]]]) -> Counter:
     return Counter(l.rstrip() for _, body in sections for l in body if l.startswith("### "))
 
 
-def _subheadings_ok(base: list, head: list, new_section) -> bool:
+def _subheadings_ok(base: list, head: list, new_section, fragment_headings: frozenset = frozenset()) -> bool:
     """Subheadings are structure, and structure is release notes too.
 
     Only the Keep-a-Changelog set may appear; none may be lost; and the only new
-    ones are copies of a heading the base already has, each at most once, in the
-    new section (a release splits the bullets of one section across two).
+    ones are copies of a heading the base already has, or the heading of a kind of
+    a fragment the release consumed, each at most once, in the new section (a
+    release splits the bullets of one section across two).
     """
     b, h = _subheadings(base), _subheadings(head)
     if not set(h) <= KEEP_A_CHANGELOG or (b - h):
         return False
     extra = h - b
     new_subs = _subheadings([new_section])
-    return all(n == 1 and k in b and k in new_subs for k, n in extra.items())
+    return all(n == 1 and (k in b or k in fragment_headings) and k in new_subs for k, n in extra.items())
 
 
-def changelog_release_shape(base_text: str, head_text: str) -> tuple[str, str] | None:
+def changelog_release_shape(
+    base_text: str, head_text: str, fragments: Iterable[Fragment] = ()
+) -> tuple[str, str] | None:
     """(old, new) version when head is base plus exactly one new release, else None.
 
     The only change allowed is the one a release makes: a new version section
@@ -530,7 +535,10 @@ def changelog_release_shape(base_text: str, head_text: str) -> tuple[str, str] |
     between [Unreleased], the new section and the previously newest section (a
     merge of main into the metadata branch moves bullets between them). Older
     sections must be byte-identical; no line may be lost, added or duplicated.
+    ``fragments`` are the changelog.d files the release removed: their lines join
+    the text [Unreleased] held, so the new section is that text plus those lines.
     """
+    fragments = list(fragments)
     b, h = parse_changelog(base_text), parse_changelog(head_text)
     if len(b) < 2 or len(h) != len(b) + 1 or b[1][0] != "## [Unreleased]" or h[1][0] != "## [Unreleased]":
         return None
@@ -554,9 +562,9 @@ def changelog_release_shape(base_text: str, head_text: str) -> tuple[str, str] |
         movable_head.append(h[3])
         if h[4:] != b[3:]:
             return None
-    if _zone(movable_base) != _zone(movable_head):
+    if _zone(movable_base) + fragment_zone(fragments) != _zone(movable_head):
         return None
-    if not _subheadings_ok(movable_base, movable_head, h[2]):
+    if not _subheadings_ok(movable_base, movable_head, h[2], fragment_headings(fragments)):
         return None
     return old, new
 
@@ -599,17 +607,304 @@ def generated_docs_version_naming_only(base_text: str, head_text: str, old: str,
     return True
 
 
-def is_release_metadata_sync(files: Iterable[str], generated_ok: bool = False) -> bool:
+def is_release_metadata_sync(
+    files: Iterable[str], generated_ok: bool = False, fragment_paths: frozenset = frozenset()
+) -> bool:
     """CHANGELOG plus release-metadata files only. Generated files count when
-    ``generated_ok`` (their diff was checked to be version naming only)."""
+    ``generated_ok`` (their diff was checked to be version naming only); the
+    changelog.d files in ``fragment_paths`` (checked to be plain deletions of
+    valid fragments) count too."""
     file_list = [f for f in files if f.strip()]
     if not file_list or "CHANGELOG.md" not in file_list:
         return False
     return all(
         path in RELEASE_METADATA_FILES
+        or path in fragment_paths
         or (generated_ok and path in RELEASE_METADATA_GENERATED_FILES)
         for path in file_list
     )
+
+
+# ---------------------------------------------------------- fragments --
+#
+# A change is documented by ONE small file, changelog.d/<PR-or-slug>.<kind>.md, whose whole content
+# is the bullet as it will read in CHANGELOG.md. Nothing but the release edits CHANGELOG.md: the
+# release job (scripts/ci/changelog_fragments.py) turns the fragments present at the release commit
+# into the new version section and removes them, so a fragment is released exactly once, in the
+# release whose tag contains it, and two PRs never touch the same lines.
+
+FRAGMENT_DIR = "changelog.d"
+FRAGMENT_KINDS = ("added", "changed", "deprecated", "removed", "fixed", "security")
+# Matched with fullmatch: `$` would also match before a trailing newline in a file name.
+FRAGMENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,80}\.(" + "|".join(FRAGMENT_KINDS) + r")\.md")
+FRAGMENT_README = "README.md"
+# A GitHub release body is limited to about 125k characters; one fragment never needs more than this.
+FRAGMENT_MAX_BYTES = 16 * 1024
+# The same pattern as TAG_RE of the release workflow: only plain release tags take part.
+RELEASE_TAG_RE = re.compile(r"v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})")
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_LEAD_IN_RE = re.compile(r"^- \*\*[^*].*?\*\*")
+
+
+class Fragment(NamedTuple):
+    path: str  # changelog.d/<name>
+    kind: str  # one of FRAGMENT_KINDS
+    lines: tuple  # the bullet's lines, right-trimmed, no blank line at either end
+
+    @property
+    def text(self) -> str:
+        return " ".join(" ".join(self.lines).split())
+
+    @property
+    def lead_in(self) -> str:
+        parts = self.text.split("**")
+        return parts[1] if len(parts) > 2 else ""
+
+
+def bullet_lead_in(text: str) -> str:
+    """The bold lead-in of a whitespace-normalised bullet (``- **Lead.** body``), "" when it has none."""
+    parts = text.split("**")
+    return parts[1] if text.startswith("- **") and len(parts) > 2 else ""
+
+
+def released_lead_ins(changelog_text: str) -> set[str]:
+    """The bold lead-ins of every bullet that sits under a released ``## [x.y.z]`` section."""
+    return {bullet_lead_in(b) for b in versioned_bullets(changelog_text)} - {""}
+
+
+def release_tags(rev: str, cwd: pathlib.Path | None = None) -> list[str]:
+    """The plain ``vMAJOR.MINOR.PATCH`` tags reachable from ``rev``, oldest version first. A tag with
+    any other name (``foo-stray``, ``v1abc``, ``v1.2.3-rc1``) is no release and is ignored."""
+    try:
+        out = run_git("tag", "--merged", rev, "-l", "v[0-9]*", cwd=cwd)
+    except subprocess.CalledProcessError:
+        return []
+    tags = [t for t in out.splitlines() if RELEASE_TAG_RE.fullmatch(t)]
+    return sorted(tags, key=lambda t: tuple(int(x) for x in t[1:].split(".")))
+
+
+def latest_release_tag(rev: str, cwd: pathlib.Path | None = None) -> str:
+    """The newest release tag reachable from ``rev``, "" when there is none."""
+    tags = release_tags(rev, cwd)
+    return tags[-1] if tags else ""
+
+
+def fragment_kind(path: str) -> str | None:
+    """The kind of ``changelog.d/<name>.<kind>.md``, None for any other path."""
+    head, _, name = path.rpartition("/")
+    if head != FRAGMENT_DIR:
+        return None
+    m = FRAGMENT_NAME_RE.fullmatch(name)
+    return m.group(1) if m else None
+
+
+def parse_fragment(path: str, text: str) -> tuple[Fragment | None, list[str]]:
+    """(fragment, []) or (None, reasons). The content is exactly one changelog bullet."""
+    kind = fragment_kind(path)
+    if kind is None:
+        return None, [
+            f"{path}: not a fragment name; use {FRAGMENT_DIR}/<PR-or-slug>.<{'|'.join(FRAGMENT_KINDS)}>.md "
+            "(lower-case letters, digits, '.', '_' and '-')"
+        ]
+    if len(text.encode("utf-8", "surrogateescape")) > FRAGMENT_MAX_BYTES:
+        return None, [f"{path}: larger than {FRAGMENT_MAX_BYTES} bytes; a release note is not the place for it"]
+    if "\r" in text or "\t" in text or "\x00" in text:
+        return None, [f"{path}: carriage returns, tabs and NUL are not allowed"]
+    if "<!--" in _COMMENT_RE.sub("", text):
+        return None, [f"{path}: an HTML comment that is not closed would hide the rest of the changelog and the release notes"]
+    lines = [l.rstrip() for l in text.split("\n")]
+    while lines and not lines[0]:
+        lines.pop(0)
+    while lines and not lines[-1]:
+        lines.pop()
+    if not lines:
+        return None, [f"{path}: empty fragment"]
+    flat = " ".join(" ".join(lines).split())
+    if not _LEAD_IN_RE.match(flat):
+        return None, [f"{path}: must start with '- **<bold lead-in>**' (the repository's bullet style)"]
+    problem = _not_one_item(lines)
+    if problem:
+        return None, [f"{path}: must be exactly one bullet ({problem}); a second paragraph or a sub-list of the same item is indented"]
+    return Fragment(path, kind, tuple(lines)), []
+
+
+def _not_one_item(lines: list[str]) -> str:
+    """Why the lines are not ONE changelog item, "" when they are: no second '- ' item and no heading at
+    column 0, and a paragraph after a blank line is indented (the repository's long-entry style)."""
+    blank = False
+    for line in lines[1:]:
+        if not line:
+            blank = True
+        elif line.startswith(("- ", "* ", "+ ")):
+            return "a second item"
+        elif HEADING_RE.match(line):
+            return "a heading"
+        elif blank and not line.startswith(" "):
+            return "an unindented second paragraph"
+        else:
+            blank = False
+    return ""
+
+
+def fragment_zone(fragments: Iterable[Fragment]) -> Counter:
+    """The non-blank lines the fragments contribute to a release section, as ``_zone`` counts them."""
+    return Counter(l for fr in fragments for l in fr.lines if l.strip())
+
+
+def fragment_headings(fragments: Iterable[Fragment]) -> frozenset:
+    return frozenset("### " + fr.kind.capitalize() for fr in fragments)
+
+
+def duplicate_fragment_problems(fragments: Iterable[Fragment]) -> list[str]:
+    """Two fragments with the same bullet or the same bold lead-in."""
+    out: list[str] = []
+    by_text: dict[str, str] = {}
+    by_lead: dict[str, str] = {}
+    for fr in sorted(fragments, key=lambda f: f.path):
+        if fr.text in by_text:
+            out.append(f"{fr.path}: the same bullet as {by_text[fr.text]}")
+            continue
+        by_text[fr.text] = fr.path
+        if fr.lead_in in by_lead:
+            out.append(f"{fr.path}: the same bold lead-in as {by_lead[fr.lead_in]}")
+        else:
+            by_lead[fr.lead_in] = fr.path
+    return out
+
+
+def metadata_fragment_deletions(
+    files: Iterable[str],
+    read_base: Callable[[str], "str | None"],
+    read_head: Callable[[str], "str | None"],
+) -> list[Fragment] | None:
+    """The fragments a release-metadata PR removes; None when a changed changelog.d path is not
+    the plain deletion of a valid fragment (an addition, an edit, a stray file)."""
+    out: list[Fragment] = []
+    for f in files:
+        if not f.startswith(FRAGMENT_DIR + "/"):
+            continue
+        base_text, head_text = read_base(f), read_head(f)
+        if not base_text or head_text:
+            return None
+        fr, problems = parse_fragment(f, base_text)
+        if fr is None:
+            return None
+        out.append(fr)
+    return out
+
+
+def legacy_unreleased_window_open(base: str, cwd: pathlib.Path | None = None) -> bool:
+    """A hand-written ``[Unreleased]`` bullet is still accepted next to fragments.
+
+    That is the transition for pull requests opened before fragments existed, and it ends with the
+    first release whose tag contains changelog.d/README.md: the newest release tag reachable from
+    the base commit decides. The caller passes the base BRANCH TIP, not the merge base, so a branch
+    cut before that release cannot keep the window open; replaying an older base gives the old
+    answer. No reachable tag, or one from before fragments, leaves it open.
+    """
+    tag = latest_release_tag(base, cwd)
+    if not tag:
+        return True
+    try:
+        run_git("cat-file", "-e", f"{tag}:{FRAGMENT_DIR}/{FRAGMENT_README}", cwd=cwd)
+    except subprocess.CalledProcessError:
+        return True
+    return False
+
+
+def fragment_changes(base: str, head: str, cwd: pathlib.Path | None = None) -> dict[str, str]:
+    """path -> git status letter (A, M, D) of every changed path under changelog.d/."""
+    out = run_git("diff", "--no-renames", "--name-status", "-z", f"{base}..{head}", "--", FRAGMENT_DIR, cwd=cwd)
+    parts = [p for p in out.split("\0") if p]
+    return {parts[i + 1]: parts[i][0] for i in range(0, len(parts) - 1, 2)}
+
+
+def _ls_tree(rev: str, cwd: pathlib.Path | None = None) -> dict[str, tuple[str, str]]:
+    """path -> (mode, blob id) of every file under changelog.d/ at ``rev``; NUL-separated, so a file
+    name with a newline in it stays one name."""
+    raw = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", rev, "--", FRAGMENT_DIR],
+        cwd=cwd or ROOT, capture_output=True, check=True,
+    ).stdout.decode("utf-8", "surrogateescape")
+    out: dict[str, tuple[str, str]] = {}
+    for entry in raw.split("\0"):
+        meta, _, path = entry.partition("\t")
+        if path:
+            mode, _typ, blob = meta.split()
+            out[path] = (mode, blob)
+    return out
+
+
+def fragment_tree_problems(
+    head: str, changes: dict[str, str], cwd: pathlib.Path | None = None, released: Iterable[str] = ()
+) -> list[str]:
+    """Why the changelog.d/ files this PR adds or edits cannot be released, and any clash with the
+    fragments already in the tree. ``released`` is the bold lead-ins of the released changelog
+    sections: a fragment may not repeat one (it would be released twice)."""
+    problems: list[str] = []
+    parsed: list[Fragment] = []
+    try:
+        tree = _ls_tree(head, cwd)
+    except subprocess.CalledProcessError:
+        return ["changelog.d/: cannot be read"]
+    released = set(released)
+    for path in sorted(p for p, st in changes.items() if st in "AM"):
+        if path == f"{FRAGMENT_DIR}/{FRAGMENT_README}":
+            continue
+        mode = tree.get(path, ("", ""))[0]
+        if mode != "100644":
+            problems.append(f"{path}: must be a regular file (git mode 100644), not a symlink, an executable or a directory")
+            continue
+        try:
+            text = run_git("show", f"{head}:{path}", cwd=cwd)
+        except subprocess.CalledProcessError:
+            problems.append(f"{path}: unreadable")
+            continue
+        fr, why = parse_fragment(path, text)
+        problems.extend(why)
+        if fr is not None:
+            parsed.append(fr)
+            if fr.lead_in in released:
+                problems.append(
+                    f"{path}: its bold lead-in is already in a released section of CHANGELOG.md "
+                    f"({fr.lead_in!r}); the change was released, so a new fragment would release it twice"
+                )
+    if parsed:
+        everyone = list(parsed)
+        seen = {fr.path for fr in parsed}
+        for path, (mode, _blob) in sorted(tree.items()):
+            if path in seen or fragment_kind(path) is None or mode != "100644":
+                continue
+            fr, _ = parse_fragment(path, run_git("show", f"{head}:{path}", cwd=cwd))
+            if fr is not None:
+                everyone.append(fr)
+        mine = {fr.path for fr in parsed}
+        problems.extend(p for p in duplicate_fragment_problems(everyone) if p.split(":")[0] in mine)
+    return problems
+
+
+def released_fragment_edits(base: str, merge_base: str, changes: dict[str, str], cwd: pathlib.Path | None = None) -> list[str]:
+    """A PR edits or deletes a fragment that is byte-identical at the newest release tag reachable from
+    ``base``: that release already took it, its metadata pull request removes it, and a change to it
+    would be released again (reworded) or collide with that removal."""
+    tag = latest_release_tag(base, cwd)
+    if not tag:
+        return []
+    out: list[str] = []
+    for path, st in sorted(changes.items()):
+        if st not in "MD" or fragment_kind(path) is None:
+            continue
+        try:
+            at_tag = run_git("rev-parse", f"{tag}:{path}", cwd=cwd)
+            before = run_git("rev-parse", f"{merge_base}:{path}", cwd=cwd)
+        except subprocess.CalledProcessError:
+            continue
+        if at_tag == before:
+            out.append(
+                f"{path}: already released in {tag} (unchanged since) and removed by that release's metadata "
+                "pull request; add a new fragment instead of editing or deleting this one"
+            )
+    return out
 
 
 def _show(rev: str, path: str) -> str:
@@ -626,13 +921,50 @@ def main() -> int:
     args = parser.parse_args()
 
     base = comparison_base(args.base, args.head)
-    files = run_git("diff", "--name-only", f"{base}..{args.head}").splitlines()
+    files = [f for f in run_git("diff", "--name-only", "-z", f"{base}..{args.head}").split("\0") if f]
     commits = run_git("log", "--pretty=format:%s", f"{base}..{args.head}").splitlines()
 
     base_text = run_git("show", f"{base}:CHANGELOG.md")
     head_text = run_git("show", f"{args.head}:CHANGELOG.md")
     base_unreleased = extract_unreleased_section(base_text)
     head_unreleased = extract_unreleased_section(head_text)
+
+    deleted = metadata_fragment_deletions(
+        files, lambda f: _show(base, f) or None, lambda f: _show(args.head, f) or None
+    )
+    shape = changelog_release_shape(base_text, head_text, deleted or ())
+    generated_ok = shape is not None and all(
+        generated_docs_version_naming_only(
+            _show(base, f), _show(args.head, f), shape[0], shape[1]
+        )
+        for f in files
+        if f in RELEASE_METADATA_GENERATED_FILES
+    )
+    if deleted is not None and is_release_metadata_sync(
+        files, generated_ok=generated_ok, fragment_paths=frozenset(fr.path for fr in deleted)
+    ):
+        if head_unreleased.strip() == base_unreleased.strip() and not adds_version_section(head_text, base_text):
+            print(
+                "changelog gate: release metadata sync must materialize Unreleased into a version section",
+                file=sys.stderr,
+            )
+            return 1
+        print("changelog gate: ok (release metadata sync)")
+        return 0
+
+    # A fragment that cannot be released must fail here, whatever else the PR changes and before any
+    # of the skips below: the release job assembles every fragment present at the release commit, so
+    # one bad file on main stops the release. A fragment the newest release already took is not edited.
+    changes = fragment_changes(base, args.head)
+    problems = fragment_tree_problems(args.head, changes, released=released_lead_ins(head_text))
+    problems += released_fragment_edits(args.base, base, changes)
+    if problems:
+        for problem in problems:
+            print(f"changelog gate: {problem}", file=sys.stderr)
+        return 1
+    added_fragments = sorted(
+        p for p, st in changes.items() if st == "A" and fragment_kind(p) is not None
+    )
 
     # Author identity comes from the pull_request event (PR_AUTHOR_LOGIN, PR_HEAD_REPO, PR_BASE_REPO),
     # never from the branch name, the title or a commit: those are free text.
@@ -651,49 +983,36 @@ def main() -> int:
         print("changelog gate: skipped (dependency-only update)")
         return 0
 
-    shape = changelog_release_shape(base_text, head_text)
-    generated_ok = shape is not None and all(
-        generated_docs_version_naming_only(
-            _show(base, f), _show(args.head, f), shape[0], shape[1]
+    # The transition window is judged from the base branch tip, not the merge base.
+    legacy_open = legacy_unreleased_window_open(args.base)
+    if head_unreleased.strip() != base_unreleased.strip() and not legacy_open:
+        print(
+            "changelog gate: [Unreleased] in CHANGELOG.md stays empty; document the change in a fragment, "
+            f"{FRAGMENT_DIR}/<PR-or-slug>.<{'|'.join(FRAGMENT_KINDS)}>.md (see {FRAGMENT_DIR}/{FRAGMENT_README})",
+            file=sys.stderr,
         )
-        for f in files
-        if f in RELEASE_METADATA_GENERATED_FILES
-    )
-    if is_release_metadata_sync(files, generated_ok=generated_ok):
-        if head_unreleased.strip() == base_unreleased.strip() and not adds_version_section(head_text, base_text):
-            print(
-                "changelog gate: release metadata sync must materialize Unreleased into a version section",
-                file=sys.stderr,
-            )
-            return 1
-        print("changelog gate: ok (release metadata sync)")
-        return 0
+        return 1
 
     if not should_require_changelog(commits, files):
         print("changelog gate: skipped (no releasable changes detected)")
         return 0
 
-    if "CHANGELOG.md" not in files:
-        print(
-            "changelog gate: CHANGELOG.md must be updated for feature/fix/perf or release-impacting PRs",
-            file=sys.stderr,
-        )
-        return 1
-
-    # A PR documents its change either under [Unreleased] (the normal flow) or
-    # directly under a newly added/backfilled version section (the release flow).
-    # Both satisfy the "document your change" intent; either path is accepted.
+    # A PR documents its change in a new fragment (the flow), or, only until the first release that
+    # contains changelog.d/ (legacy_unreleased_window_open), under [Unreleased]; or directly under a
+    # newly added/backfilled version section (the release flow).
     unreleased_has_new = (
-        has_meaningful_changelog_content(head_unreleased)
+        legacy_open
+        and has_meaningful_changelog_content(head_unreleased)
         and has_genuinely_new_unreleased_entries(head_unreleased, base_text)
     )
     versioned_has_new = has_new_versioned_entries(head_text, base_text)
 
-    if not (unreleased_has_new or versioned_has_new):
+    if not (added_fragments or unreleased_has_new or versioned_has_new):
         print(
-            "changelog gate: PR must add at least one new changelog entry under [Unreleased] "
-            "or under a newly added version section "
-            "(stale feature branch entries carried over from before a release do not count)",
+            "changelog gate: PR must add a changelog fragment, "
+            f"{FRAGMENT_DIR}/<PR-or-slug>.<{'|'.join(FRAGMENT_KINDS)}>.md holding the one bullet "
+            f"(see {FRAGMENT_DIR}/{FRAGMENT_README}); "
+            "a fragment carried over from before a release does not count",
             file=sys.stderr,
         )
         return 1

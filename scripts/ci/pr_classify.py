@@ -608,7 +608,8 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
     """The shape of a release-metadata PR, exactly.
 
     CHANGELOG moves text only between [Unreleased], the new section and the newest
-    section (cc.changelog_release_shape); Chart.yaml changes only version and
+    section, and the new section also holds exactly the lines of the changelog.d
+    fragments the PR deletes (cc.changelog_release_shape); Chart.yaml changes only version and
     appVersion, both to the new release; README only its version numbers; the
     regenerated docs/features.md only the naming of that release; the author is
     the release bot or an approver; and when the repository has tags, the release
@@ -629,7 +630,11 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
     base_changelog, head_changelog = tx(base, "CHANGELOG.md"), tx(head, "CHANGELOG.md")
     if base_changelog is None or head_changelog is None:
         return False
-    shape = cc.changelog_release_shape(base_changelog, head_changelog)
+    # the changelog.d fragments the release removed: plain deletions of valid fragments, nothing else
+    deleted = cc.metadata_fragment_deletions(files, lambda f: tx(base, f) or None, lambda f: tx(head, f) or None)
+    if deleted is None:
+        return False
+    shape = cc.changelog_release_shape(base_changelog, head_changelog, deleted)
     if shape is None:
         return False
     old, new = shape
@@ -640,7 +645,9 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
             b, h = tx(base, f), tx(head, f)
             if b is None or h is None or not cc.generated_docs_version_naming_only(b, h, old, new):
                 generated_ok = False
-    if not cc.is_release_metadata_sync(files, generated_ok=generated_ok):
+    if not cc.is_release_metadata_sync(
+        files, generated_ok=generated_ok, fragment_paths=frozenset(fr.path for fr in deleted)
+    ):
         return False
     if not author or author.lower() not in approvers | {RELEASE_BOT}:
         return False

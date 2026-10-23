@@ -235,6 +235,11 @@
     - tests/conformance/registry/features_test.go#TestLoadFeatures_Valid
     - tests/conformance/report/features_test.go#TestRenderFeatures
     - scripts/ci/tests/test_check_registry_touch.sh
+    - tests/conformance/registry/changelog_test.go#TestParseChangelog_ReadsAddedFragments
+    - tests/conformance/registry/changelog_test.go#TestParseChangelog_FragmentDirIsNotAFile
+    - tests/conformance/registry/changelog_tags_test.go#TestFragmentsAtTag
+    - tests/conformance/registry/changelog_tags_test.go#TestNoReleasedFragmentIsLeftBehind
+    - tests/conformance/registry/changelog_tags_test.go#TestLeftBehindFragments
   docs:
     - tests/conformance/README.md
     - docs/features.md

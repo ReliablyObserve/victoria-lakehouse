@@ -1706,7 +1706,7 @@ Every e2e and benchmark claim in this repo is only as honest as its seed. The ge
 
 The conformance registry answers "did we miss something upstream has"; the feature catalog answers the mirror question, "did we miss verifying something we built". A changelog `### Added` bullet, a new route, flag or handler, or a new Lakehouse registry row all fail CI until the catalog accounts for them, and the highlights users read are generated from the same source rather than written separately.
 
-- Verification: tests: `tests/conformance/features_test.go#TestFeatures_RealCatalog`, `tests/conformance/registry/features_test.go#TestLoadFeatures_Valid`, `tests/conformance/report/features_test.go#TestRenderFeatures`, `scripts/ci/tests/test_check_registry_touch.sh`
+- Verification: tests: `tests/conformance/features_test.go#TestFeatures_RealCatalog`, `tests/conformance/registry/features_test.go#TestLoadFeatures_Valid`, `tests/conformance/report/features_test.go#TestRenderFeatures`, `scripts/ci/tests/test_check_registry_touch.sh`, `tests/conformance/registry/changelog_test.go#TestParseChangelog_ReadsAddedFragments`, `tests/conformance/registry/changelog_test.go#TestParseChangelog_FragmentDirIsNotAFile`, `tests/conformance/registry/changelog_tags_test.go#TestFragmentsAtTag`, `tests/conformance/registry/changelog_tags_test.go#TestNoReleasedFragmentIsLeftBehind`, `tests/conformance/registry/changelog_tags_test.go#TestLeftBehindFragments`
 - Docs: `tests/conformance/README.md`, `docs/features.md`
 - Changelog: `0.122.0`
 

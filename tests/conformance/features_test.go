@@ -40,7 +40,7 @@ func newFeature(id string, status registry.Status) registry.Feature {
 }
 
 // materializeRelease applies the release workflow's changelog step
-// (scripts/ci/materialize_unreleased.sh): `## [Unreleased]` becomes an empty
+// (scripts/ci/changelog_fragments.py assemble): `## [Unreleased]` becomes an empty
 // [Unreleased] section followed by `## [<version>]`, which now holds every
 // bullet that was unreleased.
 func materializeRelease(changelog, version string) string {

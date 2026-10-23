@@ -180,8 +180,8 @@ One entry per capability:
 ```
 
 **Releases** are read from `CHANGELOG.md`, never recorded in the catalog: after every release
-the release workflow moves the `[Unreleased]` bullets under the new version heading and does
-not touch the catalog, so a recorded "unreleased" would go stale the moment a feature ships.
+the release workflow assembles the `changelog.d/` fragments (and any hand-written `[Unreleased]` bullets)
+under the new version heading and does not touch the catalog, so a recorded "unreleased" would go stale the moment a feature ships.
 `docs/features.md` shows a feature's first release as the oldest version among its claimed
 bullets and lists every version they sit under. An entry still under `[Unreleased]` reads "the
 release after v*N*" (*N* being the newest release) — a statement that stays true once the
@@ -227,13 +227,13 @@ that list is the backlog. ✅ asserts the test exists, not that CI runs it.
 A PR that adds or extends a Lakehouse feature is not mergeable without its catalog entry and
 the regenerated documents. `scripts/ci/check_registry_touch.sh` classifies a PR as a feature
 PR when, compared with its merge base, it adds a bold lead-in to a `### Added` section of
-`CHANGELOG.md`, adds or removes a route, handler or `lakehouse.*` flag registration in non-test
+`CHANGELOG.md` or an `added` fragment in `changelog.d/`, adds or removes a route, handler or `lakehouse.*` flag registration in non-test
 Go under `internal/`, `cmd/` or `lakehouse-traces/`, adds a YAML config key to a struct in
 `internal/config/`, or adds a new `lh.*` registry row — and fails it unless
 `tests/conformance/registry/features/**` also changed and the generated documents are current.
 The first three are set comparisons rather than diff greps, so moving text is never mistaken
 for a new capability: a bold bullet under `### Fixed` or `### Changed`, the release workflow
-moving the `[Unreleased]` bullets under a version heading, and a registration or config field
+moving the `[Unreleased]` bullets or the fragments under a version heading, and a registration or config field
 that only moved within its file are not feature signals.
 
 Checklist:
@@ -376,7 +376,9 @@ commit message):
     x.y.z newer than the newest section. Text may move only between `[Unreleased]`, the new section
     and the previously newest section (a merge of main into the metadata branch moves bullets
     there); every older section is byte-identical, and no line may be lost, added, edited or
-    duplicated.
+    duplicated. The `changelog.d/<name>.<kind>.md` fragments the PR deletes are also files of a
+    release-metadata PR (plain deletions of valid fragments, nothing else under `changelog.d/`),
+    and the lines of the deleted fragments are the lines the new section gains over `[Unreleased]`.
   - `Chart.yaml`: only the top-level `version` and `appVersion` lines change, both to that same
     x.y.z, which is newer than the base chart version; every other byte is identical (no stripping).
   - `README.md`: identical once version numbers are replaced.

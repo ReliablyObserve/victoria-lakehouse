@@ -8,8 +8,8 @@
 
 ## Changelog
 
-<!-- Add entry to CHANGELOG.md under ## [Unreleased] -->
-- [ ] Added changelog entry
+<!-- A change that ships adds a fragment, changelog.d/<PR-or-slug>.<kind>.md (see changelog.d/README.md); do not edit CHANGELOG.md -->
+- [ ] Added a changelog fragment (the gate decides from the changed files, see changelog.d/README.md; it does not read `[skip release]`)
 
 ## Test Plan
 
