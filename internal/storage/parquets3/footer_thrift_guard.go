@@ -203,6 +203,9 @@ func (g *footerGuard) list(depth int) error {
 	return nil
 }
 
+// mapValue walks a map. parquet.thrift has none and parquet-go allocates
+// nothing for one it skips, so there is no allocation to bound: the walk itself
+// fails on a size the bytes cannot hold.
 func (g *footerGuard) mapValue(depth int) error {
 	n, err := g.uvarint()
 	if err != nil || n == 0 {
@@ -210,9 +213,6 @@ func (g *footerGuard) mapValue(depth int) error {
 	}
 	kv, err := g.byte()
 	if err != nil {
-		return err
-	}
-	if err := g.charge(n, 2); err != nil { // a key and a value, one byte each at least
 		return err
 	}
 	for i := uint64(0); i < n; i++ {

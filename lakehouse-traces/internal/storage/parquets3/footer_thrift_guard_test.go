@@ -123,6 +123,7 @@ func TestCheckFooterThriftBounds_Structure(t *testing.T) {
 		{0x13, 0x07, tcStop},                   // byte
 		{0x14, 0x02, tcStop},                   // i16
 		{0x15, 0x80, 0x01, tcStop},             // i32, multi-byte varint
+		{0x06, 0x04, 0x09, tcStop},             // i64 with its field id spelled out (delta 0)
 		{0x17, 1, 2, 3, 4, 5, 6, 7, 8, tcStop}, // double
 		{0x18, 0x03, 'a', 'b', 'c', tcStop},    // binary
 		{0x19, 0x35, 1, 2, 3, tcStop},          // list<i32> of 3
@@ -144,7 +145,7 @@ func TestCheckFooterThriftBounds_Structure(t *testing.T) {
 		"short double":       {0x17, 1, 2, tcStop},
 		"huge short list":    {0x19, 0xF5, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, tcStop},
 		"struct list budget": {0x19, 0x9C, 1, 1, 1, tcStop}, // 9 structs x 3 bytes > 6 bytes
-		"varint overflow":    {0x15, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, tcStop},
+		"varint overflow":    {0x15, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, tcStop, tcStop},
 		"unknown type":       {0x1E, tcStop},
 	}
 	// Two lists of 6 empty structs: each fits the budget alone (18 of 29), the
@@ -156,7 +157,7 @@ func TestCheckFooterThriftBounds_Structure(t *testing.T) {
 	// a list of them is how a small footer would claim a large allocation.
 	bad["empty struct elements"] = []byte{0x19, 0x6C, 0, 0, 0, 0, 0, 0, tcStop}
 	// A binary length of 2^64-1 must not wrap the read position.
-	bad["binary length wraps"] = []byte{0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, tcStop}
+	bad["binary length wraps"] = []byte{0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, tcStop, tcStop}
 	for name, b := range bad {
 		if err := checkFooterThriftBounds(b); err == nil {
 			t.Fatalf("%s %x: want an error", name, b)

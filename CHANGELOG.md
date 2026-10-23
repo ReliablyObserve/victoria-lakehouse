@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Parquet footer that declares a huge Thrift list is rejected instead of allocating tens of gigabytes (#724).** parquet-go v0.32.0 allocates each Thrift list from the size the footer declares, before it reads one element, so an 850-byte footer made `ParseFooterFromBytes` allocate 26 GiB (a 34 KB tail 150 GiB) and the process died with a Go runtime out-of-memory exit that no `recover` catches; the nightly `FuzzParseFooterBytes` and `FuzzCacheFooterFromTail` runs of 2026-10-22 stopped with `fuzzing process hung or terminated unexpectedly: exit status 2` and no panic line. A hostile or corrupted object in the bucket could do the same to a pod. Footers are now checked before parsing: every list the footer declares must fit the bytes that hold it, with one budget across the whole footer, so a parse allocates at most about 190 times the footer's length. Files from standard writers are unchanged (real footers use 9 to 14 percent of the budget); a rejected footer counts under `lakehouse_footer_parse_rejected_total{reason="thrift_size_exceeds_bytes"}`. Both binaries; the two crashing inputs are in the fuzz corpus and both fuzz targets now fail on an allocation beyond the bound. Other places that open Parquet bytes read from the bucket are tracked separately.
+
 ## [0.167.2] - 2026-10-23
 
 ### Changed

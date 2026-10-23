@@ -328,6 +328,16 @@ Each tenant gets its own S3 bucket with independent:
 
 Full documentation: [Multi-Tenancy](multi-tenancy.md)
 
+### Parquet footers read from the bucket are untrusted bytes
+
+A Parquet footer is parsed before any data is read, and it comes from an object anyone with write access to the bucket (or a corrupted copy) controls. Three bounds apply before the footer reaches parquet-go on the prefetch and footer-cache path (`ParseFooterFromBytes`):
+
+- the declared footer length must fit the bytes in hand and the 64 MiB policy cap;
+- every list or set the footer declares must fit the bytes that hold it. parquet-go v0.32.0 allocates a Thrift list from the size the footer declares before it reads one element, so an 850-byte footer could ask for 26 GiB (measured, `alloc_space`) and end the process with a Go runtime out-of-memory exit that no `recover` catches. The bound is a walk of the footer's Thrift encoding with one budget across the whole footer, so the allocation of a parse is at most about 190 times the footer's length instead of whatever number the footer declares. Real footers use about 10 to 15 percent of that budget (measured, logs and traces writers, up to 400 row groups);
+- a rejected footer counts under `lakehouse_footer_parse_rejected_total{reason}` (`thrift_size_exceeds_bytes` for the list bound) and the file is treated as unreadable, never as empty.
+
+Files written by any standard Parquet writer pass unchanged; the bound only rejects a footer whose declared sizes cannot be true.
+
 ## S3 Access
 
 Victoria Lakehouse requires read-only S3 access:
