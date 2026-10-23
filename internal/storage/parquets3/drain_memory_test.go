@@ -25,9 +25,10 @@ import (
 //
 //	go test ./internal/storage/parquets3 -run '^$' -bench 'DrainHeap|PlanDistinctSeconds' -count=10
 //
-// The test asserts a ratio, never an absolute number: the heap of a segment whose
-// rows share a second must stay close to the heap of the same rows spread over
-// seconds.
+// The guarantee itself is not asserted here: a heap sample is not deterministic
+// enough for a test (a ratio test of two drains was flaky, a spread run sampled
+// 2 MiB). It is the cap on the rows of every object, pinned by
+// drain_crowded_test.go; these benchmarks report what the cap costs.
 
 // discardPool is an object store that keeps nothing but the sizes.
 type discardPool struct {
