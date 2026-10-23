@@ -2,6 +2,7 @@ package pmeta
 
 import (
 	"bytes"
+	"runtime"
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/bloomindex"
@@ -117,4 +118,34 @@ func FuzzBloomFacetDecode(f *testing.F) {
 		bf := NewBloomFactory(0.01)("p").(*bloomFacet)
 		_ = bf.Decode(bytes.NewReader(data)) // must simply not panic
 	})
+}
+
+// TestBloomFacet_DecodeHostileCountBounded pins issue #763 on the pmeta path:
+// the bloom facet payload is decoded by bloomindex.Unmarshal, and a 5-byte value
+// declaring 1,000,000 entries used to preallocate ~56 MB (the bundle CRC catches
+// corruption, not a hostile writer). Decode must fail without allocating in
+// proportion to the declared count.
+func TestBloomFacet_DecodeHostileCountBounded(t *testing.T) {
+	const ceiling = 4 << 20 // assumed generous: TotalAlloc is process-wide; the crashers allocated ~56 MB
+	for name, data := range map[string][]byte{
+		"v1": {1, 0x40, 0x42, 0x0F, 0x00},
+		"v2": {2, 0x40, 0x42, 0x0F, 0x00},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := NewBloomFactory(0.01)("p").(*bloomFacet)
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			err := f.Decode(bytes.NewReader(data))
+			runtime.ReadMemStats(&after)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if a := after.TotalAlloc - before.TotalAlloc; a > ceiling {
+				t.Fatalf("Decode allocated %d bytes for a %d-byte payload (ceiling %d)", a, len(data), ceiling)
+			}
+			if f.idx.Len() != 0 {
+				t.Fatalf("failed Decode replaced the live index (%d entries)", f.idx.Len())
+			}
+		})
+	}
 }
