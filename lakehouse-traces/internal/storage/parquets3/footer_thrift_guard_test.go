@@ -585,6 +585,8 @@ func TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries(t *testing.T) {
 	}
 	explicit = append(explicit, 0x09, 0x08, 10<<4|tcStruct) // field 4: list of 10 structs
 	explicit = append(explicit, make([]byte, 10)...)
+	explicit = fmdField(explicit, 4, 6, tcBinary)
+	explicit = append(thriftUvarint(explicit, 60), make([]byte, 60)...) // room for the budget, still under 300 bytes
 	explicit = append(explicit, tcStop)
 	if err := checkFooterThriftBounds(explicit); err == nil {
 		t.Fatal("10 leaves x 10 row groups must fail when their field ids are spelled out too")
