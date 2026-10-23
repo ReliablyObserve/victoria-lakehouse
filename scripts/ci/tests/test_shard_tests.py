@@ -206,6 +206,28 @@ class WeightedTest(unittest.TestCase):
             files = [write_json(d, "h%d.json" % i, s) for i, s in enumerate(hashed)]
             self.assertTrue(st.verify(everything, 3, files, weights))
 
+    def test_unlisted_tests_count_at_the_default_cost_before_the_listed_ones_are_placed(self):
+        # three unlisted tests the hash puts in shard 0 carry load 3.0 there, so the
+        # listed test (cost 3.0) must go to the empty shard 1, not tie-break into shard 0
+        unlisted = [t for t in ("TestU%d" % i for i in range(200)) if st.shard_of(t, 2) == 0][:3]
+        shards = st.assign(unlisted + ["TestListed"], 2, (1.0, {"TestListed": 3.0}))
+        self.assertEqual(shards[1], ["TestListed"])
+        self.assertEqual(shards[0], sorted(unlisted))
+
+    def test_cli_regex_and_the_library_agree_on_the_weighted_shard(self):
+        everything = names(10) + ["TestHeavyA", "TestHeavyB", "TestHeavyC"]
+        table = {"TestHeavyA": 50.0, "TestHeavyB": 50.0, "TestHeavyC": 50.0}
+        weighted = st.assign(everything, 2, (0.1, table))
+        self.assertNotEqual(weighted, st.assign(everything, 2), "pick weights the hash would not produce")
+        with tempfile.TemporaryDirectory() as d:
+            w = write_weights(d, 0.1, table)
+            for i in (0, 1):
+                out = io.StringIO()
+                with unittest.mock.patch.object(st, "list_tests", return_value=everything):
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                        st.main(["regex", "--pkg", "p", "--shards", "2", "--index", str(i), "--weights", w])
+                self.assertEqual(out.getvalue().strip(), st.regex_for(weighted[i]))
+
     def test_load_weights_rejects_bad_files(self):
         with tempfile.TemporaryDirectory() as d:
             for bad in (
