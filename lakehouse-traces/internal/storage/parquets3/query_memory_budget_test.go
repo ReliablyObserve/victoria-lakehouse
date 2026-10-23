@@ -145,8 +145,9 @@ func TestRunQuery_WildcardManyFiles_MemoryBudget(t *testing.T) {
 		}
 	}
 
-	if budgetAfter == budgetBefore && totalRows.Load() != int64(filesCount*rowsPerFile) {
-		t.Fatalf("budget did not fire AND row count is wrong: got %d, want %d",
+	if totalRows.Load() != int64(filesCount*rowsPerFile) {
+		t.Fatalf("the budget dropped rows (it fired %v): got %d, want %d",
+			budgetAfter > budgetBefore,
 			totalRows.Load(), filesCount*rowsPerFile)
 	}
 
@@ -386,8 +387,9 @@ func TestRunQuery_ProductionShape_WildcardScalesUnderMemoryBudget(t *testing.T) 
 		}
 	}
 
-	if budgetAfter == budgetBefore && totalRows.Load() != int64(totalRowsExpected) {
-		t.Fatalf("budget did not fire AND row count is wrong: got %d, want %d",
+	if totalRows.Load() != int64(totalRowsExpected) {
+		t.Fatalf("the budget dropped rows (it fired %v): got %d, want %d",
+			budgetAfter > budgetBefore,
 			totalRows.Load(), totalRowsExpected)
 	}
 

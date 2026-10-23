@@ -327,7 +327,7 @@ The **Effect** column says what a flag does to the config key it writes:
 | `-lakehouse.query.file-workers.request` | both | `query.file_workers_request` | set | `0` | Query file-workers request (always-reserved baseline) |
 | `-lakehouse.query.file-workers.scaling` | both | `query.file_workers_scaling` | set | ` ` | Query file-workers scaling policy: fixed\|linear\|expbackoff |
 | `-lakehouse.query.max-files-per-query` | both | `query.max_files_per_query` | set | `0` | Max S3 files per query before rejection (default: 0 = unlimited) |
-| `-lakehouse.query.max-live-bytes` | both | `query.max_live_bytes` | set | `0` | Per-query ceiling on in-flight DataBlock bytes before cancellation (default: 512MiB) |
+| `-lakehouse.query.max-live-bytes` | both | `query.max_live_bytes` | set | `0` | Per-query ceiling on in-flight DataBlock bytes; above it a file worker waits for the consumer (default: 512MiB) |
 | `-lakehouse.query.max-rows.limit` | both | `query.max_rows_limit` | set | `0` | Query max-rows limit (hard ceiling) |
 | `-lakehouse.query.max-rows.request` | both | `query.max_rows_request` | set | `0` | Query max-rows request (operator-visible baseline) |
 | `-lakehouse.query.max-rows.scaling` | both | `query.max_rows_scaling` | set | ` ` | Query max-rows scaling policy: fixed\|linear\|expbackoff |
