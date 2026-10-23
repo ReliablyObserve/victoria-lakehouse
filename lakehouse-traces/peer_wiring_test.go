@@ -88,16 +88,18 @@ func TestPeerWiring_PushersPresentTheKey(t *testing.T) {
 
 // The endpoints mounted over a real Storage, including the peer cache handler
 // the Storage built from the configuration, refuse a request without the key
-// when the key is enforced, and serve it with the key; with the key only sent
-// (peer.auth_enabled false) or no key at all, they serve without one.
+// when the key is enforced (peer.auth_enabled unset or true with a key), and
+// serve it with the key; with the key only sent (peer.auth_enabled false) or no
+// key at all, they serve without one.
 func TestPeerWiring_StoreEndpointsFollowThePeerConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		peer    config.PeerConfig
 		enforce bool
 	}{
-		{"enforced", config.PeerConfig{AuthKey: peerKey, AuthEnabled: true}, true},
-		{"key sent, not enforced", config.PeerConfig{AuthKey: peerKey}, false},
+		{"enforced (auth_enabled true)", config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(true)}, true},
+		{"enforced (auth_enabled unset, a key alone enforces)", config.PeerConfig{AuthKey: peerKey}, true},
+		{"key sent, not enforced (auth_enabled false)", config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(false)}, false},
 		{"no key", config.PeerConfig{}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -134,7 +136,7 @@ func TestPeerWiring_StoreEndpointsFollowThePeerConfig(t *testing.T) {
 func TestPeerWiring_InitAndInfo(t *testing.T) {
 	t.Cleanup(func() { peerauth.SetMaxBodyBytes(0) })
 	cfg := config.Default()
-	cfg.Peer = config.PeerConfig{AuthKey: peerKey, AuthEnabled: true, MaxRequestBodyBytes: 12345}
+	cfg.Peer = config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(true), MaxRequestBodyBytes: 12345}
 	initPeerAuth(cfg)
 	if got := peerauth.MaxBodyBytes(); got != 12345 {
 		t.Errorf("body cap = %d, want 12345", got)
@@ -143,6 +145,26 @@ func TestPeerWiring_InitAndInfo(t *testing.T) {
 		t.Error("the gauge does not show an enforcing pod")
 	}
 	if info := peerAuthInfoFor(cfg.Peer); !info.Enabled || !info.KeyConfigured {
+		t.Errorf("info = %+v", info)
+	}
+
+	// A key alone enforces (auth_enabled unset).
+	cfg.Peer = config.PeerConfig{AuthKey: peerKey}
+	initPeerAuth(cfg)
+	if metrics.PeerAuthEnabled.Get() != 1 {
+		t.Error("the gauge does not show a pod that enforces a configured key")
+	}
+	if info := peerAuthInfoFor(cfg.Peer); !info.Enabled || !info.KeyConfigured {
+		t.Errorf("info = %+v", info)
+	}
+
+	// An explicit false only sends the key.
+	cfg.Peer = config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(false)}
+	initPeerAuth(cfg)
+	if metrics.PeerAuthEnabled.Get() != 0 {
+		t.Error("the gauge shows an enforcing pod for auth_enabled false")
+	}
+	if info := peerAuthInfoFor(cfg.Peer); info.Enabled || !info.KeyConfigured {
 		t.Errorf("info = %+v", info)
 	}
 

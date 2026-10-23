@@ -664,8 +664,8 @@ var (
 // Peer authentication of the internal endpoints (peer.auth_enabled).
 var (
 	// PeerAuthEnabled is 1 when this pod refuses requests without the peer key
-	// on its internal endpoints (peer.auth_enabled), 0 when it serves them
-	// without a credential (the default).
+	// on its internal endpoints (a key is set and peer.auth_enabled is not
+	// false), 0 when it serves them without a credential.
 	PeerAuthEnabled = NewGauge("lakehouse_peer_auth_enabled")
 )
 
