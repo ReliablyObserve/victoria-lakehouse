@@ -145,6 +145,8 @@ Integrity:
   SHA256 checksum via MarshalWithChecksum / UnmarshalWithChecksum
 ```
 
+The decoder treats every bloom index value as untrusted bucket data (the per-file `.bloom` objects, `_bloom_index.bin`, the partition `_bloom.bin` loader `bloomS3Loader` and the pmeta bloom facet all go through `bloomindex.Unmarshal`, in both the logs and the traces binary). The entry count it declares is believed only up to what the bytes after the header can hold: at least 8 bytes per entry for the single-column (v1) shape (`key_len` 2, `filter_len` 4 and a filter of at least 2 bytes) and 4 bytes per entry for the multi-column (v2) shape (`key_len` 2, `col_count` 2), and in v2 the per-entry column count is bounded the same way at 7 bytes per column (`name_len` 1, `filter_len` 4, a 2-byte filter). A count that cannot fit is refused as truncated input before a map is sized from it, on top of the existing cap of 1,000,000 entries. Every value the writer produces satisfies the bounds, so the format is unchanged and a valid value decodes exactly as before.
+
 ## Size Estimates
 
 | Files/hour | Traces/file | Bloom size/file | Index size/hour | Total (3 days) |

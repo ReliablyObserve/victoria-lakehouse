@@ -297,10 +297,41 @@ func Unmarshal(data []byte) (*Index, error) {
 
 const maxIndexEntries = 1_000_000
 
+// Smallest encoded sizes, derived from the writers and the decoder. The index
+// is untrusted bucket data, so a declared count is only believed up to what the
+// bytes that follow can hold; anything larger is truncated input and is refused
+// before a map is sized from it (#763). Every value the writers produce (and
+// every value the decoders accept) satisfies the bounds, so valid decoding is
+// unchanged.
+const (
+	// v1 entry: key_len(2) + empty key + filter_len(4) + a filter of at least
+	// 2 bytes (UnmarshalFilter rejects anything shorter).
+	minEntrySizeV1 = 2 + 4 + 2
+	// v2 entry: key_len(2) + empty key + col_count(2) (an entry with no columns).
+	minEntrySizeV2 = 2 + 2
+	// v2 column: name_len(1) + empty name + filter_len(4) + a 2-byte filter.
+	minColSizeV2 = 1 + 4 + 2
+)
+
+// checkCount refuses a declared count that the remaining bytes cannot hold at
+// minSize bytes per element. It runs before any allocation sized by count.
+func checkCount(what string, count uint64, remaining, minSize int) error {
+	if remaining < 0 {
+		remaining = 0
+	}
+	if limit := uint64(remaining / minSize); count > limit {
+		return fmt.Errorf("bloom index %s count %d exceeds payload: %d bytes hold at most %d", what, count, remaining, limit)
+	}
+	return nil
+}
+
 func unmarshalV1(data []byte) (*Index, error) {
 	count := binary.LittleEndian.Uint32(data[1:5])
 	if count > maxIndexEntries {
 		return nil, fmt.Errorf("bloom index entry count %d exceeds max %d", count, maxIndexEntries)
+	}
+	if err := checkCount("entry", uint64(count), len(data)-5, minEntrySizeV1); err != nil {
+		return nil, err
 	}
 	idx := &Index{entries: make(map[string]map[string]*Filter, count)}
 	pos := 5
@@ -342,6 +373,9 @@ func unmarshalV2(data []byte) (*Index, error) {
 	if count > maxIndexEntries {
 		return nil, fmt.Errorf("bloom index entry count %d exceeds max %d", count, maxIndexEntries)
 	}
+	if err := checkCount("entry", uint64(count), len(data)-5, minEntrySizeV2); err != nil {
+		return nil, err
+	}
 	idx := &Index{entries: make(map[string]map[string]*Filter, count)}
 	pos := 5
 
@@ -364,6 +398,9 @@ func unmarshalV2(data []byte) (*Index, error) {
 		colCount := int(binary.LittleEndian.Uint16(data[pos:]))
 		pos += 2
 
+		if err := checkCount("column", uint64(colCount), len(data)-pos, minColSizeV2); err != nil {
+			return nil, err
+		}
 		cols := make(map[string]*Filter, colCount)
 		for c := 0; c < colCount; c++ {
 			if pos+1 > len(data) {
