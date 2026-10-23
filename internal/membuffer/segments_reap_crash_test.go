@@ -291,7 +291,10 @@ func TestSegments_CrashDuringReapThenRestart(t *testing.T) {
 		t.Skip("permissions are not enforced for root: the removal cannot be stopped half-way")
 	}
 	root := t.TempDir()
-	out, _ := runChild(t, "TestSegments_CrashDuringReapThenRestart", "reap", root)
+	// The child is expected to stop at the blocked removal; its exit status is
+	// logged, and what it left on disk is checked below.
+	out, reapErr := runChild(t, "TestSegments_CrashDuringReapThenRestart", "reap", root)
+	t.Logf("the reap child ended with %v", reapErr)
 	segDir, ok1 := childLine(out, "SEGDIR ")
 	blocked, ok2 := childLine(out, "BLOCKED ")
 	if !ok1 || !ok2 {
