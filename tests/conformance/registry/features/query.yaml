@@ -288,6 +288,19 @@
     - internal/bloomindex/bloom_tiering_test.go
     - internal/bloomindex/cache_test.go
     - internal/bloomindex/controller_test.go
+    - internal/bloomindex/bloomindex_bound_test.go#TestUnmarshal_DeclaredCountBoundedByPayload
+    - internal/bloomindex/bloomindex_bound_test.go#TestUnmarshal_DeclaredColumnCountBounded
+    - internal/bloomindex/bloomindex_bound_test.go#TestUnmarshal_DeclaredColumnCountBoundedOnLaterEntry
+    - internal/bloomindex/bloomindex_bound_test.go#TestUnmarshal_BoundIsExactOnLaterEntry
+    - internal/bloomindex/bloomindex_bound_test.go#TestUnmarshal_BoundIsExact
+    - internal/bloomindex/bloomindex_bound_test.go#TestUnmarshal_CapStillApplies
+    - internal/bloomindex/bloomindex_bound_test.go#TestUnmarshal_DifferentialAgainstLegacy
+    - internal/bloomindex/bloom_fuzz_test.go#FuzzIndexMarshalUnmarshal
+    - internal/pmeta/facet_bloom_test.go#TestBloomFacet_DecodeHostileCountBounded
+    - internal/storage/parquets3/bloom_sidecar_decoder_bound_test.go#TestCheckFileBloom_HostileSidecarBounded
+    - internal/storage/parquets3/bloom_sidecar_decoder_bound_test.go#TestBloomS3Loader_HostileBundleBounded
+    - lakehouse-traces/internal/storage/parquets3/bloom_sidecar_decoder_bound_test.go#TestCheckFileBloom_HostileSidecarBounded
+    - lakehouse-traces/internal/storage/parquets3/bloom_sidecar_decoder_bound_test.go#TestBloomS3Loader_HostileBundleBounded
     - tests/e2e/bloom_verification_test.go#TestBloomVerify_StatusAPI_FullResponse
     - internal/storage/parquets3/phrase_pruning_test.go
     - lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go
