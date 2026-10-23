@@ -322,3 +322,49 @@
     doc: docs/durability.md
     tests:
       - tests/e2e/chaos_durability_traces_test.go#TestChaos_TracesKill9LosesNothingBeyondTheUpstreamWindow
+
+- id: lh.durability.kill_during_segment_reap_logs
+  title: "Logs: a kill of the process while it removes a committed segment's directory leaves a buffer that opens; no acknowledged row is lost or duplicated"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: kill_during_segment_reap
+    mode: buffer-flush
+    signal: logs
+    guarantees: [no-loss, no-duplicate]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedReapIsRemovedAtOpen
+      - internal/membuffer/segments_reap_crash_test.go#TestSegments_CrashDuringReapThenRestart
+      - internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedRemovalNeverReusesASeq
+      - internal/storage/parquets3/buffer_flusher_reap_crash_test.go#TestSegments_RestartAfterAnInterruptedReap
+  notes: "Fixes #390. Reap removes a segment directory with upstream fs.MustRemoveDir (a marker file first) and OpenSegments removes a directory upstream's fs.IsPartiallyRemovedDir reports, before opening it, as upstream logstorage does with its partitions. The tests cover every state a kill inside the removal can leave and a removal stopped half-way by the code itself (a child process, because the old code panics inside upstream's goroutines)."
+
+- id: lh.durability.kill_during_segment_reap_traces
+  title: "Traces: a kill of the process while it removes a committed segment's directory leaves a buffer that opens; no acknowledged span is lost or duplicated"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: kill_during_segment_reap
+    mode: buffer-flush
+    signal: traces
+    guarantees: [no-loss, no-duplicate]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedReapIsRemovedAtOpen
+      - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_CrashDuringReapThenRestart
+      - lakehouse-traces/internal/membuffer/segments_reap_crash_test.go#TestSegments_InterruptedRemovalNeverReusesASeq
+      - lakehouse-traces/internal/storage/parquets3/buffer_flusher_reap_crash_test.go#TestSegments_RestartAfterAnInterruptedReap
+  notes: "Same fix and tests in the traces binary."
