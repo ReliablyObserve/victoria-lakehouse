@@ -18,13 +18,31 @@ package traceindex
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/cespare/xxhash/v2"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+)
+
+// Limits of the wire format. Marshal and Unmarshal share them, so the
+// writer never emits an index the decoder would refuse or, worse, decode
+// into something else (issue #768).
+const (
+	// MaxTraceIDLen is the longest trace ID the uint16 length prefix can
+	// carry. VictoriaTraces itself puts no cap on a trace ID (it hashes the
+	// first 32 bytes for the index stream), so a longer ID is legal input
+	// that the footer index simply cannot describe.
+	MaxTraceIDLen = math.MaxUint16
+
+	// MaxEntries bounds the entry count of one index: the decoder refuses
+	// anything above it (the footer value is untrusted bucket data, #745).
+	MaxEntries = 1 << 20
 )
 
 // MetadataKey is the Parquet FileMetaData.key_value_metadata key under
@@ -118,6 +136,14 @@ func Partition(traceID string) uint16 {
 
 // Marshal encodes index entries to binary.
 //
+// It returns nil, and writes no index, when the entries cannot be encoded
+// faithfully: a trace ID longer than MaxTraceIDLen (its uint16 length would
+// wrap and the payload would decode into other entries, #768) or more than
+// MaxEntries entries (the decoder refuses such a payload). Callers treat an
+// empty result as "no index for this file", which the read path serves with
+// a span scan: always correct, never narrower than the data. The omission is
+// counted in lakehouse_writer_trace_idx_omitted_total{reason} and logged.
+//
 // Wire format:
 //
 //	[version:uint8][count:uint32]
@@ -126,8 +152,18 @@ func Partition(traceID string) uint16 {
 //
 // Little-endian. Stable across releases so long as Version is honored.
 func Marshal(entries []Entry) []byte {
+	if len(entries) > MaxEntries {
+		metrics.WriterTraceIdxOmittedTotal.Inc("too_many_entries")
+		logger.Warnf("trace index omitted: %d entries exceed the limit of %d; trace-by-ID uses a span scan for this file", len(entries), MaxEntries)
+		return nil
+	}
 	size := 1 + 4
 	for _, e := range entries {
+		if len(e.TraceID) > MaxTraceIDLen {
+			metrics.WriterTraceIdxOmittedTotal.Inc("trace_id_too_long")
+			logger.Warnf("trace index omitted: a trace ID of %d bytes exceeds the limit of %d; trace-by-ID uses a span scan for this file", len(e.TraceID), MaxTraceIDLen)
+			return nil
+		}
 		size += 2 + len(e.TraceID) + 2 + 8 + 8
 	}
 	buf := make([]byte, size)
@@ -149,9 +185,13 @@ func Marshal(entries []Entry) []byte {
 	return buf
 }
 
-// Unmarshal decodes a Marshal payload. Returns an error on truncation
-// or an unknown version, never on a missing trace ID — callers must
-// check the returned slice's length.
+// Unmarshal decodes a Marshal payload. Returns an error on truncation,
+// trailing bytes or an unknown version, never on a missing trace ID —
+// callers must check the returned slice's length. The payload must be
+// consumed exactly: a payload that decodes with bytes left over was not
+// produced by Marshal (an index written by an older release with a wrapped
+// ID length is one) and is refused, so the caller falls back to a span scan
+// instead of trusting garbage entries (#768).
 func Unmarshal(data []byte) ([]Entry, error) {
 	if len(data) < 5 {
 		return nil, fmt.Errorf("trace index too short: %d bytes", len(data))
@@ -170,9 +210,8 @@ func Unmarshal(data []byte) ([]Entry, error) {
 	// above any realistic _trace_idx footer (a single parquet
 	// partition typically lists 10 k–100 k traces) while bounding
 	// the worst-case allocation to ~32 MB.
-	const maxEntries = 1 << 20
-	if count > maxEntries {
-		return nil, fmt.Errorf("trace index count too large: %d (max %d)", count, maxEntries)
+	if count > MaxEntries {
+		return nil, fmt.Errorf("trace index count too large: %d (max %d)", count, MaxEntries)
 	}
 	// The cap above still lets a 5-byte value ask for ~42 MB (1<<20
 	// entries x 40 B). Bound the declared count by what the remaining
@@ -207,6 +246,9 @@ func Unmarshal(data []byte) ([]Entry, error) {
 			StartNs:   startNs,
 			EndNs:     endNs,
 		})
+	}
+	if off != len(data) {
+		return nil, fmt.Errorf("trace index has %d trailing bytes after %d entries", len(data)-off, count)
 	}
 	return entries, nil
 }

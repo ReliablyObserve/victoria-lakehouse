@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
@@ -526,6 +528,76 @@ func TestCompactor_PreservesTraceIndexFooter(t *testing.T) {
 	}
 	if alpha.Partition != traceindex.Partition("trace-alpha") {
 		t.Errorf("alpha partition = %d, want %d (must match VT's xxhash%%1024)", alpha.Partition, traceindex.Partition("trace-alpha"))
+	}
+}
+
+// TestCompactor_LongTraceIDLeavesNoWrappedIndex pins #768 on the compaction
+// path: two source files from two writers, one holding a trace ID above the
+// uint16 limit. The merged file must carry no `_trace_idx` (a wrapped index
+// would make trace-by-ID drop the normal trace stored next to it) and both
+// traces must survive the merge.
+func TestCompactor_LongTraceIDLeavesNoWrappedIndex(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "traces/")
+	const partition = "dt=2026-05-04/hour=10"
+	const fp = "trace-fp"
+	longID := strings.Repeat("0", traceindex.MaxTraceIDLen+5)
+	src1 := []schema.TraceRow{
+		{TimestampUnixNano: 1000, TraceID: longID, SpanID: "a1", SpanName: "op1", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(1000), DurationNs: schema.Int64Ptr(500)},
+	}
+	src2 := []schema.TraceRow{
+		{TimestampUnixNano: 2000, TraceID: "trace-beta", SpanID: "b1", SpanName: "op2", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(2000), DurationNs: schema.Int64Ptr(750)},
+	}
+	data1 := makeTestTraceParquet(t, src1)
+	data2 := makeTestTraceParquet(t, src2)
+	const key1 = "traces/dt=2026-05-04/hour=10/src-001.parquet"
+	const key2 = "traces/dt=2026-05-04/hour=10/src-002.parquet"
+	for k, d := range map[string][]byte{key1: data1, key2: data2} {
+		if err := pool.Upload(context.Background(), k, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fi1 := manifest.FileInfo{Key: key1, Size: int64(len(data1)), RowCount: 1, MinTimeNs: 1000, MaxTimeNs: 1000, SchemaFingerprint: fp}
+	fi2 := manifest.FileInfo{Key: key2, Size: int64(len(data2)), RowCount: 1, MinTimeNs: 2000, MaxTimeNs: 2000, SchemaFingerprint: fp}
+	m.AddFile(partition, fi1)
+	m.AddFile(partition, fi2)
+
+	before := metrics.WriterTraceIdxOmittedTotal.Get("trace_id_too_long")
+	compactor := NewCompactor(CompactorConfig{
+		Pool: pool, Manifest: m, Prefix: "traces/", Mode: config.ModeTraces,
+		RowGroupSize: 1000, CompressionLevel: 7,
+	})
+	result, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	pool.mu.Lock()
+	out := pool.uploaded[result.OutputFile]
+	pool.mu.Unlock()
+
+	pf, err := parquet.OpenFile(bytes.NewReader(out), int64(len(out)))
+	if err != nil {
+		t.Fatalf("parquet.OpenFile: %v", err)
+	}
+	for _, kv := range pf.Metadata().KeyValueMetadata {
+		if kv.Key == traceindex.MetadataKey {
+			entries, derr := traceindex.Unmarshal([]byte(kv.Value))
+			t.Fatalf("the compacted file carries a %s index (%d entries, decode err %v) although a trace ID exceeds the uint16 limit", kv.Key, len(entries), derr)
+		}
+	}
+	if d := metrics.WriterTraceIdxOmittedTotal.Get("trace_id_too_long") - before; d != 1 {
+		t.Fatalf("omission counted %d times, want 1", d)
+	}
+	rows, err := readTraceRows(out)
+	if err != nil {
+		t.Fatalf("readTraceRows: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, r := range rows {
+		seen[r.TraceID] = true
+	}
+	if len(rows) != 2 || !seen[longID] || !seen["trace-beta"] {
+		t.Fatalf("merge lost rows: %d rows, long=%v beta=%v", len(rows), seen[longID], seen["trace-beta"])
 	}
 }
 

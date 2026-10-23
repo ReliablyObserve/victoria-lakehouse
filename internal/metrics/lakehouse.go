@@ -288,6 +288,7 @@ var (
 func init() {
 	ManifestRefreshIncomplete.Init("partial", "rejected", "head_unconfirmed")
 	DuplicateFileKeys.Init("manifest_refresh", "manifest_load", "compaction_input")
+	WriterTraceIdxOmittedTotal.Init("trace_id_too_long", "too_many_entries")
 }
 
 // RowGroupSkipReasons is every reason ParquetRowGroupsSkipped is incremented
@@ -870,6 +871,15 @@ var (
 	// out of S3.
 	WriterTraceIdxEntriesTotal = NewCounter(
 		"lakehouse_writer_trace_idx_entries_total")
+
+	// WriterTraceIdxOmittedTotal counts files flushed or compacted WITHOUT a
+	// `_trace_idx` footer because their entries cannot be encoded (#768).
+	// `reason` is:
+	//   trace_id_too_long — a trace ID above 65535 bytes (uint16 length)
+	//   too_many_entries  — more than 1<<20 distinct traces in one file
+	// Trace-by-ID then span-scans those files (always correct). Expected 0.
+	WriterTraceIdxOmittedTotal = NewCounterVec(
+		"lakehouse_writer_trace_idx_omitted_total", "reason")
 
 	// WriterTraceIdxBuildDuration is the wall-clock cost of one
 	// computeTraceIndex + marshalTraceIndex pass.
