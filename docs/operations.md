@@ -757,9 +757,6 @@ by the stream-day:
   on hot and answers an empty list; the objects honour that spelling as a filter convenience and list their names (and the
   alias the query spells), while the spans an insert peer serves are not credited by it. A row query matches both layers
   ([#505](https://github.com/ReliablyObserve/victoria-lakehouse/issues/505)).
-- **Errors inside a counting read.** `processOneFile` logs the per-file errors other than a missing object and drops
-  them, and the live-bytes budget can cancel the read without recording an error on the last file, so a counting read can
-  answer 200 with names missing (pre-existing in every row read; [#503](https://github.com/ReliablyObserve/victoria-lakehouse/issues/503)).
 
 ## Troubleshooting
 

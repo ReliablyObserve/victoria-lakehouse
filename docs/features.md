@@ -679,12 +679,12 @@ A cold query can address far more data than a hot one, so an unbounded scan is a
 
 `lh.feature.query.memory_budget` · status: shipped · since: v0.49.0 · surfaces: flag
 
-**Query memory budget**: `-lakehouse.query.max-live-bytes` bounds the live DataBlock bytes one query may hold, and cancels the query rather than the process when the budget trips.
+**Query memory budget**: `-lakehouse.query.max-live-bytes` bounds the live DataBlock bytes one query may hold; a worker that reaches it waits for the consumer, so the pod is not pushed into an OOM kill and the answer is never cut short.
 
-Cold queries hold decoded row groups in memory while they stream results. The budget makes that bounded and observable: a query that would exceed it is cancelled with a counted reason, instead of pushing the pod into an OOM kill that takes every other query with it.
+Cold queries hold decoded row groups in memory while they stream results. The budget makes that bounded and observable: a worker whose block would exceed it waits until the consumer has drained the bytes in flight (counted), instead of pushing the pod into an OOM kill that takes every other query with it. The wait never cancels the read or drops a block, so the answer is complete.
 
-- Verification: tests: `internal/storage/parquets3/query_memory_budget_test.go`, `lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go`, `internal/storage/parquets3/query_limits_test.go`, `lakehouse-traces/internal/storage/parquets3/query_limits_test.go`
-- Docs: `docs/performance-machinery.md`, `docs/configuration.md`
+- Verification: rows: `lh.query.live_bytes_budget_waits` (pass, pending) · tests: `internal/storage/parquets3/query_memory_budget_test.go`, `lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go`, `internal/storage/parquets3/query_limits_test.go`, `lakehouse-traces/internal/storage/parquets3/query_limits_test.go`, `internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops`, `internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow`, `internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease`, `internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter`, `internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle`, `internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish`, `lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease`, `lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter`, `lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle`, `lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish`, `lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops`
+- Docs: `docs/performance-machinery.md`, `docs/configuration.md`, `docs/read-path.md`
 
 ### 📝 N-gram pruning for full-text search
 
@@ -701,12 +701,12 @@ Today's blooms answer exact-value questions on indexed fields, so a free-text se
 
 `lh.feature.query.parallel_file_workers` · status: shipped · since: v0.18.1 · surfaces: flag
 
-**Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
+**Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers); a read that cannot read an object it selected fails instead of answering without its rows.
 
-Cold queries are dominated by per-file latency, so files are processed concurrently — but from a bounded pool, because unbounded fan-out turns an object-store latency problem into a memory problem.
+Cold queries are dominated by per-file latency, so files are processed concurrently — but from a bounded pool, because unbounded fan-out turns an object-store latency problem into a memory problem. An object a worker could not read (anything but a listed object that is gone) fails the read and stops the other workers, so no answer is silently missing rows.
 
-- Verification: tests: `internal/storage/parquets3/worker_cap_test.go`, `internal/storage/parquets3/query_memory_budget_test.go#TestAcquireFileBudget_BoundsConcurrency`, `internal/storage/parquets3/query_memory_budget_test.go#TestAcquireRGDecode_BoundsConcurrency`, `lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go#TestAcquireRGDecode_BoundsConcurrency`
-- Docs: `docs/storage-flow.md`, `docs/performance.md`
+- Verification: rows: `lh.query.read_complete_or_fail` (pass, pending) · tests: `internal/storage/parquets3/worker_cap_test.go`, `internal/storage/parquets3/query_memory_budget_test.go#TestAcquireFileBudget_BoundsConcurrency`, `internal/storage/parquets3/query_memory_budget_test.go#TestAcquireRGDecode_BoundsConcurrency`, `lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go#TestAcquireRGDecode_BoundsConcurrency`
+- Docs: `docs/storage-flow.md`, `docs/performance.md`, `docs/read-path.md`
 - Changelog: `0.18.1`
 
 ### ✅ K8s-style resource bounds for query surfaces

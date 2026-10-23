@@ -535,7 +535,7 @@ Each binary supports three roles for independent scaling:
 - **Auto-discovery of hot boundary** via `/internal/partition/list` on vlstorage/vtstorage. Zero manual config.
 - **LogsQL filter evaluation**: field matchers (exact, substring, regex, NOT) are applied post-scan to filter DataBlock rows at the storage layer.
 - **max_rows enforcement**: `query.max_rows` (default 10M) caps emitted rows per query, preventing unbounded cold-query resource usage.
-- **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers).
+- **Parallel file workers**: configurable bounded worker pool for concurrent Parquet file processing (default 8 workers); a read that cannot read an object it selected fails instead of answering without its rows.
 - **Partition manifest** for sub-ms "nothing here" responses. Recent queries cost zero S3 I/O.
 - **Schema-driven FieldType system**: centralized type-aware formatting for all Parquet column types (INT64 nanoseconds to RFC3339Nano, INT32 to decimal, etc.) via `FieldType.FormatValue()`. Eliminates scattered `fmt.Sprintf`/`time.Format` calls — all query paths use the schema registry for consistent output.
 

@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -163,9 +164,9 @@ func (s *Storage) GetFieldNames(ctx context.Context, tenantIDs []logstorage.Tena
 // saved each = the difference between a healthy lakehouse-logs and
 // an OOM-killed one under Grafana drilldown load.
 //
-// On any error opening the file or finding the target column, returns
-// nil so the caller continues with the next file (matches the
-// fault-tolerance of the previous full-download path).
+// An error opening the file or reading a chunk of it is returned: the caller
+// fails the read, since the object's values and hits would be missing from
+// the answer. A column the object lacks is not an error (nothing to collect).
 func (s *Storage) scanProjectedFieldValues(
 	ctx context.Context,
 	fi manifest.FileInfo,
@@ -293,6 +294,12 @@ func (s *Storage) scanProjectedFieldValues(
 				collectFilteredValuesInWindow(buf[:n], projectedNames, targetInProjection, filter, tombstones, s, seen, winLo, winHi, countEmpty)
 			}
 			if err != nil {
+				if err != io.EOF {
+					// A chunk that cannot be read leaves values and hits out of
+					// the answer: report it, never end the row group quietly.
+					_ = rows.Close()
+					return err
+				}
 				break
 			}
 		}
