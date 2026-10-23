@@ -146,9 +146,15 @@ func qdSampleMax() (stop func() (budget, decode int)) {
 }
 
 func TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots(t *testing.T) {
-	const timeout = 400 * time.Millisecond
+	const timeout = 250 * time.Millisecond
+	// One worker (the sequential path) for the Jaeger search only: the deadline
+	// cancels the same way for every worker count, and this package's CI shard
+	// runs close to its time limit (#788), so each extra variant is paid for.
 	for _, workers := range []int{1, 4} {
 		for gi, g := range qdRoutes(time.Now()) {
+			if workers == 1 && g.group != "jaeger-search" {
+				continue
+			}
 			t.Run(fmt.Sprintf("%s/workers=%d", g.group, workers), func(t *testing.T) {
 				fx := newRCFixture(t, workers, rcKeyFmt)
 				mux := qdMux(t, fx)
@@ -234,7 +240,7 @@ func TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots(t *
 // file budget are free again. The slots are shown held while the consumer waits,
 // so the zero afterwards is a release, not an idle gauge.
 func TestJaegerTempoDeadline_StalledConsumerFreesDecodeSlots(t *testing.T) {
-	const timeout = 400 * time.Millisecond
+	const timeout = 250 * time.Millisecond
 	fx := newRCFixture(t, 4, rcKeyFmt)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
