@@ -13,9 +13,10 @@ on:
 permissions:
   contents: read
 
-# One run per PR: a label or body edit (or a push) supersedes the run in flight.
+# One run per PR: a label or body edit (or a push) supersedes the run in flight. Any other event gets a
+# group of its own, so a run on main is never cancelled or replaced.
 concurrency:
-  group: conformance-${{ github.event.pull_request.number || github.ref }}
+  group: conformance-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

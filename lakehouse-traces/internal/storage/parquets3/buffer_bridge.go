@@ -16,6 +16,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/buffer"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
 
@@ -110,7 +111,8 @@ func NewBufferBridge(cfg *config.SelectConfig, mode config.Mode) *BufferBridge {
 		cfg:  cfg,
 		mode: mode,
 		client: &http.Client{
-			Timeout: cfg.BufferQueryTimeout,
+			Timeout:       cfg.BufferQueryTimeout,
+			CheckRedirect: peerauth.RefuseRedirects,
 		},
 	}
 }

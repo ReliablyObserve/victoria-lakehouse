@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
@@ -32,7 +33,7 @@ type Pusher struct {
 func NewPusher(cfg PusherConfig) *Pusher {
 	return &Pusher{
 		cfg:    cfg,
-		client: &http.Client{Timeout: 2 * time.Second},
+		client: &http.Client{Timeout: 2 * time.Second, CheckRedirect: peerauth.RefuseRedirects},
 	}
 }
 

@@ -35,6 +35,28 @@ code-scanning merge gate.
   `permissions: write-all`;
 - `id-token: write` (an OIDC token) appears only in the workflows listed with a reason in
   `scripts/ci/tests/test_workflow_permissions.py`.
+- every workflow that runs on a pull request has a top-level `concurrency:` whose group contains the
+  pull request number and whose `cancel-in-progress` is `${{ github.event_name == 'pull_request' }}`
+  (`scripts/ci/tests/test_workflow_concurrency.py`); see the next section.
+
+## Superseded and conflicting pull request runs
+
+CI does not spend runner time on runs nobody will read.
+
+- **A new push supersedes the previous head.** Each pull request workflow cancels the run still going
+  for the previous head of the same pull request. Runs of any other event (a push to `main`, a
+  schedule, a manual run) get a group of their own, so they are never cancelled and never replaced by
+  a queued run: `main` always runs every job to completion. A cancelled run belongs to an old head;
+  the required checks of the new head are reported by the new head's own run.
+- **A pull request that conflicts with `main` is swept.** GitHub starts no `pull_request` run for a
+  conflicting pull request, but runs already queued or in flight when `main` moves keep going.
+  `cancel-conflicting-pr-runs.yaml` runs on every push to `main` and on demand, lists the open pull
+  requests and, for each one whose mergeable state is `CONFLICTING`, cancels the queued, waiting and
+  in-progress `pull_request` runs of its head commit. A pull request whose state is still `UNKNOWN`
+  after a bounded wait, and any API error, leave the runs alone. The job holds only
+  `actions: write` and `pull-requests: read`, uses no action and no checkout, and takes no input from a
+  pull request. A manual run with `dry_run` logs what it would cancel. Rebase the pull request to run
+  its checks again.
 
 ## Reading the Scorecard
 
