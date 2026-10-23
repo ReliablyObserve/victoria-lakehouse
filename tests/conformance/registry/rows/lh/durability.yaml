@@ -283,6 +283,48 @@
       - lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go#TestDrain_StopMidDrainCountsCollectOnce_TwoTenants
   notes: "Same check in the traces binary; the property test also draws VictoriaTraces trace_id_idx rows (some stamped before the epoch) and uses the production keep filter."
 
+- id: lh.durability.select_pod_lists_after_segment_retired_logs
+  title: "Logs: a select pod keeps answering the rows of a segment the insert pod retired before the select pod listed the segment's objects"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: differ
+  differ_note: "Known gap: the insert pod retires a committed segment after its own grace (2 x its manifest.refresh_interval + 30 s) and the select pod drops the segment's objects only while the insert pod serves it, so a select pod whose listing has not caught up misses the segment's rows (HTTP 200, not counted) until its next complete listing. The rows are in Parquet; they are hidden, not deleted. Measured in #391: 10,000 rows missing for 147 s with insert pods at 30 s and a select pod at 5m. The cited test pins this behaviour and is inverted by the fix."
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: select_pod_lists_after_segment_retired
+    mode: buffer-flush
+    signal: logs
+    guarantees: [no-loss]
+    gap: https://github.com/ReliablyObserve/victoria-lakehouse/issues/391
+  refs:
+    doc: docs/durability.md
+    tests:
+      - internal/storage/parquets3/buffer_view_retired_gap_test.go#TestBufferView_RetiredBeforeTheSelectPodListed_KnownGap391
+
+- id: lh.durability.select_pod_lists_after_segment_retired_traces
+  title: "Traces: a select pod keeps answering the spans of a segment the insert pod retired before the select pod listed the segment's objects"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: differ
+  differ_note: "Known gap, the same as the logs cell: the spans are missing from the select pod's answers (and from the Jaeger and Tempo reads built on them) until its next complete listing. The cited test pins this behaviour and is inverted by the fix."
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: select_pod_lists_after_segment_retired
+    mode: buffer-flush
+    signal: traces
+    guarantees: [no-loss]
+    gap: https://github.com/ReliablyObserve/victoria-lakehouse/issues/391
+  refs:
+    doc: docs/durability.md
+    tests:
+      - lakehouse-traces/internal/storage/parquets3/buffer_view_retired_gap_test.go#TestBufferView_RetiredBeforeTheSelectPodListed_KnownGap391
+
 - id: lh.durability.kill_between_upload_and_commit_logs
   title: "Logs: a kill of the process between a drain's upload and its commit loses no acknowledged row and duplicates none"
   surface: lh
