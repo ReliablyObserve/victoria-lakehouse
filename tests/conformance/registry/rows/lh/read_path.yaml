@@ -197,7 +197,6 @@
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
-      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_BoundsHeapAndKeepsEveryRow
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_WaitsForRelease
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
