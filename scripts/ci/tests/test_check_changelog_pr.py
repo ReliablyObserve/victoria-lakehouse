@@ -910,7 +910,7 @@ class DependabotExemptionTests(unittest.TestCase):
     def test_bot_pr_with_a_bumped_go_mod_fails_without_a_changelog_entry(self):
         rc, out, err = self.bump(["scripts/bench/ab/requirements.txt", "go.mod"])
         self.assertEqual(rc, 1)
-        self.assertIn("CHANGELOG.md must be updated", err)
+        self.assertIn("PR must add a changelog fragment", err)
 
     def test_bot_pr_that_does_add_a_changelog_entry_passes_the_normal_way(self):
         rc, out, _ = self.run_gate(
