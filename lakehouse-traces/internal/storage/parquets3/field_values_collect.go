@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -202,6 +203,7 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 	}
 
 	var mu sync.Mutex
+	var failure atomic.Value // the first error that left an object out of the answer
 	taskCh := make(chan manifest.FileInfo, len(files))
 	for _, fi := range files {
 		taskCh <- fi
@@ -214,20 +216,28 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 		go func() {
 			defer wg.Done()
 			for fi := range taskCh {
-				if ctx.Err() != nil {
+				if ctx.Err() != nil || failure.Load() != nil {
 					return
 				}
 				// Column-projected read: only the target (+ filter and
 				// timestamp) chunks are fetched, never the whole object body.
 				local := make(map[string]uint64)
 				if err := s.scanProjectedFieldValues(ctx, fi, r.column, r.subField, r.field, r.emptyBucket, r.filter, tombstonesForKey(r.tombstones, r.parse, fi.Key), local, r.startNs, r.endNs); err != nil {
-					if ctx.Err() == nil {
-						// The object is left out of the answer, as the query
-						// path does with an unreadable object; counted there too.
-						metrics.QueryFileErrorsTotal.Inc()
-						logger.Warnf("scan projected %s: %s; key=%s", r.op, err, fi.Key)
+					if ctx.Err() != nil {
+						return // stopped by the caller; reported below
 					}
-					continue
+					if isObjectGone(err, fi.Key) {
+						// Listed, then removed by a compaction or a retention
+						// run: its rows are in the compacted object or deleted.
+						metrics.QueryFileNotFoundTotal.Inc()
+						continue
+					}
+					// An object that cannot be read leaves values and hits out of
+					// the answer: fail the read, as the query path does.
+					metrics.QueryFileErrorsTotal.Inc()
+					logger.Warnf("scan projected %s: %s; key=%s", r.op, err, fi.Key)
+					recordReadError(&failure, fmt.Errorf("cannot read %s: %w", fi.Key, err))
+					return
 				}
 				mu.Lock()
 				for v, c := range local {
@@ -238,6 +248,9 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 		}()
 	}
 	wg.Wait()
+	if err := recordedReadError(&failure); err != nil {
+		return err
+	}
 	return ctx.Err()
 }
 

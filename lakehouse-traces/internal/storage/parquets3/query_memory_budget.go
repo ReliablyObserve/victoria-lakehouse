@@ -4,8 +4,12 @@ import (
 	"context"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 )
 
 // defaultMaxLiveBytes caps the bytes of in-flight DataBlock rows a single
@@ -13,6 +17,76 @@ import (
 // Mirror of the logs module — see ../../../../internal/storage/parquets3/
 // query_memory_budget.go for the rationale.
 const defaultMaxLiveBytes int64 = 512 * 1024 * 1024
+
+// liveBytesGate is the per-query ceiling on the bytes of DataBlock rows held
+// between the decoder and the consumer (query.max_live_bytes). A worker that
+// finds the ceiling reached WAITS until the consumer has drained enough; it is
+// never cancelled and never drops its block. The query used to be cancelled
+// instead, which answered 200 with the rows of the files still to be read (or
+// of the file being read) missing.
+//
+// The wait is ctx-aware, so a query its caller gave up on (or that hit the row
+// ceiling) is released at once, and it is evaluated against the bytes already
+// in flight, not the block waiting: a block larger than the ceiling is admitted
+// as soon as nothing else is in flight, so no block can wait forever. The bytes
+// held in flight stay within the ceiling plus, at most, one block per worker.
+type liveBytesGate struct {
+	live    atomic.Int64
+	waiters atomic.Int32
+	mu      sync.Mutex
+	cond    *sync.Cond
+}
+
+// add counts n bytes as in flight.
+func (g *liveBytesGate) add(n int64) { g.live.Add(n) }
+
+// release uncounts n bytes and wakes the workers waiting for room.
+func (g *liveBytesGate) release(n int64) {
+	g.live.Add(-n)
+	if g.waiters.Load() > 0 {
+		g.wake()
+	}
+}
+
+func (g *liveBytesGate) wake() {
+	g.mu.Lock()
+	if g.cond != nil {
+		g.cond.Broadcast()
+	}
+	g.mu.Unlock()
+}
+
+// waitBelow returns once fewer than max bytes are in flight, or false when ctx
+// ends first. The first wait of a query is logged once (logged) and every wait
+// is counted in lakehouse_query_memory_budget_exceeded_total. The fast path is
+// one atomic load.
+func (g *liveBytesGate) waitBelow(ctx context.Context, max int64, logged *atomic.Bool) bool {
+	if g.live.Load() < max {
+		return true
+	}
+	metrics.QueryMemoryBudgetExceeded.Inc()
+	if logged.CompareAndSwap(false, true) {
+		logger.Warnf("query memory budget reached: live=%d, max=%d; waiting for the consumer",
+			g.live.Load(), max)
+	}
+	stop := context.AfterFunc(ctx, g.wake)
+	defer stop()
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.cond == nil {
+		g.cond = sync.NewCond(&g.mu)
+	}
+	g.waiters.Add(1)
+	defer g.waiters.Add(-1)
+	for g.live.Load() >= max {
+		if ctx.Err() != nil {
+			return false
+		}
+		g.cond.Wait()
+	}
+	return true
+}
 
 // defaultMaxRowsPerBlock caps the number of rows in a single DataBlock
 // emitted to the LogsQL pipe consumer. Mirror of the logs module — see
