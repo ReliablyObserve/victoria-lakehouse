@@ -88,7 +88,7 @@ func sec(i int64) int64 { return i * int64(time.Second) }
 // The rows of a crowded second, however they differ, are written in groups of at
 // most maxRows, each row once.
 func TestDrain_CrowdedSecondIsCutIntoBoundedGroups(t *testing.T) {
-	const maxRows, n = 1000, 12000
+	const maxRows, n = 100, 1200
 	base := hourAgo.UnixNano()
 	for _, c := range []struct {
 		name string
@@ -143,22 +143,22 @@ func TestDrain_CrowdedSecondIsCutIntoBoundedGroups(t *testing.T) {
 func TestDrain_IdenticalRowsOfACrowdedSecondStayOneGroup(t *testing.T) {
 	e := newSegEnv(t)
 	base := hourAgo.UnixNano()
-	e.burst(segTenantA, 3000, func(int) int64 { return base + sec(2) }, func(int) string { return "same" })
-	e.burst(segTenantA, 500, func(i int) int64 { return base + sec(2) }, rowID)
+	e.burst(segTenantA, 300, func(int) int64 { return base + sec(2) }, func(int) string { return "same" })
+	e.burst(segTenantA, 50, func(i int) int64 { return base + sec(2) }, rowID)
 	g := e.seal()
-	f := e.flusher(1000)
+	f := e.flusher(100)
 	if err := f.drain(context.Background(), g); err != nil {
 		t.Fatal(err)
 	}
 	rows := e.objectRows()
-	if sum(rows) != 3500 {
-		t.Fatalf("stored %d rows, want 3500", sum(rows))
+	if sum(rows) != 350 {
+		t.Fatalf("stored %d rows, want 350", sum(rows))
 	}
 	var over int
 	for _, r := range rows {
-		if r > 1000 {
+		if r > 100 {
 			over++
-			if r < 3000 {
+			if r < 300 {
 				t.Errorf("the identical rows were cut into %d", r)
 			}
 		}
@@ -166,8 +166,8 @@ func TestDrain_IdenticalRowsOfACrowdedSecondStayOneGroup(t *testing.T) {
 	if over != 1 {
 		t.Errorf("%d groups over the cap, want 1 (the identical rows): %v", over, rows)
 	}
-	if got := e.storedMsgs()["same"]; got != 3000 {
-		t.Errorf("stored %d identical rows, want 3000", got)
+	if got := e.storedMsgs()["same"]; got != 300 {
+		t.Errorf("stored %d identical rows, want 300", got)
 	}
 }
 
@@ -177,10 +177,10 @@ func TestDrain_IdenticalRowsOfACrowdedSecondStayOneGroup(t *testing.T) {
 func TestCollectSlice_BucketsPartitionASecondAndLeaveNoHelperField(t *testing.T) {
 	e := newSegEnv(t)
 	base := hourAgo.UnixNano()
-	const n = 6000
+	const n, maxRows = 600, 50
 	e.burst(segTenantA, n, func(i int) int64 { return base + sec(1) + int64(i%7) }, rowID)
 	g := e.seal()
-	f := e.flusher(500)
+	f := e.flusher(maxRows)
 	whole := flushSlice{partition: partitionFromNano(base), start: base + sec(1), end: base + sec(2) - 1, rows: n}
 	plain, _, err := f.collectSlice(context.Background(), g, segTenantA, whole)
 	if err != nil {
@@ -190,13 +190,13 @@ func TestCollectSlice_BucketsPartitionASecondAndLeaveNoHelperField(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(groups) < n/500 {
-		t.Fatalf("%d groups for %d rows at 500 per group", len(groups), n)
+	if len(groups) < n/maxRows {
+		t.Fatalf("%d groups for %d rows at %d per group", len(groups), n, maxRows)
 	}
 	var got []string
 	var prevHi int64 = -1
 	for _, sl := range groups {
-		if sl.rows > 500 || sl.bucketLo <= prevHi || sl.bucketHi < sl.bucketLo {
+		if sl.rows > maxRows || sl.bucketLo <= prevHi || sl.bucketHi < sl.bucketLo {
 			t.Errorf("group %+v: over the cap or overlapping the previous bucket %d", sl, prevHi)
 		}
 		prevHi = sl.bucketHi
@@ -354,15 +354,15 @@ func TestPlanGroups_SummaryQueries(t *testing.T) {
 // A drain that fails in the middle of a crowded second writes the rest on the
 // next attempt, and, after a restart, from the same groups: every row once.
 func TestDrain_CrowdedSecondResumesWithoutDuplicates(t *testing.T) {
-	const n = 9000
+	const n, maxRows = 900, 100
 	base := hourAgo.UnixNano()
 	for _, restart := range []bool{false, true} {
 		t.Run(fmt.Sprintf("restart=%v", restart), func(t *testing.T) {
 			e := newSegEnv(t)
 			e.burst(segTenantA, n, func(i int) int64 { return base + sec(3) + int64(i) }, rowID)
-			e.burst(segTenantB, 700, func(i int) int64 { return base + sec(3) }, func(i int) string { return rowID(n + i) })
+			e.burst(segTenantB, 70, func(i int) int64 { return base + sec(3) }, func(i int) string { return rowID(n + i) })
 			g := e.seal()
-			f := e.flusher(1000)
+			f := e.flusher(maxRows)
 			puts := 0
 			e.failFn.Store(func(key string) bool {
 				puts++
@@ -373,14 +373,14 @@ func TestDrain_CrowdedSecondResumesWithoutDuplicates(t *testing.T) {
 			}
 			if restart {
 				e.restart()
-				f = e.flusher(1000)
+				f = e.flusher(maxRows)
 			}
 			e.failFn.Store(func(string) bool { return false })
 			e.drainAll(f)
-			e.mustHaveExactly(n+700, "after the resumed drain")
+			e.mustHaveExactly(n+70, "after the resumed drain")
 			e.storedOnce("crowded second")
 			for _, r := range e.objectRows() {
-				if r > 1000 {
+				if r > maxRows {
 					t.Errorf("a group of %d rows", r)
 				}
 			}
@@ -457,7 +457,7 @@ func groupKey(e *segEnv, nonce string, sl flushSlice) string {
 // are named by its segment's nonce, so no key is shared and no row is written
 // twice. A reader sees all of them: the objects hold every row once.
 func TestDrain_TwoWritersCrowdedSecondOfOneTenant(t *testing.T) {
-	const n, maxRows = 6000, 1000
+	const n, maxRows = 600, 100
 	e := newSegEnv(t) // writer 1, and the bucket both write to
 	base := hourAgo.UnixNano()
 	e.burst(segTenantA, n, func(i int) int64 { return base + sec(4) }, rowID)
