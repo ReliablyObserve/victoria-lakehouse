@@ -5,7 +5,7 @@ squash commits, with the content of the files the decision reads, and the owner'
 decision. Every row is replayed in a scratch git repository (parent commit, then the commit)
 through the real decision function and the real registry-gate classifier (pr_classify.py), so
 the table proves the whole chain. The `[skip release]` marker is out of the picture: it is
-handled by release_skip.py and the titles in the table do not carry it.
+handled per commit by decide_range() (RangeDecision below) and the titles in the table do not carry it.
 """
 import json
 import os
@@ -38,7 +38,7 @@ SUM_NEW = SUM_OLD + "golang.org/x/net v9.9.9 h1:def=\n"
 
 
 def git(cwd, *args, check=True):
-    p = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false", *args],
+    p = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@e", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", *args],
                        cwd=cwd, capture_output=True, text=True)
     if check and p.returncode:
         raise AssertionError(p.stderr)
@@ -404,18 +404,7 @@ class FailSafe(unittest.TestCase):
         return self.repo.decide(self.sha, **kw)
 
     def test_the_baseline_skips(self):
-        self.assertTrue(self.decide(before=self.parent).skip)
-        self.assertTrue(self.decide().skip, "no `before` (a local run) uses the parent")
-
-    def test_a_manual_run_always_releases(self):
-        self.assertFalse(self.decide(event="workflow_dispatch").skip)
-
-    def test_a_push_of_several_commits_releases(self):
-        # before is not the parent: earlier commits of the push are not in HEAD~1..HEAD
-        self.assertFalse(self.decide(before="a" * 40).skip)
-
-    def test_a_branch_creating_push_releases(self):
-        self.assertFalse(self.decide(before=r.ZERO_SHA).skip)
+        self.assertTrue(self.decide().skip)
 
     def test_a_merge_commit_releases(self):
         git(self.repo.d, "checkout", "-q", "-b", "side", self.parent)
@@ -521,46 +510,351 @@ class FailSafe(unittest.TestCase):
         self.assertFalse(v.skip)
 
 
+class RangeDecision(unittest.TestCase):
+    """#756: the decision is made on last-tag..HEAD, never on the pushed commit alone.
+
+    Histories are built in scratch repositories with the real subjects and file lists of the 2026-10-23
+    burst (#753 metadata, #736 product, #729 test-only, #743 CI-only) and the real registry-gate classifier
+    in the base commit.
+    """
+
+    MAIN = "refs/heads/main"
+    PRODUCT = {"internal/storage/field_names.go": "package storage\n", "internal/storage/field_names_test.go": "package storage\n",
+               "CHANGELOG.md": "c\n", "docs/features.md": "f\n", "tests/conformance/registry/features/query.yaml": "q\n"}
+    METADATA = {"CHANGELOG.md": "meta\n", "charts/victoria-lakehouse/Chart.yaml": "v\n"}
+    TESTONLY = {"internal/storage/parquets3/acked_rows_pre1970_test.go": "package p\n",
+                "lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go": "package p\n"}
+    CIONLY = {".github/workflows/ci.yaml": "ci\n", "scripts/ci/tests/test_workflow_concurrency.py": "t\n", "docs/security-posture.md": "s\n"}
+
+    def setUp(self):
+        self.repo = Repo()
+        self.addCleanup(self.repo.close)
+        files = {}
+        for name in ("pr_classify.py", "check_changelog_pr.py"):
+            with open(os.path.join(HERE, "..", name), encoding="utf-8") as fh:
+                files["scripts/ci/" + name] = fh.read()
+        self.base = self.repo.commit("base", {**files, "internal/storage/field_names.go": "package storage\n", "CHANGELOG.md": "c0\n"})
+        self.n = 0
+        self.title_calls = []
+        self.titles = {}
+
+    def step(self, subject, changes):
+        """A commit with changes made distinct (so every commit really changes its files)."""
+        self.n += 1
+        return self.repo.commit(subject, {p: f"{t}{self.n}\n" for p, t in changes.items()})
+
+    def tag(self, name, sha):
+        git(self.repo.d, "tag", name, sha)
+
+    def titles_for(self, sha):
+        def fetch(number):
+            self.title_calls.append(sha)
+            return list(self.titles.get(sha, []))
+        return fetch
+
+    def decide(self, head, tag="v0.167.5", **kw):
+        kw.setdefault("classifier", CLASSIFIER)
+        kw.setdefault("titles_for", self.titles_for)
+        return r.decide_range(self.repo.d, head, tag, **kw)
+
+    def burst(self, with_product=True):
+        """tag on the metadata commit's parent, then metadata, product, test-only, CI-only (all with the real subjects)."""
+        released = self.step("fix(security): constant-time key compare and a body cap in the cross-signal hint handler (#732)",
+                             {"internal/storage/field_names.go": "package storage\n"})
+        self.tag("v0.167.5", released)
+        self.step("chore: release metadata for v0.167.4 [skip release] (#753)", self.METADATA)
+        product = None
+        if with_product:
+            product = self.step("fix(field_names): keep no block memory after the read callback returns (#734) (#736)", self.PRODUCT)
+            self.titles[product] = ["fix(field_names): keep no block memory after the read callback returns (#734)"]
+        self.step("test: poll for buffer visibility in the pre-1970 property test and fail loudly [skip release] (#729)", self.TESTONLY)
+        head = self.step("ci: cancel superseded and conflicting pull request runs [skip release] (#743)", self.CIONLY)
+        return head, product
+
+    # the exact #736 sequence
+    def test_the_lost_product_merge_behind_two_skip_release_merges_is_released(self):
+        head, product = self.burst()
+        v = self.decide(head)
+        self.assertFalse(v.skip, v.reason)
+        self.assertIn(product[:12], v.reason)
+
+    def test_the_same_burst_without_the_product_commit_is_not_released(self):
+        head, _ = self.burst(with_product=False)
+        v = self.decide(head)
+        self.assertTrue(v.skip, v.reason)
+
+    def test_every_run_of_the_burst_answers_for_the_range_not_its_own_commit(self):
+        head, product = self.burst()
+        runs = git(self.repo.d, "rev-list", "--reverse", f"{product}..{head}").split()
+        # the run of the product merge, and of each later merge whose own commit is skip-release: all owe the release
+        for sha in [product, *runs]:
+            with self.subTest(sha=sha[:8]):
+                self.assertFalse(self.decide(sha).skip)
+
+    def test_the_head_marker_alone_does_not_decide(self):
+        head, _ = self.burst()
+        self.assertIn("[skip release]", git(self.repo.d, "log", "-1", "--format=%s", head))
+        self.assertFalse(self.decide(head).skip)
+
+    # the first run after a tag, the metadata commit, the re-run
+    def test_the_commit_a_tag_points_at_owes_nothing(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        v = self.decide(released, "v0.1.0")
+        self.assertTrue(v.skip, v.reason)
+
+    def test_the_release_metadata_commit_right_after_a_release_does_not_release(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        meta = self.step("chore: release metadata for v0.1.0 [skip release] (#2)", self.METADATA)
+        v = self.decide(meta, "v0.1.0")
+        self.assertTrue(v.skip, v.reason)
+        self.assertEqual(self.title_calls, [])  # no lookup: the subject carries the marker
+
+    def test_the_metadata_commit_is_released_over_when_a_product_commit_follows_it(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        self.step("chore: release metadata for v0.1.0 [skip release] (#2)", self.METADATA)
+        nxt = self.step("fix: y (#3)", self.PRODUCT)
+        self.assertFalse(self.decide(nxt, "v0.1.0").skip)
+
+    def test_a_rerun_after_the_release_is_idempotent(self):
+        head, product = self.burst()
+        self.assertFalse(self.decide(head).skip)
+        self.tag("v0.167.6", head)  # what the release run does
+        for sha in (head, product):  # a manual re-run of the finished run, or of an older one
+            with self.subTest(sha=sha[:8]):
+                v = self.decide(sha, "v0.167.6")
+                self.assertTrue(v.skip, v.reason)
+        later = self.step("docs: y [skip release] (#9)", {"docs/a.md": "a"})
+        self.assertTrue(self.decide(later, "v0.167.6").skip)
+
+    # several commits, a revert, a merge commit
+    def test_the_oldest_of_several_product_commits_is_enough(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        self.step("docs: a (#2)", {"docs/a.md": "a"})
+        self.step("feat: b (#3)", {"internal/storage/b.go": "package storage\n"})
+        self.step("test: c [skip release] (#4)", self.TESTONLY)
+        head = self.step("docs: d (#5)", {"docs/a.md": "d"})
+        self.assertFalse(self.decide(head, "v0.1.0").skip)
+
+    def test_only_non_product_commits_in_the_range_do_not_release(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        self.step("docs: a (#2)", {"docs/a.md": "a"})
+        self.step("ci: b (#3)", self.CIONLY)
+        self.step("bench: c (#4)", {"scripts/bench/run.sh": "x"})
+        head = self.step("chore: release metadata for v0.0.9 [skip release] (#5)", self.METADATA)
+        self.assertTrue(self.decide(head, "v0.1.0").skip)
+
+    def test_a_revert_is_a_product_commit_and_releases(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        self.step("feat: b (#2)", {"internal/storage/b.go": "package storage\n"})
+        head = self.step('Revert "feat: b" (#3)', {"internal/storage/b.go": "package storage\n"})
+        self.assertFalse(self.decide(head, "v0.1.0").skip)
+
+    def test_a_merge_commit_in_the_range_releases(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        git(self.repo.d, "checkout", "-q", "-b", "side", released)
+        self.step("docs: s [skip release]", {"docs/s.md": "s"})
+        git(self.repo.d, "checkout", "-q", "main")
+        self.step("docs: m [skip release]", {"docs/m.md": "m"})
+        git(self.repo.d, "merge", "-q", "--no-ff", "-m", "Merge branch side", "side")
+        head = git(self.repo.d, "rev-parse", "HEAD")
+        v = self.decide(head, "v0.1.0")
+        self.assertFalse(v.skip, v.reason)
+        self.assertIn("2 parents", v.reason)
+
+    # the marker, per commit
+    def test_a_marker_in_the_subject_of_a_product_commit_is_honoured_per_commit(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        head = self.step("refactor: tidy [skip release] (#2)", {"internal/storage/b.go": "package storage\n"})
+        self.assertTrue(self.decide(head, "v0.1.0").skip)
+        self.assertEqual(self.title_calls, [])
+
+    def test_a_marker_only_in_the_pull_request_title_is_honoured_per_commit(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        marked = self.step("refactor: tidy (#2)", {"internal/storage/b.go": "package storage\n"})
+        self.titles[marked] = ["refactor: tidy [skip release]"]
+        head = self.step("docs: d (#3)", {"docs/a.md": "d"})
+        self.assertTrue(self.decide(head, "v0.1.0").skip)
+        self.assertEqual(self.title_calls, [marked])  # only the commit that would release is looked up
+
+    def test_an_unreadable_title_fails_closed_unless_another_commit_is_owed(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        unknown = self.step("refactor: tidy (#2)", {"internal/storage/b.go": "package storage\n"})
+
+        def down(sha):
+            def fetch(number):
+                raise OSError("api down")
+            return fetch
+        v = self.decide(unknown, "v0.1.0", titles_for=down)
+        self.assertTrue(v.skip and v.failed, v)
+        self.assertIn(unknown[:12], v.reason)
+        # a second owed commit with a readable title releases: the release covers the unreadable one too
+        owed = self.step("fix: z (#3)", {"internal/storage/c.go": "package storage\n"})
+        titles = {unknown: None, owed: ["fix: z"]}
+
+        def mixed(sha):
+            return down(sha) if titles[sha] is None else (lambda number: titles[sha])
+        v = self.decide(owed, "v0.1.0", titles_for=mixed)
+        self.assertFalse(v.skip or v.failed, v)
+
+    def test_per_commit_rules_still_apply_inside_the_range(self):
+        # Go module files release, a pure digest addition does not
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        self.repo.commit("docker: base", {"Dockerfile.logs": BLOBS[next(f for f in CASES["pr-687"]["files"] if f["path"] == "Dockerfile.logs")["base"]]})
+        self.tag("v0.1.1", git(self.repo.d, "rev-parse", "HEAD"))
+        digest_added = self.repo.commit("docker: pin digests (#687)", {"Dockerfile.logs": BLOBS[next(f for f in CASES["pr-687"]["files"] if f["path"] == "Dockerfile.logs")["head"]]})
+        self.assertTrue(self.decide(digest_added, "v0.1.1").skip)
+        gomod = self.step("deps: bump (#8)", {"go.mod": "module x\n"})
+        self.assertFalse(self.decide(gomod, "v0.1.1").skip)
+
+    # doubts release
+    def test_no_usable_tag_releases(self):
+        head = self.step("docs: a [skip release]", {"docs/a.md": "a"})
+        for tag in ("v0.0.0", "", "v1.2.3", "main", "v1.2.3-rc1", "v1.2.3\n", "v1.2.3$(touch pwned)", "v1.2.3;id", "../v1", "v01.2.3"):
+            with self.subTest(tag=tag):
+                v = self.decide(head, tag)
+                self.assertFalse(v.skip, v.reason)
+        self.assertFalse(os.path.exists(os.path.join(self.repo.d, "pwned")))
+
+    def test_a_tag_that_is_not_an_ancestor_releases(self):
+        side = self.step("fix: s", self.PRODUCT)
+        git(self.repo.d, "checkout", "-q", "-b", "other", self.base)
+        other = self.step("fix: o", {"internal/storage/o.go": "package storage\n"})
+        self.tag("v0.1.0", other)
+        git(self.repo.d, "checkout", "-q", "main")
+        v = self.decide(side, "v0.1.0")
+        self.assertFalse(v.skip, v.reason)
+        self.assertIn("ancestor", v.reason)
+
+    def test_a_long_range_releases(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        for i in range(r.MAX_RANGE + 1):
+            head = self.step(f"docs: {i} [skip release]", {"docs/a.md": "a"})
+        v = self.decide(head, "v0.1.0")
+        self.assertFalse(v.skip, v.reason)
+        self.assertIn("more than", v.reason)
+
+    def test_a_manual_run_always_releases_even_at_a_tagged_commit(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        self.assertFalse(self.decide(released, "v0.1.0", event="workflow_dispatch").skip)
+
+    def test_another_ref_is_refused_loudly(self):
+        head, _ = self.burst()
+        v = self.decide(head, ref="refs/heads/x")
+        self.assertTrue(v.skip and v.failed, v)
+
+    def test_a_bad_sha_releases(self):
+        for sha in ("", "HEAD", "z" * 40):
+            with self.subTest(sha):
+                self.assertFalse(self.decide(sha, "v0.1.0").skip)
+
+    def test_the_decision_is_made_with_the_parents_classifier_of_each_commit(self):
+        # a commit that rewrites the classifier to say product=0 cannot hide itself
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        self.repo.commit("rewrite", {"scripts/ci/pr_classify.py": "print('product=1')\nprint('reason=parent')\n", "scripts/bench/a.sh": "a\n"})
+        head = self.repo.commit("change", {"scripts/ci/pr_classify.py": "print('product=0')\n", "scripts/bench/a.sh": "b\n"})
+        v = self.decide(head, "v0.1.0", classifier=None)
+        self.assertFalse(v.skip, v.reason)
+
+    def test_an_exception_never_escapes(self):
+        def boom(*a):
+            raise MemoryError("x")
+        head, _ = self.burst()
+        v = self.decide(head, classify=boom)
+        self.assertFalse(v.skip, v.reason)
+
+
 class Entrypoint(unittest.TestCase):
-    def run_main(self, env):
+    def run_main(self, repo, env):
         with tempfile.TemporaryDirectory() as out:
             paths = {k: os.path.join(out, k) for k in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY")}
-            e = {**os.environ, **env, **paths}
-            for k in ("EVENT_NAME", "BEFORE_SHA", "GITHUB_SHA"):
-                e.setdefault(k, "")
-            p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "..", "release_product_check.py")], cwd=env.get("CWD") or out,
+            e = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GITHUB_REPOSITORY", "GITHUB_REF", "LATEST_TAG", "EVENT_NAME")}
+            e.update(env)
+            e.update(paths)
+            p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "..", "release_product_check.py")], cwd=repo,
                                env=e, capture_output=True, text=True)
             written = {k: pathlib.Path(v).read_text() if os.path.exists(v) else "" for k, v in paths.items()}
         return p, written
 
+    def setUp(self):
+        self.repo = Repo()
+        self.addCleanup(self.repo.close)
+        files = {}
+        for name in ("pr_classify.py", "check_changelog_pr.py", "release_skip.py"):
+            with open(os.path.join(HERE, "..", name), encoding="utf-8") as fh:
+                files["scripts/ci/" + name] = fh.read()
+        self.repo.commit("base", {**files, "internal/x/a.go": "a\n", "docs/a.md": "a\n"})
+        self.tagged = self.repo.commit("fix: x (#1)", {"internal/x/a.go": "b\n"})
+        git(self.repo.d, "tag", "v0.1.0", self.tagged)
+
     def test_garbage_environment_exits_zero_and_releases(self):
-        p, w = self.run_main({"GITHUB_SHA": "not-a-sha", "EVENT_NAME": "push"})
+        p, w = self.run_main(self.repo.d, {"GITHUB_SHA": "not-a-sha", "EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main"})
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(w["GITHUB_OUTPUT"], "skip=false\n")
         self.assertIn("release", w["GITHUB_STEP_SUMMARY"])
 
     def test_a_skip_is_written_for_the_step_output(self):
-        repo = Repo()
-        self.addCleanup(repo.close)
-        repo.commit("base", {"scripts/bench/a.sh": "a\n", "docs/a.md": "a\n"})
-        sha = repo.commit("docs", {"docs/a.md": "b\n"})
-        p, w = self.run_main({"GITHUB_SHA": sha, "EVENT_NAME": "push", "BEFORE_SHA": git(repo.d, "rev-parse", "HEAD~1"), "CWD": repo.d})
+        sha = self.repo.commit("docs", {"docs/a.md": "b\n"})
+        p, w = self.run_main(self.repo.d, {"GITHUB_SHA": sha, "EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "LATEST_TAG": "v0.1.0"})
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(w["GITHUB_OUTPUT"], "skip=true\n")
-        self.assertIn("skip (no product change)", p.stdout)
+        self.assertIn("skip (no release owed)", p.stdout)
 
-    def test_the_workflow_runs_the_check_in_the_existing_skip_step(self):
+    def test_an_owed_commit_behind_a_skip_release_head_releases(self):
+        self.repo.commit("fix: lost (#2)", {"internal/x/a.go": "c\n"})
+        sha = self.repo.commit("ci: y [skip release] (#3)", {"docs/a.md": "c\n"})
+        # no token: the title of the owed commit cannot be read, which fails closed and turns the run red
+        p, w = self.run_main(self.repo.d, {"GITHUB_SHA": sha, "EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "LATEST_TAG": "v0.1.0"})
+        self.assertEqual((p.returncode, w["GITHUB_OUTPUT"]), (1, "skip=true\n"))
+        self.assertTrue(any(l.startswith("::warning::") for l in p.stdout.splitlines()), p.stdout)
+
+    def test_a_direct_push_needs_a_readable_title_too(self):
+        # a direct push: the lookup is by SHA and needs the token as well
+        self.repo.commit("fix: direct", {"internal/x/a.go": "d\n"})
+        sha = self.repo.commit("ci: y [skip release]", {"docs/a.md": "d\n"})
+        p, w = self.run_main(self.repo.d, {"GITHUB_SHA": sha, "EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "LATEST_TAG": "v0.1.0"})
+        self.assertEqual(w["GITHUB_OUTPUT"], "skip=true\n")
+
+    def test_manual_run_releases_and_other_ref_is_refused(self):
+        sha = self.repo.commit("docs", {"docs/a.md": "b\n"})
+        p, w = self.run_main(self.repo.d, {"GITHUB_SHA": sha, "EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/x"})
+        self.assertEqual((p.returncode, w["GITHUB_OUTPUT"]), (0, "skip=false\n"))
+        p, w = self.run_main(self.repo.d, {"GITHUB_SHA": sha, "EVENT_NAME": "push", "GITHUB_REF": "refs/heads/x", "LATEST_TAG": "v0.1.0"})
+        self.assertEqual((p.returncode, w["GITHUB_OUTPUT"]), (1, "skip=true\n"))
+
+    def test_the_workflow_runs_the_range_check_after_the_version_step_and_never_gates_on_the_head_marker(self):
         import yaml
         text = (pathlib.Path(HERE).parents[2] / ".github" / "workflows" / "auto-release.yaml").read_text(encoding="utf-8")
         wf = yaml.safe_load(text)
-        steps = {s.get("id"): s for s in wf["jobs"]["decide"]["steps"] if s.get("id")}
-        step = steps["skip"]
+        steps = wf["jobs"]["decide"]["steps"]
+        ids = [s.get("id") for s in steps]
+        self.assertNotIn("skip_release", ids)
+        self.assertLess(ids.index("version"), ids.index("skip"))
+        self.assertLess(ids.index("skip"), ids.index("final"))
+        step = steps[ids.index("skip")]
         self.assertEqual(step["run"].strip(), "python3 scripts/ci/release_product_check.py")
-        self.assertEqual(step["env"]["BEFORE_SHA"], "${{ github.event.before }}")
-        self.assertEqual(step["if"], "steps.skip_release.outputs.skip != 'true'")
-        # the release decision still reads the same output, and every later job follows it
+        self.assertEqual(step["env"]["LATEST_TAG"], "${{ steps.version.outputs.latest_tag }}")
+        self.assertEqual(step["env"]["GITHUB_TOKEN"], "${{ secrets.GITHUB_TOKEN }}")
+        self.assertNotIn("BEFORE_SHA", step["env"])
+        self.assertNotIn("if", step)
+        self.assertNotIn("if", steps[ids.index("version")])
+        self.assertNotIn("skip_release", text)
         self.assertIn("SKIP_PRODUCT: ${{ steps.skip.outputs.skip }}", text)
         self.assertIn("needs.decide.outputs.release == 'true'", text)
+        self.assertEqual(steps[0]["with"]["fetch-depth"], 0)  # the range needs the history and the tags
 
 
 if __name__ == "__main__":

@@ -1,31 +1,24 @@
-#!/usr/bin/env python3
-"""Decide whether a push to main must NOT cut a release.
+"""The `[skip release]` marker: does a commit opt out of a release?
 
-A push is skipped when the head commit's subject contains `[skip release]`, or
-when the pull request(s) that produced the pushed commit have it in their TITLE:
-GitHub's default squash subject for a one-commit PR is the commit subject, not
-the PR title, so a marker in the title alone is lost from the commit. The PR is
-found from the pushed SHA (GET /commits/{sha}/pulls), so squash, merge and
-rebase merges and backports whose subject quotes another PR all look up the
-right one. A job re-run re-reads the title, so editing it and re-running works.
+A commit is marked when its subject contains `[skip release]`, or when the pull request(s)
+that produced it have it in their TITLE: GitHub's default squash subject for a one-commit PR
+is the commit subject, not the PR title, so a marker in the title alone is lost from the
+commit. The PR is found from the commit SHA (GET /commits/{sha}/pulls), so squash, merge and
+rebase merges and backports whose subject quotes another PR all look up the right one. A job
+re-run re-reads the title, so editing it and re-running works.
 
-Fails closed and loudly. When the PR title cannot be read after 3 attempts the
-push is NOT released: the decision is written to the run summary, an annotation
-is printed, `skip=true` is written, and the step exits 1 so the run turns red;
-a maintainer then starts the workflow by hand (workflow_dispatch).
+Fails closed. When the PR title cannot be read after 3 attempts the commit is NOT released:
+decide() returns a failed decision; scripts/ci/release_product_check.py, which asks this
+question for every commit since the last release tag (#756), turns the run red and a
+maintainer then starts the workflow by hand (workflow_dispatch).
 
-A manual run (GITHUB_EVENT_NAME=workflow_dispatch) is never skipped, and only
-runs on main: any other ref is refused.
-
-Env: COMMIT_MSG, GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_SHA, GITHUB_TOKEN,
-GITHUB_REPOSITORY, GITHUB_OUTPUT, GITHUB_STEP_SUMMARY.
+Only runs on main: any other ref is refused. A manual run (event workflow_dispatch) is never
+skipped.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
-import sys
 import time
 import urllib.request
 from typing import Callable
@@ -110,25 +103,3 @@ def github_titles(repo: str, token: str, sha: str, sleep: Callable[[float], None
         raise last
 
     return fetch
-
-
-def main() -> int:
-    env = os.environ
-    d = decide(env.get("COMMIT_MSG", ""),
-               github_titles(env.get("GITHUB_REPOSITORY", ""), env.get("GITHUB_TOKEN", ""), env.get("GITHUB_SHA", "")),
-               env.get("GITHUB_EVENT_NAME", "push"), env.get("GITHUB_REF", MAIN_REF))
-    verdict = "skip (no release)" if d.skip else "release"
-    print(f"release decision: {verdict}: {d.reason}")
-    if d.failed:
-        print(f"::warning::Auto Release: {d.reason}")
-    if env.get("GITHUB_OUTPUT"):
-        with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-            fh.write(f"skip={str(d.skip).lower()}\n")
-    if env.get("GITHUB_STEP_SUMMARY"):
-        with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
-            fh.write(f"### Auto Release decision\n\n**{verdict}**: {d.reason}\n\n")
-    return 1 if d.failed else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

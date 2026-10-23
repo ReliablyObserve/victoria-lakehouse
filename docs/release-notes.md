@@ -97,7 +97,7 @@ a token that can write:
 
 | Job | Permissions | What it does |
 |-----|-------------|--------------|
-| `release-decide` | read | Decides whether to release and which version (validated: only `vMAJOR.MINOR.PATCH` tags count, the `pr` input must be a number), and publishes the decision. |
+| `release-decide` | read | Decides whether to release (is any commit since the last release tag a product change without a `[skip release]` marker; see below) and which version (validated: only `vMAJOR.MINOR.PATCH` tags count, the `pr` input must be a number), and publishes the decision. |
 | `release-build` | read, no secrets | Builds the eight binaries, the four multi-arch image archives (default and FIPS, for logs and traces), the Helm chart, the release notes and the files of the release-metadata pull request, and uploads them as workflow artifacts. |
 | `release-publish` | packages and contents write | Copies the artifacts: the images and the chart to GHCR (and the images to Docker Hub when enabled), and creates the GitHub release as a draft with the binaries and `checksums.txt`. Runs no build tool. |
 | `release-metadata` | contents and pull requests write, the personal token, environment `release` | Pushes the tag, publishes the draft release, and opens the release-metadata pull request from the four prepared files. Runs no repository code. |
@@ -105,6 +105,18 @@ a token that can write:
 The release stays a draft until the tag exists, so the tag is always pushed with the personal token
 and never created by the release itself. Releases are still serialized (one run at a time, in the
 `auto-release` concurrency group).
+
+### Which merges release
+
+The decision looks at every commit since the last release tag, not at the pushed commit alone. Runs
+are serialised and GitHub keeps one pending run per group, so when merges land in a burst the run of
+a middle merge can be cancelled; the next run that completes still releases it, even when its own
+commit is docs, CI, a test or a `[skip release]` merge. A merge is released when it changes anything
+that ships (code, the Go modules or toolchain, a changed image base digest or tag, the upstream pins)
+and neither its subject nor its pull request title carries `[skip release]`. A release's own metadata
+merge never releases. Re-running a finished run releases nothing. The version bump is still taken from
+the labels and subject of the pushed commit's pull request. See `tests/conformance/README.md`
+("Release decision") for the full rules.
 
 ### Dry run
 
