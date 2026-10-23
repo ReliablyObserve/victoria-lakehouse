@@ -185,8 +185,10 @@ def run_classifier(repo: str, base: str, head: str, classifier: str | None = Non
                                  capture_output=True, timeout=60).stdout
             subprocess.run(["tar", "-x", "-C", tmp, "-f", "-"], input=tar, check=True, capture_output=True, timeout=60)
             script = os.path.join(tmp, "scripts", "ci", "pr_classify.py")
+        # the classifier is repository code from the parent commit: it never sees the API token
+        env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
         out = subprocess.run([sys.executable, "-I", script, "--base", base, "--head", head], cwd=repo, check=True,
-                             capture_output=True, text=True, timeout=CLASSIFY_TIMEOUT).stdout
+                             capture_output=True, text=True, timeout=CLASSIFY_TIMEOUT, env=env).stdout
     kv: dict[str, str] = {}
     for line in out.split("\n"):
         if "=" in line:

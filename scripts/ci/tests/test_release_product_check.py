@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -783,6 +784,17 @@ class RangeDecision(unittest.TestCase):
         v = self.decide(head, "v0.1.0", classifier=None)
         self.assertFalse(v.skip, v.reason)
 
+    def test_the_classifier_never_sees_the_api_token(self):
+        released = self.step("fix: x (#1)", self.PRODUCT)
+        self.tag("v0.1.0", released)
+        out = os.path.join(self.repo.d, "..", "token_seen.txt")
+        self.repo.commit("probe classifier", {"scripts/ci/pr_classify.py": "import os\nopen(%r, 'w').write(os.environ.get('GITHUB_TOKEN', 'none') + os.environ.get('GH_TOKEN', 'none'))\nprint('product=0')\n" % out})
+        head = self.step("bench: x", {"scripts/bench/run.sh": "x"})
+        with unittest.mock.patch.dict(os.environ, {"GITHUB_TOKEN": "sekrit", "GH_TOKEN": "sekrit2"}):
+            self.decide(head, "v0.1.0", classifier=None)
+        self.addCleanup(lambda: os.path.exists(out) and os.remove(out))
+        self.assertEqual(open(out).read(), "nonenone")
+
     def test_an_exception_never_escapes(self):
         def boom(*a):
             raise MemoryError("x")
@@ -827,7 +839,7 @@ class Entrypoint(unittest.TestCase):
         self.assertEqual(w["GITHUB_OUTPUT"], "skip=true\n")
         self.assertIn("skip (no release owed)", p.stdout)
 
-    def test_an_owed_commit_behind_a_skip_release_head_releases(self):
+    def test_an_owed_commit_behind_a_skip_release_head_with_an_unreadable_title_fails_closed(self):
         self.repo.commit("fix: lost (#2)", {"internal/x/a.go": "c\n"})
         sha = self.repo.commit("ci: y [skip release] (#3)", {"docs/a.md": "c\n"})
         # no token: the title of the owed commit cannot be read, which fails closed and turns the run red
