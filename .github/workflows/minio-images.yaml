@@ -28,9 +28,10 @@ permissions:
   contents: read
   packages: write
 
+# Runs on one ref queue (the tags are immutable and pushed once); only a superseded pull request run is cancelled.
 concurrency:
   group: minio-images-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Upstream pins. COMMIT is the tag object id (`git ls-remote --tags <repo> <tag>`);
