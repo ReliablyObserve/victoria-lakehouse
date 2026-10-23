@@ -537,18 +537,48 @@ else
   echo "  FAIL  both keys refused for another reason:"; sed 's/^/         /' /tmp/helm_test_err; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
 fi
 
-# Peer authentication is opt-in (peerAuth.enabled): off renders no flag, on needs the
-# Secret and renders -lakehouse.peer.auth-enabled=true into every pod of both signals.
+# Peer authentication (peerAuth.enabled, tri-state): unset (null) renders no flag, so a
+# key from a Secret is enforced by the binary as before the switch existed; false
+# renders =false (send-only); true needs the Secret and renders =true into every pod of
+# both signals.
 echo ""
 echo "--- Peer authentication switch ---"
 expect_render "no auth-enabled flag by default" no \
   "lakehouse.peer.auth-enabled"
-expect_render "a key from a Secret alone does not enforce" no \
+expect_render "a key from a Secret alone passes no flag (the binary enforces a configured key)" no \
   "lakehouse.peer.auth-enabled" \
   --set "peerAuth.existingSecret=lh-peer"
+expect_render "peerAuth.enabled=false passes the send-only flag" yes \
+  '"-lakehouse.peer.auth-enabled=false"' \
+  --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=false"
+expect_render "peerAuth.enabled=false does not pass the enforcing flag" no \
+  '"-lakehouse.peer.auth-enabled=true"' \
+  --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=false"
+# NOTES.txt: one branch for each of no key, key enforced, key send-only.
+expect_notes() {
+  local description="$1" pattern="$2"
+  shift 2
+  local out
+  out="$(helm install test-release "${CHART_DIR}" --dry-run=client "$@" 2>/dev/null || true)"
+  if grep -qF -- "${pattern}" <<<"${out}"; then
+    echo "  PASS  ${description}"; PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL  ${description}: NOTES lacks '${pattern}'"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  fi
+}
+expect_notes "NOTES: no key warns that peer authentication is off" "peer authentication is off (no peer key is set)"
+expect_notes "NOTES: a key and no switch says it is enforced" "Peer authentication is on" --set "peerAuth.existingSecret=lh-peer"
+expect_notes "NOTES: a key with peerAuth.enabled=false warns it is not enforced" "a peer key is set but not enforced" \
+  --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=false"
 expect_render "peerAuth.enabled passes the enforcement flag" yes \
   '"-lakehouse.peer.auth-enabled=true"' \
   --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=true"
+n_off="$(helm template test-release "${CHART_DIR}" --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=false" --set "traces.enabled=true" 2>/dev/null | grep -c 'lakehouse.peer.auth-enabled=false' || true)"
+if [[ "${n_off}" == "4" ]]; then
+  echo "  PASS  the send-only flag reaches all four StatefulSets (logs and traces, insert and select)"; PASSED=$((PASSED + 1))
+else
+  echo "  FAIL  the send-only flag reaches ${n_off} StatefulSet(s), want 4"; FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+fi
 n_flags="$(helm template test-release "${CHART_DIR}" --set "peerAuth.existingSecret=lh-peer" --set "peerAuth.enabled=true" --set "traces.enabled=true" 2>/dev/null | grep -c 'lakehouse.peer.auth-enabled=true' || true)"
 if [[ "${n_flags}" == "4" ]]; then
   echo "  PASS  the enforcement flag reaches all four StatefulSets (logs and traces, insert and select)"; PASSED=$((PASSED + 1))
