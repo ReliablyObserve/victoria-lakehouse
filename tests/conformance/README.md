@@ -180,7 +180,7 @@ One entry per capability:
 ```
 
 **Releases** are read from `CHANGELOG.md`, never recorded in the catalog: after every release
-the release workflow assembles the `changelog.d/` fragments (and any hand-written `[Unreleased]` bullets)
+the release workflow assembles the `changelog.d/` fragments
 under the new version heading and does not touch the catalog, so a recorded "unreleased" would go stale the moment a feature ships.
 `docs/features.md` shows a feature's first release as the oldest version among its claimed
 bullets and lists every version they sit under. An entry still under `[Unreleased]` reads "the
@@ -233,7 +233,7 @@ Go under `internal/`, `cmd/` or `lakehouse-traces/`, adds a YAML config key to a
 `tests/conformance/registry/features/**` also changed and the generated documents are current.
 The first three are set comparisons rather than diff greps, so moving text is never mistaken
 for a new capability: a bold bullet under `### Fixed` or `### Changed`, the release workflow
-moving the `[Unreleased]` bullets or the fragments under a version heading, and a registration or config field
+moving the fragments under a version heading, and a registration or config field
 that only moved within its file are not feature signals.
 
 Checklist:

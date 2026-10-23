@@ -307,12 +307,6 @@ func TestFragmentsAtTag(t *testing.T) {
 	}
 }
 
-// releasedFragmentGrace is how many newer releases a release's metadata pull request may be behind
-// before a fragment it should have removed is reported. The serial release protocol keeps at most one
-// metadata pull request pending, and a burst of merges can put a second release on top of it; a
-// fragment that is still there three releases later was released and never removed.
-const releasedFragmentGrace = 3
-
 var releaseTagName = regexp.MustCompile(`^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$`)
 
 // fragmentBlobs is path -> blob id of the fragment-named regular files of changelog.d/ at rev.
@@ -336,10 +330,46 @@ func fragmentBlobs(t *testing.T, root, rev string) map[string]string {
 	return out
 }
 
-// leftBehindFragments lists the fragments of HEAD that are byte-identical at a release tag more than
-// `grace` releases older than the newest one: released, yet never removed by a metadata pull request.
-func leftBehindFragments(t *testing.T, root string, grace int) []string {
+// abandonedAfter is how many releases with a section may follow a release without one before its
+// metadata pull request is called closed: the serial protocol keeps one or two pending, and a section
+// merged out of order can trail a release or two.
+const abandonedAfter = 3
+
+// leftBehindFragments lists the fragments of HEAD that outlived their release. The fragment is
+// byte-identical at the OLDEST release tag T that holds it, and either
+//   - `## [T]` exists in HEAD's CHANGELOG.md: the metadata pull request merged (it wrote the section)
+//     and the file is still here, so every later release would skip it; or
+//   - `## [T]` does NOT exist while at least abandonedAfter newer releases have a section: the
+//     metadata pull request of T was closed or never merged, and the fragment is in no section.
+//
+// A release without a section and fewer newer sections is merely pending.
+func leftBehindFragments(t *testing.T, root string) []string {
 	t.Helper()
+	head := fragmentBlobs(t, root, "HEAD")
+	if len(head) == 0 {
+		return nil
+	}
+	changelog, ok := git(t, root, "show", "HEAD:CHANGELOG.md")
+	if !ok {
+		return nil
+	}
+	sections := map[string]bool{}
+	var sectionTags []string
+	for _, v := range registry.ChangelogVersions([]byte(changelog)) {
+		if releaseTagName.MatchString("v" + v) {
+			sections["v"+v] = true
+			sectionTags = append(sectionTags, "v"+v)
+		}
+	}
+	newerSections := func(tag string) int {
+		n := 0
+		for _, st := range sectionTags {
+			if semverLess(tag, st) {
+				n++
+			}
+		}
+		return n
+	}
 	tagList, _ := git(t, root, "tag")
 	var tags []string
 	for _, tg := range strings.Fields(tagList) {
@@ -348,35 +378,25 @@ func leftBehindFragments(t *testing.T, root string, grace int) []string {
 		}
 	}
 	sort.Slice(tags, func(i, j int) bool { return semverLess(tags[i], tags[j]) })
-	if len(tags) <= grace {
-		return nil
-	}
-	head := fragmentBlobs(t, root, "HEAD")
-	if len(head) == 0 {
-		return nil
-	}
 	var out []string
-	reported := map[string]bool{}
-	for _, tg := range tags[:len(tags)-grace] {
+	found := map[string]bool{}
+	for _, tg := range tags { // oldest first: the first tag that holds the bytes is the one that released them
 		for path, blob := range fragmentBlobs(t, root, tg) {
-			if head[path] == blob && !reported[path] {
-				reported[path] = true
-				out = append(out, fmt.Sprintf("%s: byte-identical at %s, %d releases older than %s", path, tg,
-					len(tags)-1-indexOf(tags, tg), tags[len(tags)-1]))
+			if head[path] != blob || found[path] {
+				continue
+			}
+			found[path] = true
+			switch {
+			case sections[tg]:
+				out = append(out, fmt.Sprintf("%s: released in %s, whose section is already in CHANGELOG.md", path, tg))
+			case newerSections(tg) >= abandonedAfter:
+				out = append(out, fmt.Sprintf("%s: released in %s, which has no section in CHANGELOG.md although %d newer releases do: "+
+					"its metadata PR was closed or never merged: restore the section or file it by hand", path, tg, newerSections(tg)))
 			}
 		}
 	}
 	sort.Strings(out)
 	return out
-}
-
-func indexOf(list []string, s string) int {
-	for i, v := range list {
-		if v == s {
-			return i
-		}
-	}
-	return -1
 }
 
 func semverLess(a, b string) bool {
@@ -391,9 +411,8 @@ func semverLess(a, b string) bool {
 	return false
 }
 
-// TestNoReleasedFragmentIsLeftBehind is the backstop for a release-metadata pull request that never
-// merged (or whose job failed): the release took the fragment, so its CHANGELOG.md section is missing
-// and the file would sit in changelog.d/ for good.
+// TestNoReleasedFragmentIsLeftBehind is the backstop for a fragment that outlived its release-metadata
+// pull request (the section was filed by hand or by a merge, and the file was not removed).
 func TestNoReleasedFragmentIsLeftBehind(t *testing.T) {
 	root, err := inventory.RepoRoot()
 	if err != nil {
@@ -405,11 +424,13 @@ func TestNoReleasedFragmentIsLeftBehind(t *testing.T) {
 	if tags, _ := git(t, root, "tag"); strings.TrimSpace(tags) == "" {
 		t.Skip("no tags fetched — this gate needs them (actions/checkout fetch-depth: 0)")
 	}
-	for _, left := range leftBehindFragments(t, root, releasedFragmentGrace) {
+	for _, left := range leftBehindFragments(t, root) {
 		t.Errorf("changelog.d/ %s.\n"+
-			"  That release took the fragment, but its release-metadata pull request never removed it, so the\n"+
-			"  fragment is in no CHANGELOG.md section. Find the pull request \"chore: release metadata for <tag>\":\n"+
-			"  merge it, or if it was lost, move the bullet into the section of that release by hand and delete the file.", left)
+			"  Clear it in a pull request with a docs: or chore: subject (a feat:, fix: or perf: subject asks for a new fragment):\n"+
+			"  - if the section of that release already holds the fragment's bullet, delete the file;\n"+
+			"  - if it does not (the metadata pull request was closed, or the section was written without it), file the\n"+
+			"    bullet under the section [T] of that release and delete the file in the SAME pull request: a delete-only\n"+
+			"    pull request is refused by the changelog gate when the bullet is not in the section.", left)
 	}
 }
 
@@ -435,6 +456,14 @@ func TestLeftBehindFragments(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	changelog := func(sections ...string) {
+		t.Helper()
+		text := "# c\n\n## [Unreleased]\n"
+		for _, v := range sections {
+			text += "\n## [" + v + "] - 2026-01-01\n"
+		}
+		write("CHANGELOG.md", text)
+	}
 	release := func(tag string) {
 		t.Helper()
 		write("rel.txt", tag)
@@ -443,34 +472,89 @@ func TestLeftBehindFragments(t *testing.T) {
 		run("tag", tag)
 	}
 	run("init", "-q", "-b", "main")
+	changelog()
 	release("v0.1.0")
 	write("changelog.d/stuck.fixed.md", "- **Stuck.** t\n")
 	write("changelog.d/README.md", "- **Readme prose.** t\n")
-	release("v0.2.0") // takes stuck.fixed.md; its metadata PR never merges
-	release("v0.3.0")
-	release("v0.4.0")
+	if err := os.Symlink("stuck.fixed.md", filepath.Join(root, "changelog.d", "link.fixed.md")); err != nil {
+		t.Fatal(err)
+	}
+	release("v0.2.0") // takes stuck.fixed.md; its section gets filed, the file is left behind
+	release("v0.3.0") // the fragment is byte-identical here too: reported once, for v0.2.0
 	write("changelog.d/fresh.fixed.md", "- **Fresh.** t\n")
-	release("v0.5.0") // takes fresh.fixed.md; its metadata PR is pending
+	release("v0.4.0") // takes fresh.fixed.md; its metadata pull request is pending
 	run("tag", "foo-stray")
 	run("tag", "v0.6.0-rc1")
 
-	got := leftBehindFragments(t, root, 3)
-	if len(got) != 1 || !strings.HasPrefix(got[0], "changelog.d/stuck.fixed.md: byte-identical at v0.2.0, 3 releases older than v0.5.0") {
-		t.Fatalf("want exactly the stuck fragment, got %v", got)
+	// no section yet for any release: every released fragment is merely pending, however old
+	if got := leftBehindFragments(t, root); len(got) != 0 {
+		t.Fatalf("a release without a section is pending, not left behind: %v", got)
 	}
-	if got := leftBehindFragments(t, root, 4); len(got) != 0 {
-		t.Errorf("a larger grace tolerates it: %v", got)
+	// v0.2.0's section exists and stuck.fixed.md is still here, as are 2 releases after it (no grace count)
+	// the bytes are at v0.2.0 (section exists) and at v0.3.0 (none): the FIRST tag decides, so it is reported
+	changelog("0.2.0")
+	run("add", "-A")
+	run("commit", "-q", "-m", "section of 0.2.0 only")
+	if got := leftBehindFragments(t, root); len(got) != 1 || !strings.Contains(got[0], "stuck.fixed.md: released in v0.2.0, whose section") {
+		t.Fatalf("the first tag with the bytes decides: %v", got)
 	}
-	// the pending release's own fragment, the README and stray tags are never reported
-	for _, g := range leftBehindFragments(t, root, 1) {
-		if strings.Contains(g, "fresh") || strings.Contains(g, "README") {
+	changelog("0.3.0", "0.2.0") // v0.3.0 holds the same bytes and has a section too: still reported once, for v0.2.0
+	run("add", "-A")
+	run("commit", "-q", "-m", "sections of 0.2.0 and 0.3.0")
+	got := leftBehindFragments(t, root)
+	if len(got) != 1 || got[0] != "changelog.d/stuck.fixed.md: released in v0.2.0, whose section is already in CHANGELOG.md" {
+		t.Fatalf("want exactly the stuck fragment, once, for v0.2.0: %v", got)
+	}
+	// the pending release's own fragment, the symlink and the README are never reported
+	changelog("0.4.0", "0.3.0", "0.2.0")
+	run("add", "-A")
+	run("commit", "-q", "-m", "section of 0.4.0")
+	got = leftBehindFragments(t, root)
+	if len(got) != 2 || !strings.Contains(got[0], "fresh.fixed.md: released in v0.4.0") || !strings.Contains(got[1], "stuck.fixed.md") {
+		t.Fatalf("want fresh (v0.4.0) and stuck (v0.2.0): %v", got)
+	}
+	for _, g := range got {
+		if strings.Contains(g, "link") || strings.Contains(g, "README") {
 			t.Errorf("unexpected: %s", g)
 		}
 	}
-	// once the metadata pull request removes it, nothing is reported
-	run("rm", "-q", "changelog.d/stuck.fixed.md")
-	run("commit", "-q", "-m", "chore: release metadata for v0.2.0")
-	if got := leftBehindFragments(t, root, 3); len(got) != 0 {
+	// once removed, nothing is reported
+	run("rm", "-q", "changelog.d/stuck.fixed.md", "changelog.d/fresh.fixed.md")
+	run("commit", "-q", "-m", "remove them")
+	if got := leftBehindFragments(t, root); len(got) != 0 {
 		t.Errorf("removed fragments are not left behind: %v", got)
+	}
+
+	// The abandoned metadata pull request: R1 (takes lost.fixed.md), R2, then the sections of R2, R3, R4 and
+	// R5 merge but R1's never does. One or two newer sections are tolerated, the third is not.
+	write("changelog.d/lost.fixed.md", "- **Lost.** t\n")
+	release("v0.10.0") // R1
+	release("v0.11.0")
+	release("v0.12.0")
+	release("v0.13.0")
+	release("v0.14.0")
+	changelog("0.11.0", "0.12.0")
+	run("add", "-A")
+	run("commit", "-q", "-m", "two newer sections")
+	if got := leftBehindFragments(t, root); len(got) != 0 {
+		t.Fatalf("two newer sections are tolerated: %v", got)
+	}
+	changelog("0.11.0", "0.12.0", "0.13.0")
+	run("add", "-A")
+	run("commit", "-q", "-m", "three newer sections")
+	got = leftBehindFragments(t, root)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "changelog.d/lost.fixed.md: released in v0.10.0, which has no section in CHANGELOG.md although 3 newer releases do: its metadata PR was closed or never merged: restore the section or file it by hand") {
+		t.Fatalf("want the abandoned fragment named with its releasing tag: %v", got)
+	}
+	// the FIRST tag decides, not the previous one: lost.fixed.md is byte-identical at v0.11.0, which has a
+	// section, yet it is reported as abandoned for v0.10.0, once
+	if len(got) != 1 {
+		t.Fatalf("reported once: %v", got)
+	}
+	// filing it by hand and removing the file clears it
+	run("rm", "-q", "changelog.d/lost.fixed.md")
+	run("commit", "-q", "-m", "filed by hand")
+	if got := leftBehindFragments(t, root); len(got) != 0 {
+		t.Errorf("cleared: %v", got)
 	}
 }
