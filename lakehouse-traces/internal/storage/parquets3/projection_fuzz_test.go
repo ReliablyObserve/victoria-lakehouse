@@ -97,16 +97,30 @@ func projectionStorage() *Storage {
 // projection (nil = every column), applying the real row filter and the real
 // pipe machinery, and returns the canonical answer.
 func runProjectedQuery(t testing.TB, s *Storage, f *parquet.File, base time.Time, query string, project bool) (string, bool) {
-	q, err := logstorage.ParseQueryAtTimestamp(query, base.Add(10*time.Minute).UnixNano())
-	if err != nil {
+	rows, ok := runProjectedRows(t, s, f, base, query, project)
+	if !ok {
 		return "", false
 	}
+	return canonRows(rows), true
+}
+
+// runProjectedRows is runProjectedQuery before the canonical rendering: the
+// rows the query returned. breakProjection lets a test simulate a projection
+// defect by editing the projected column set.
+func runProjectedRows(t testing.TB, s *Storage, f *parquet.File, base time.Time, query string, project bool, breakProjection ...func(map[string]bool)) ([]map[string]string, bool) {
+	q, err := logstorage.ParseQueryAtTimestamp(query, base.Add(10*time.Minute).UnixNano())
+	if err != nil {
+		return nil, false
+	}
 	if logstorage.QueryHasFilterSubqueries(q) {
-		return "", false
+		return nil, false
 	}
 	var cols map[string]bool
 	if project {
 		cols = neededColumns(s.registry, logstorage.GetQueryNeededFields(q))
+		for _, brk := range breakProjection {
+			brk(cols) // tests only: simulate a projection defect
+		}
 	}
 	startNs, endNs := q.GetFilterTimeRange()
 	filter := parseFilterFromQuery(q)
@@ -136,9 +150,9 @@ func runProjectedQuery(t testing.TB, s *Storage, f *parquet.File, base time.Time
 		mu.Unlock()
 	})
 	if err != nil {
-		return "", false
+		return nil, false
 	}
-	return canonRows(out), true
+	return out, true
 }
 
 func canonRows(rows []map[string]string) string {
@@ -209,6 +223,11 @@ func (g projGen) pipe() string {
 	case 2:
 		return fmt.Sprintf(`stats by (%s, %s) count() as n`, f, f2)
 	case 3:
+		// sum() over a string value that only the non-constant parse accepts
+		// (leading zeros, longer than uint64, durations, byte sizes) depends on
+		// how rows are split into blocks in upstream VictoriaLogs (#689), so
+		// checkProjectionEquivalence compares the rows that feed this stats pipe
+		// and leaves out only the final value, and only for that class.
 		return fmt.Sprintf(`stats sum(%s) as n`, "duration")
 	case 4:
 		return fmt.Sprintf(`stats count_uniq(%s) as n`, f)
@@ -249,19 +268,40 @@ func (g projGen) query() string {
 	return q
 }
 
-func checkProjectionEquivalence(t testing.TB, s *Storage, f *parquet.File, base time.Time, query string) {
+// projOutcome says what checkProjectionEquivalence did with a query, so the
+// tests can assert that the property is still exercised and that the one
+// documented exclusion (#689) fires only where it is meant to.
+type projOutcome int
+
+const (
+	projNotRunnable    projOutcome = iota // the query does not run
+	projCompared                          // the whole answer was compared
+	projSumAvgExcluded                    // only the final sum()/avg() value was not compared (#689)
+)
+
+func checkProjectionEquivalence(t testing.TB, s *Storage, f *parquet.File, base time.Time, query string) projOutcome {
 	t.Helper()
 	want, ok := runProjectedQuery(t, s, f, base, query, false)
 	if !ok {
-		return // not a runnable query
+		return projNotRunnable // not a runnable query
 	}
 	got, ok := runProjectedQuery(t, s, f, base, query, true)
 	if !ok {
 		t.Fatalf("query %q runs with every column but fails with the projection", query)
 	}
-	if got != want {
-		t.Fatalf("projection changed the answer of %q\n  projected:\n%s\n  all columns:\n%s", query, got, want)
+	if got == want {
+		return projCompared
 	}
+	// The answers differ. The one difference that is not a projection defect:
+	// upstream sum()/avg() depend on how rows are split into blocks for a value
+	// that only the non-constant parse accepts (#689). Everything that feeds the
+	// aggregate is still compared exactly.
+	if agg, ok := parseSumAvgTail(query); ok && sumAvgBlockShapeSensitive(t, s, f, base, agg) {
+		checkSumAvgInputRowsEqual(t, s, f, base, agg)
+		return projSumAvgExcluded
+	}
+	t.Fatalf("projection changed the answer of %q\n  projected:\n%s\n  all columns:\n%s", query, got, want)
+	return projCompared
 }
 
 // TestProjectionEquivalence_Random checks the property over a fixed-seed sample
@@ -284,6 +324,8 @@ func TestProjectionEquivalence_Random(t *testing.T) {
 	rng := rand.New(rand.NewSource(273))
 	g := projGen{pick: rng.Intn}
 	runnable := 0
+	outcomes := map[projOutcome]int{}
+	sumAvgQueries := 0
 	// -short (the unit job) checks the first 80 generated queries; the heavy
 	// job, which runs every test that consults testing.Short(), checks all 250.
 	total := 250
@@ -295,7 +337,17 @@ func TestProjectionEquivalence_Random(t *testing.T) {
 		if _, ok := runProjectedQuery(t, s, f, base, query, false); ok {
 			runnable++
 		}
-		checkProjectionEquivalence(t, s, f, base, query)
+		outcomes[checkProjectionEquivalence(t, s, f, base, query)]++
+		if _, ok := parseSumAvgTail(query); ok {
+			sumAvgQueries++
+		}
+	}
+	t.Logf("%d generated queries: %d compared, %d not runnable, %d with the #689 sum/avg value left out (of %d sum/avg queries)",
+		total, outcomes[projCompared], outcomes[projNotRunnable], outcomes[projSumAvgExcluded], sumAvgQueries)
+	// The exclusion is an exception, never the rule: most sum/avg queries are
+	// still compared in full.
+	if sumAvgQueries > 0 && outcomes[projSumAvgExcluded]*2 > sumAvgQueries {
+		t.Fatalf("the #689 exclusion fired for %d of %d sum/avg queries; it must stay the exception", outcomes[projSumAvgExcluded], sumAvgQueries)
 	}
 	if runnable < total*12/25 {
 		t.Fatalf("only %d of %d generated queries were runnable; the generator no longer exercises the property", runnable, total)
@@ -307,7 +359,8 @@ func FuzzProjectionEquivalence(f *testing.F) {
 	for _, seed := range [][]byte{
 		{0}, {1, 2, 3, 4, 5, 6, 7, 8}, {4, 0, 1, 0, 4, 1, 2, 0}, {9, 9, 9, 9, 9, 9},
 		{5, 3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5}, {200, 100, 50, 25, 12, 6, 3, 1},
-		[]byte("A&91"), // math + rename over a time-range filter: found block-memory aliasing in the harness
+		[]byte("A&91"),       // math + rename over a time-range filter: found block-memory aliasing in the harness
+		[]byte("1\x030ba17"), // nightly crasher fuzz-logs-18: rename of a zero-padded id into a summed field (#689, upstream block-shape dependence)
 	} {
 		f.Add(seed)
 	}
