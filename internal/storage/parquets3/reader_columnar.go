@@ -28,7 +28,9 @@ func readRowGroupColumnar(
 	bitmap []bool,
 	slots schema.SlotMapping,
 ) *logstorage.DataBlock {
-	return readRowGroupColumnarKeys(f, rg, wantCols, reg, startNs, endNs, bitmap, slots, nil)
+	// The convenience form for callers that read no faulty object: the error of the Keys form is dropped.
+	db, _ := readRowGroupColumnarKeys(f, rg, wantCols, reg, startNs, endNs, bitmap, slots, nil)
+	return db
 }
 
 // readRowGroupColumnarKeys is readRowGroupColumnar that, when onlyKeys is not
@@ -44,9 +46,9 @@ func readRowGroupColumnarKeys(
 	bitmap []bool,
 	slots schema.SlotMapping,
 	onlyKeys map[string]struct{},
-) *logstorage.DataBlock {
+) (*logstorage.DataBlock, error) {
 	if len(wantCols) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	pqSchema := f.Schema()
@@ -74,50 +76,17 @@ func readRowGroupColumnarKeys(
 	}
 
 	if len(leafMap) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	// First pass: read timestamp column to build row filter mask.
 	// This determines which rows pass the time range filter.
-	var rowMask []bool
-	var tsValues []int64
-	tsIdx := -1
-	for i, path := range allCols {
-		if path[0] == "timestamp_unix_nano" {
-			tsIdx = i
-			break
-		}
-	}
-	if tsIdx >= 0 {
-		tsValues = readInt64Column(chunks[tsIdx], numRows)
-		rowMask = make([]bool, numRows)
-		for i, ts := range tsValues {
-			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
-				continue
-			}
-			if ts >= startNs && ts <= endNs {
-				rowMask[i] = true
-			}
-		}
-	} else {
-		rowMask = make([]bool, numRows)
-		for i := range rowMask {
-			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
-				continue
-			}
-			rowMask[i] = true
-		}
-	}
-
-	// Count passing rows for pre-allocation.
-	passCount := 0
-	for _, pass := range rowMask {
-		if pass {
-			passCount++
-		}
+	rowMask, passCount, err := columnarRowMask(allCols, chunks, numRows, startNs, endNs, bitmap)
+	if err != nil {
+		return nil, err
 	}
 	if passCount == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var blockCols []logstorage.BlockColumn
@@ -150,7 +119,10 @@ func readRowGroupColumnarKeys(
 				continue
 			}
 
-			values := readScalarColumnFormatted(chunks[li.indices[0]], numRows, rowMask, passCount, internalName, reg)
+			values, err := readScalarColumnFormatted(chunks[li.indices[0]], numRows, rowMask, passCount, internalName, reg)
+			if err != nil {
+				return nil, err
+			}
 			if values != nil {
 				blockCols = append(blockCols, logstorage.BlockColumn{
 					Name:   internalName,
@@ -168,25 +140,72 @@ func readRowGroupColumnarKeys(
 				}
 			}
 			if keyIdx >= 0 && valIdx >= 0 {
-				mapCols := readMapColumnToBlockColsKeys(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames, onlyKeys, reg)
+				mapCols, err := readMapColumnToBlockColsKeys(chunks[keyIdx], chunks[valIdx], numRows, rowMask, passCount, name, scalarNames, onlyKeys, reg)
+				if err != nil {
+					return nil, err
+				}
 				blockCols = append(blockCols, mapCols...)
 			}
 		}
 	}
 
 	if len(blockCols) == 0 {
-		return nil
+		return nil, nil
 	}
 	blockCols = mergeDuplicateColumns(blockCols)
 
 	db := &logstorage.DataBlock{}
 	db.SetColumns(blockCols)
 	orderColumnsLikeUpstream(db)
-	return db
+	return db, nil
 }
 
-// readInt64Column reads all values from an int64 column chunk.
-func readInt64Column(chunk parquet.ColumnChunk, numRows int) []int64 {
+// columnarRowMask is the first pass of the columnar read: the rows of the row
+// group that lie in [startNs, endNs] and pass the pre-where bitmap, and how many
+// they are. A timestamp column that cannot be read is an error, not an empty mask.
+func columnarRowMask(allCols [][]string, chunks []parquet.ColumnChunk, numRows int, startNs, endNs int64, bitmap []bool) ([]bool, int, error) {
+	tsIdx := -1
+	for i, path := range allCols {
+		if path[0] == "timestamp_unix_nano" {
+			tsIdx = i
+			break
+		}
+	}
+	rowMask := make([]bool, numRows)
+	if tsIdx >= 0 {
+		tsValues, err := readInt64Column(chunks[tsIdx], numRows)
+		if err != nil {
+			return nil, 0, err
+		}
+		for i, ts := range tsValues {
+			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
+				continue
+			}
+			if ts >= startNs && ts <= endNs {
+				rowMask[i] = true
+			}
+		}
+	} else {
+		for i := range rowMask {
+			if bitmap != nil && i < len(bitmap) && !bitmap[i] {
+				continue
+			}
+			rowMask[i] = true
+		}
+	}
+	passCount := 0
+	for _, pass := range rowMask {
+		if pass {
+			passCount++
+		}
+	}
+	return rowMask, passCount, nil
+}
+
+// readInt64Column reads all values from an int64 column chunk. A page or value
+// read that fails with anything but the end of the chunk is returned: the
+// values read so far are not the chunk.
+func readInt64Column(chunk parquet.ColumnChunk, numRows int) ([]int64, error) {
 	result := make([]int64, 0, numRows)
 	pages := chunk.Pages()
 	defer func() { _ = pages.Close() }()
@@ -198,7 +217,7 @@ func readInt64Column(chunk parquet.ColumnChunk, numRows int) []int64 {
 			if err == io.EOF {
 				break
 			}
-			return result
+			return result, err
 		}
 		vr := page.Values()
 		for {
@@ -207,11 +226,14 @@ func readInt64Column(chunk parquet.ColumnChunk, numRows int) []int64 {
 				result = append(result, buf[i].Int64())
 			}
 			if err != nil {
+				if err != io.EOF {
+					return result, err
+				}
 				break
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 // readScalarColumnFormatted reads a scalar column and formats values directly
@@ -225,7 +247,7 @@ func readScalarColumnFormatted(
 	passCount int,
 	internalName string,
 	reg *schema.Registry,
-) []string {
+) ([]string, error) {
 	pages := chunk.Pages()
 	defer func() { _ = pages.Close() }()
 
@@ -240,7 +262,7 @@ func readScalarColumnFormatted(
 			if err == io.EOF {
 				break
 			}
-			return nonEmptyOrNil(values, nonEmpty)
+			return nil, err
 		}
 		vr := page.Values()
 		for {
@@ -260,11 +282,14 @@ func readScalarColumnFormatted(
 				rowIdx++
 			}
 			if readErr != nil {
+				if readErr != io.EOF {
+					return nil, readErr
+				}
 				break
 			}
 		}
 	}
-	return nonEmptyOrNil(values, nonEmpty)
+	return nonEmptyOrNil(values, nonEmpty), nil
 }
 
 // nonEmptyOrNil returns values only when at least one row carried a value.
@@ -285,7 +310,9 @@ func readMapColumnToBlockCols(
 	promotedKeys map[string]bool,
 	registries ...*schema.Registry,
 ) []logstorage.BlockColumn {
-	return readMapColumnToBlockColsKeys(keyChunk, valChunk, numRows, rowMask, passCount, mapColName, promotedKeys, nil, registries...)
+	// The convenience form for callers that read no faulty object: the error of the Keys form is dropped.
+	cols, _ := readMapColumnToBlockColsKeys(keyChunk, valChunk, numRows, rowMask, passCount, mapColName, promotedKeys, nil, registries...)
+	return cols
 }
 
 // readMapColumnToBlockColsKeys is readMapColumnToBlockCols that, with onlyKeys
@@ -300,7 +327,7 @@ func readMapColumnToBlockColsKeys(
 	promotedKeys map[string]bool,
 	onlyKeys map[string]struct{},
 	registries ...*schema.Registry,
-) []logstorage.BlockColumn {
+) ([]logstorage.BlockColumn, error) {
 	// Resolved once per column; mapAttrFieldNameWithPrefix applies the shared
 	// naming rule per attribute.
 
@@ -329,6 +356,9 @@ func readMapColumnToBlockColsKeys(
 	for {
 		page, err := keyPages.ReadPage()
 		if err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
 			break
 		}
 		vr := page.Values()
@@ -356,6 +386,9 @@ func readMapColumnToBlockColsKeys(
 				pos++
 			}
 			if readErr != nil {
+				if readErr != io.EOF {
+					return nil, readErr
+				}
 				break
 			}
 		}
@@ -367,6 +400,9 @@ func readMapColumnToBlockColsKeys(
 	for next < len(keys) {
 		page, err := valPages.ReadPage()
 		if err != nil {
+			if err != io.EOF {
+				return nil, err
+			}
 			break
 		}
 		vr := page.Values()
@@ -380,6 +416,9 @@ func readMapColumnToBlockColsKeys(
 				vpos++
 			}
 			if readErr != nil {
+				if readErr != io.EOF {
+					return nil, readErr
+				}
 				break
 			}
 		}
@@ -438,7 +477,7 @@ func readMapColumnToBlockColsKeys(
 			Values: ac.values,
 		})
 	}
-	return result
+	return result, nil
 }
 
 // mergeDuplicateColumns folds columns that carry the same field name into one:

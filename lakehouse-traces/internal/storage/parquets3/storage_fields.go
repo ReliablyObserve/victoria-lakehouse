@@ -3,6 +3,7 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -292,6 +293,12 @@ func (s *Storage) scanProjectedFieldValues(
 				collectFilteredValuesInWindow(buf[:n], projectedNames, targetInProjection, subField, filter, tombstones, s, seen, winLo, winHi, countEmpty)
 			}
 			if err != nil {
+				if err != io.EOF {
+					// A chunk that cannot be read leaves values and hits out of
+					// the answer: report it, never end the row group quietly.
+					_ = rows.Close()
+					return err
+				}
 				break
 			}
 		}
