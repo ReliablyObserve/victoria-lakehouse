@@ -110,6 +110,12 @@ type BufferFlusher struct {
 	checkRan    bool // a plan or group check compared the plan with the segment
 	checkFailed bool // ... and one of them did not match
 
+	// planRows is the rows per group of the segment being drained: the value its
+	// drain started with, from the state (flushState.DrainingMaxRows), which is not
+	// necessarily maxRows (#748). Set at the start of every drain attempt, 0
+	// outside a drain (groupRows then gives maxRows).
+	planRows int64
+
 	// planQueries counts the summary queries planGroups ran (a test pins that a
 	// segment whose hours fit in a group costs one per tenant).
 	planQueries int
@@ -142,6 +148,17 @@ type flushState struct {
 	CommittedThroughSeq uint64 `json:"committed_through_seq"`
 	// DrainingSeq is the segment whose uploads have begun; 0 when none.
 	DrainingSeq uint64 `json:"draining_seq,omitempty"`
+	// DrainingMaxRows is the rows per group (maxRows) the draining segment was
+	// planned with, set together with DrainingSeq and 0 exactly when DrainingSeq
+	// is. The slice numbers of a segment's groups, and so their keys
+	// (<nonce>-<slice>), are a function of it: a process with another
+	// insert.target_file_size finishes the drain with this value and uses its own
+	// for the segments it starts (#748).
+	DrainingMaxRows int64 `json:"draining_max_rows,omitempty"`
+	// DrainingPlan is the planScheme the draining segment was planned with, set
+	// and cleared with DrainingSeq. A process whose planScheme differs cannot
+	// reproduce the groups and stops at start (load).
+	DrainingPlan int `json:"draining_plan,omitempty"`
 	// Commits are the commit times of the segments committed within the last
 	// two graces (the compaction guard's age): a restart gives each segment
 	// the remaining grace of its real commit, not a fresh one (#379).
@@ -154,7 +171,24 @@ type commitRecord struct {
 	AtUnixNano int64  `json:"at_unix_nano"`
 }
 
+// The version stays 5 on purpose: a state with no draining segment is read as it
+// always was, and one with a draining segment must carry DrainingMaxRows and
+// DrainingPlan (see readFlushState).
 const flushStateVersion = 5
+
+// planScheme versions everything that, besides the rows and maxRows, decides how
+// a segment's groups are numbered: the hour/second/bucket summaries of planGroups,
+// planSlices, and the bucket of a row in a crowded second (splitBuckets,
+// splitKeyFormat and the upstream pipes of splitBucketPipes, whose results this
+// release assumes). Bump it with any change to them, a pin of them in
+// plan_scheme_test.go fails otherwise; a drain started under another scheme is not
+// resumed (load), because its groups would be numbered differently and settled
+// on the keys of other groups.
+const planScheme = 1
+
+// errDrainingWithoutMaxRows: the state of a release that did not record the rows
+// per group of the segment it was draining.
+var errDrainingWithoutMaxRows = errors.New("a segment is marked as draining without the rows per group it was planned with (written by a release before #748)")
 
 // flushGroupRef identifies one group of a segment.
 type flushGroupRef struct {
@@ -248,9 +282,19 @@ func (f *BufferFlusher) load(now time.Time) error {
 			st = prev
 		case os.IsNotExist(err) && os.IsNotExist(perr):
 			st = flushState{Version: flushStateVersion}
+		case errors.Is(err, errDrainingWithoutMaxRows) || errors.Is(perr, errDrainingWithoutMaxRows):
+			// Resuming would plan the segment's groups with this process's
+			// insert.target_file_size, and deleting the state would plan it again
+			// from scratch: both can settle a group on the key of another group and
+			// skip its rows (#748). Only the release that wrote the state can finish
+			// the drain.
+			return fmt.Errorf("%s (backup %s) says a segment was being drained, but not with how many rows per group, so this release cannot resume it without risking its rows. Do NOT delete the state: start the release that wrote it, with the same insert.target_file_size as before, until the buffer is drained (lakehouse_buffer_segments{state=\"pending\"} is 0), then upgrade", f.statePath, f.prevPath())
 		default:
 			return fmt.Errorf("%s is unreadable (%v) and so is its backup %s (%v); delete both to drain every segment present (objects already uploaded from a segment being drained are then uploaded again)", f.statePath, err, f.prevPath(), perr)
 		}
+	}
+	if st.DrainingSeq != 0 && st.DrainingPlan != planScheme {
+		return fmt.Errorf("%s says segment %d was being drained under plan scheme %d, which this release (scheme %d) cannot reproduce, so it cannot resume it without risking its rows. Do NOT delete the state: start the release that wrote it, with the same insert.target_file_size as before, until the buffer is drained (lakehouse_buffer_segments{state=\"pending\"} is 0), then upgrade", f.statePath, st.DrainingSeq, st.DrainingPlan, planScheme)
 	}
 	f.state = st
 	f.restoreCommitted(st, now)
@@ -343,6 +387,12 @@ func readFlushState(path string) (flushState, error) {
 	}
 	if st.Version != flushStateVersion {
 		return flushState{}, fmt.Errorf("version %d, want %d", st.Version, flushStateVersion)
+	}
+	switch {
+	case st.DrainingSeq != 0 && (st.DrainingMaxRows == 0 || st.DrainingPlan == 0):
+		return flushState{}, errDrainingWithoutMaxRows
+	case st.DrainingMaxRows < 0 || st.DrainingPlan < 0 || (st.DrainingSeq == 0 && (st.DrainingMaxRows != 0 || st.DrainingPlan != 0)):
+		return flushState{}, fmt.Errorf("draining_max_rows %d, draining_plan %d with draining_seq %d", st.DrainingMaxRows, st.DrainingPlan, st.DrainingSeq)
 	}
 	return st, nil
 }
@@ -474,6 +524,15 @@ type flushSlice struct {
 	bucketLo, bucketHi int64
 }
 
+// groupRows is the rows per group the plan being built uses: the recorded value
+// of the segment being drained, else maxRows.
+func (f *BufferFlusher) groupRows() int64 {
+	if f.planRows > 0 {
+		return f.planRows
+	}
+	return f.maxRows
+}
+
 // planSlices cuts a tenant's per-second row counts into groups of at most
 // maxRows rows that never cross an hour partition. A single second with more
 // rows than maxRows is one group here; planGroups splits it (splitSecond).
@@ -598,7 +657,7 @@ func hourEnd(h int64) int64 {
 	return h + int64(time.Hour) - 1
 }
 
-// planGroups cuts one tenant's rows of g into groups of at most f.maxRows rows,
+// planGroups cuts one tenant's rows of g into groups of at most groupRows() rows,
 // from summaries whose size does not depend on the number of distinct seconds:
 // the rows per hour (one query, one entry per hour of the segment); for an hour
 // that holds more than maxRows rows, the rows per second of that hour (at most
@@ -607,6 +666,7 @@ func hourEnd(h int64) int64 {
 // one group, which is what planSlices makes of it too, so the plan of a segment
 // without a crowded second is the plan planSlices made from every second.
 func (f *BufferFlusher) planGroups(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID) ([]flushSlice, error) {
+	maxRows := f.groupRows()
 	f.planQueries++
 	hours, err := tenantTimeCounts(ctx, g, tenant, "1h", 0, math.MaxInt64)
 	if err != nil {
@@ -622,7 +682,7 @@ func (f *BufferFlusher) planGroups(ctx context.Context, g *membuffer.Segment, te
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if n := hours[h]; n <= f.maxRows {
+		if n := hours[h]; n <= maxRows {
 			out = append(out, flushSlice{partition: partitionFromNano(h), start: h, end: hourEnd(h), rows: n})
 			continue
 		}
@@ -632,9 +692,9 @@ func (f *BufferFlusher) planGroups(ctx context.Context, g *membuffer.Segment, te
 			return nil, err
 		}
 		next := 0
-		for _, sl := range planSlices(secs, f.maxRows) {
+		for _, sl := range planSlices(secs, maxRows) {
 			parts := []flushSlice{sl}
-			if sl.rows > f.maxRows {
+			if sl.rows > maxRows {
 				f.planQueries++
 				if parts, err = f.splitSecond(ctx, g, tenant, sl); err != nil {
 					return nil, err
@@ -650,12 +710,13 @@ func (f *BufferFlusher) planGroups(ctx context.Context, g *membuffer.Segment, te
 	return out, nil
 }
 
-// splitSecond cuts a second that holds more than f.maxRows rows into bucketed
-// groups of at most f.maxRows rows each, of consecutive buckets. A bucket that
+// splitSecond cuts a second that holds more than groupRows() rows into bucketed
+// groups of at most groupRows() rows each, of consecutive buckets. A bucket that
 // alone holds more than maxRows rows (rows identical in the fields the bucket is
 // made of, see splitKeyFormat) cannot be cut further by content: it is one group
 // over the cap, and is logged.
 func (f *BufferFlusher) splitSecond(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID, sl flushSlice) ([]flushSlice, error) {
+	maxRows := f.groupRows()
 	counts := map[int64]int64{}
 	err := runCounts(ctx, g, tenant, "* | "+splitBucketPipes+" | stats by (_lh_split_b) count() as n", sl.start, sl.end, "_lh_split_b", func(key string, n int64) error {
 		b, err := strconv.ParseInt(key, 10, 64)
@@ -676,14 +737,14 @@ func (f *BufferFlusher) splitSecond(ctx context.Context, g *membuffer.Segment, t
 	var out []flushSlice
 	for _, b := range bs {
 		n := counts[b]
-		if k := len(out) - 1; k >= 0 && out[k].rows+n <= f.maxRows {
+		if k := len(out) - 1; k >= 0 && out[k].rows+n <= maxRows {
 			out[k].rows += n
 			out[k].bucketHi = b
 			continue
 		}
-		if n > f.maxRows {
+		if n > maxRows {
 			oversizedGroupLogger.Warnf("buffer flusher: %d rows of tenant %d:%d in %s share one bucket of a crowded second (identical in the row's time, stream and message): they stay one group of %d rows, over the %d-row cap",
-				n, tenant.AccountID, tenant.ProjectID, time.Unix(0, sl.start).UTC().Format(time.RFC3339), n, f.maxRows)
+				n, tenant.AccountID, tenant.ProjectID, time.Unix(0, sl.start).UTC().Format(time.RFC3339), n, maxRows)
 		}
 		out = append(out, flushSlice{partition: sl.partition, start: sl.start, end: sl.end, rows: n, bucketed: true, bucketLo: b, bucketHi: b})
 	}
@@ -920,7 +981,7 @@ func (f *BufferFlusher) planTenant(ctx context.Context, g *membuffer.Segment, te
 		if err != nil {
 			return tenantPlan{}, fmt.Errorf("plan tenant %d:%d: %w", tenant.AccountID, tenant.ProjectID, err)
 		}
-		tp.slices = planSlices(counts, f.maxRows)
+		tp.slices = planSlices(counts, f.groupRows())
 	} else {
 		slices, err := f.planGroups(ctx, g, tenant)
 		if err != nil {
@@ -1021,6 +1082,7 @@ func tenantRowCount(ctx context.Context, g *membuffer.Segment, tenant logstorage
 func (f *BufferFlusher) drain(ctx context.Context, g *membuffer.Segment) error {
 	f.checkRan, f.checkFailed = false, false
 	err := f.drainAttempt(ctx, g)
+	f.planRows = 0
 	switch {
 	case err != nil && ctx.Err() != nil:
 		// Stop cut the attempt short: leave the gauge as it was, whatever the
@@ -1039,7 +1101,7 @@ func (f *BufferFlusher) drainAttempt(ctx context.Context, g *membuffer.Segment) 
 	case f.state.DrainingSeq != g.Seq():
 		// The first upload of g in any process: record it first, durably.
 		st := f.state
-		st.DrainingSeq = g.Seq()
+		st.DrainingSeq, st.DrainingMaxRows, st.DrainingPlan = g.Seq(), f.maxRows, planScheme
 		if err := f.writeState(st); err != nil {
 			metrics.BufferFlushErrors.Inc("intent")
 			return fmt.Errorf("record segment %d as draining: %w", g.Seq(), err)
@@ -1051,7 +1113,12 @@ func (f *BufferFlusher) drainAttempt(ctx context.Context, g *membuffer.Segment) 
 		// A previous process was draining g: its marks say what it stored;
 		// any other group may have been stored too, so ask HEAD.
 		f.marksFor, f.marks, f.head, f.markSynced = g.Nonce(), f.loadMarks(g.Nonce()), true, false
+		if f.state.DrainingMaxRows != f.maxRows {
+			logger.Warnf("buffer flusher: resuming segment %d (%s) with the %d rows per group it was planned with, not the %d of the current insert.target_file_size: its groups keep their numbers and keys; the new value applies to the segments drained after it", g.Seq(), g.Nonce(), f.state.DrainingMaxRows, f.maxRows)
+		}
 	}
+	// The groups of g are numbered by the plan its drain started with.
+	f.planRows = f.state.DrainingMaxRows
 
 	// Plan every tenant's groups before anything is uploaded, and check that the
 	// plan covers every row the segment holds (see planSegment): a segment that

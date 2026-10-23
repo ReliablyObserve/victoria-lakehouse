@@ -267,6 +267,7 @@ and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 | **Object store unreachable or slow** | Nothing is refused. Sealed segments wait on disk; each failed drain is retried with the same bytes after a back-off (1 s doubling to 30 s). Past the volume's free-space floor inserts get 429. |
 | **A segment whose rows the drain cannot all plan** | The segment is stalled (`lakehouse_buffer_stalled_segments` = 1) and not committed; the plan check uploads nothing, a group check can fire after earlier groups were uploaded (§2.1); an error is logged and `lakehouse_buffer_flush_errors_total{stage="invariant"}` rises (§2.1 and its runbook, `lh.durability.drain_plan_mismatch_*`); the plan is made again on every attempt, so a mismatch that does not repeat clears. Inserts continue until the buffer volume's floor answers 429. |
 | **Pod restarts while a segment drains** | The segment is found again; groups already stored are recognised (§3) and not sent again. |
+| **Pod restarts while a segment drains, with another `insert.target_file_size`** | The drain finishes with the rows per group and plan version it started with (recorded in the flush state, §2.1), so its groups keep their keys and none is mistaken for another; the new value applies from the next segment. A state of the release before (no record) or of another plan version stops the process at start with the action to take (§3). Proven by the restart matrix and the property test of `lh.durability.drain_plan_config_change_*` (#748). |
 | **A select pod lists a committed segment's objects only after the insert pod retired the segment** | Known gap, #391: the segment's rows are in Parquet, but the select pod's answers miss them (HTTP 200) until its next complete listing; nothing counts it (§2.3, `lh.durability.select_pod_lists_after_segment_retired_*`). |
 | **Pod loses its disk before a segment drained** | The rows of undrained segments are lost (§2.4). |
 | **Already-written data** | Immutable Parquet on S3; survives everything. |
@@ -302,7 +303,13 @@ uploaded twice with different content.** To keep it:
 
 - Before a segment's first upload the state file (`buffer_flush_state.json`, with
   a `.prev` mirror; temp file, fsync, rename, fsync of the directory) records it
-  as *draining* (`draining_seq`). Committing a segment records `committed_through_seq`.
+  as *draining* (`draining_seq`), together with the rows per group it is planned with
+  (`draining_max_rows`, from `insert.target_file_size`) and the version of the plan
+  (`draining_plan`). The numbers of a segment's groups, and so their keys, are a function of
+  these: a process that resumes the drain, after a restart with another
+  `insert.target_file_size`, uses the recorded rows per group and logs a warning; only the
+  segments drained after it use the configured value (#748). Committing a segment records
+  `committed_through_seq` and clears all three.
 - After each PUT a "stored" mark (segment, tenant, partition, slice) is appended
   to `buffer_flush_state.json.stored` and fsynced before the object is committed
   to the manifest, so anything compaction can see has a durable mark. A failed
@@ -789,11 +796,20 @@ Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheF
    on-disk part at every 5 s tick and restores every part on open, so the at-risk window is the rows
    newer than the last part flush.
 2. **The flusher's state.** `buffer_flush_state.json` (mirrored to `.prev`)
-   holds `committed_through_seq` and `draining_seq`. A missing state means
+   holds `committed_through_seq`, and for a segment being drained `draining_seq`,
+   `draining_max_rows` and `draining_plan` (§2.1). A missing state means
    nothing is committed: every segment found is drained. A state file that exists
    but cannot be read, with no readable `.prev`, stops the process with a message
    saying how to proceed — it never guesses, because guessing would skip or
-   repeat data.
+   repeat data. The same holds for a state that says a segment was being drained
+   without `draining_max_rows` (written by a release before #748) or under another
+   `draining_plan` than this binary's: the segment's groups cannot be reproduced, and
+   resuming or deleting the state could settle a group on the key of another group and
+   skip its rows, so the process stops at start. Do not delete the state: start the
+   release that wrote it, with the same `insert.target_file_size`, until
+   `lakehouse_buffer_segments{state="pending"}` is 0, then upgrade. (A state with no
+   draining segment is read as before, so a node that is not in the middle of a drain
+   upgrades without any action.)
 3. **Resuming without rewriting.** The segment being drained is found again; each
    group is settled by its mark, the manifest or a HEAD (§2.1); only absent groups
    are uploaded. Objects are never rewritten, so re-draining loses nothing and
