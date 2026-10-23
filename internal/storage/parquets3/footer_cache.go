@@ -516,11 +516,12 @@ func parseFooterBytes(key string, footerBytes []byte, fileSize int64) (cachedFoo
 		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: declared footer length %d exceeds max %d", key, declaredLen, maxParquetFooterBytes)
 	}
 
-	// parquet-go allocates every thrift list from the size the footer
-	// declares, before reading an element; bound those sizes against the
-	// bytes that exist (see checkFooterThriftBounds).
+	// parquet-go sizes its allocations from what the footer declares
+	// (thrift list sizes, leaf columns x row groups, schema depth) and
+	// recurses with its nesting, before validating any of it; bound those
+	// against the bytes that exist (see checkFooterThriftBounds).
 	if gerr := checkFooterThriftBounds(footerBytes[len(footerBytes)-8-int(declaredLen) : len(footerBytes)-8]); gerr != nil {
-		metrics.FooterParseRejected.Inc("thrift_size_exceeds_bytes")
+		metrics.FooterParseRejected.Inc("thrift_bounds_exceeded")
 		return nil, nil, nil, fmt.Errorf("parse parquet footer %s: %w", key, gerr)
 	}
 

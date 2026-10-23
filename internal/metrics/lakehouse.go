@@ -373,8 +373,12 @@ var (
 	// cached size no longer matched).
 	FooterOverlayOpens = NewCounterVec("lakehouse_footer_overlay_opens_total", "result")
 	// FooterParseRejected counts ParseFooterFromBytes inputs rejected by
-	// its pre-parse validation (invalid/oversized footer length, bad
-	// magic, decoder panic recovered), broken out by reason so a
+	// its pre-parse validation, broken out by reason: invalid_file_size,
+	// footer_exceeds_file_size, too_short, bad_magic,
+	// declared_length_exceeds_buffer, declared_length_exceeds_file_size,
+	// declared_length_exceeds_cap, thrift_bounds_exceeded (a declared list
+	// size, nesting depth, schema depth or leaves x row groups the footer's
+	// bytes cannot hold) and decoder_panic (recovered). A
 	// malformed/corrupted file — or a legitimate file that outgrew the
 	// footer-length policy cap — is visible instead of silently falling
 	// back to a full download.

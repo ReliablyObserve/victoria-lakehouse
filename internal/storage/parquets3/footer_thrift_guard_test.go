@@ -1,20 +1,27 @@
 package parquets3
 
 import (
+	"bytes"
 	"encoding/binary"
 	"math"
 	"math/rand"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/encoding/thrift"
 	"github.com/parquet-go/parquet-go/format"
 )
 
-// footerAllocBound is the most a footer parse may allocate for an input of n
-// bytes: a fixed floor for parquet-go's read buffers plus the linear
-// amplification checkFooterThriftBounds guarantees (the largest decoded
-// element is a 560-byte ColumnChunk for at least 3 encoded bytes, ~190x).
+// footerAllocBound is the regression bound the tests hold a footer parse to
+// for an input of n bytes: a fixed floor for parquet-go's read buffers plus
+// 200 bytes per input byte (the largest decoded list element is a 560-byte
+// ColumnChunk for at least 3 encoded bytes, ~190x). It is a test threshold for
+// the rejected shapes and for real footers, not a proof: the path strings of a
+// deep schema stay on parquet-go (see TestParseFooterFromBytes_DeepSchemaResidual).
+// TotalAlloc is process-wide; the tests that use it run sequentially and the
+// 32 MiB floor is far above what a background goroutine allocates in one parse.
 func footerAllocBound(n int) uint64 { return 32<<20 + 200*uint64(n) }
 
 // allocatedBy returns the bytes fn allocated (process-wide TotalAlloc delta).
@@ -78,9 +85,6 @@ func TestParseFooterFromBytes_BoundsDeclaredListSize(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.n > 100_000_000 && testing.Short() {
-				t.Skip("declares 2^31 elements: the unguarded decoder would exhaust memory")
-			}
 			footer := footerWithMeta(declaredList(tc.field, tc.n))
 			var err error
 			alloc := allocatedBy(func() {
@@ -314,5 +318,327 @@ func BenchmarkParseFooterBytes(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// nestedFooter returns n nested values of one compact type as a footer body,
+// every one of them well formed (n containers deep, the innermost empty). nest = "list" | "map" | "struct".
+func nestedFooter(nest string, n int) []byte {
+	var b []byte
+	switch nest {
+	case "list": // n lists, each of size 1 holding the next; the innermost empty
+		b = append(b, 0x19) // field: list
+		for i := 0; i < n; i++ {
+			b = append(b, 0x19) // size 1, elements are lists
+		}
+		b[len(b)-1] = 0x05 // innermost: size 0, elements i32
+	case "map": // n maps, each of size 1 with an i32 key and the next map as value
+		b = append(b, 0x1B) // field: map
+		for i := 1; i < n; i++ {
+			b = append(b, 0x01, 0x5B, 0x00) // size 1, key i32 / value map, key 0, then the value
+		}
+		b = append(b, 0x00) // innermost: size 0
+	case "struct":
+		for i := 0; i < n; i++ {
+			b = append(b, 0x1C)
+		}
+		for i := 0; i < n; i++ {
+			b = append(b, tcStop)
+		}
+	}
+	return append(b, tcStop)
+}
+
+// TestCheckFooterThriftBounds_NestingCap pins the nesting cap for every
+// container kind: a value at footerThriftMaxDepth is accepted, one level more
+// is rejected. Lists and maps used to recurse without counting, so a footer of
+// repeated list headers ran the decoder out of stack (a Go fatal error, exit 2).
+func TestCheckFooterThriftBounds_NestingCap(t *testing.T) {
+	for _, nest := range []string{"list", "map", "struct"} {
+		if err := checkFooterThriftBounds(nestedFooter(nest, footerThriftMaxDepth)); err != nil {
+			t.Fatalf("%s nested %d deep (the cap) must be accepted: %v", nest, footerThriftMaxDepth, err)
+		}
+		if err := checkFooterThriftBounds(nestedFooter(nest, footerThriftMaxDepth+1)); err == nil {
+			t.Fatalf("%s nested %d deep (cap+1) must be rejected", nest, footerThriftMaxDepth+1)
+		}
+	}
+}
+
+// TestParseFooterFromBytes_RejectsDeepNesting feeds footers of 1 MiB and 8 MiB
+// of nested container headers through the public entry point. Before the cap
+// covered lists and maps the 8 MiB footer ended the process with
+// "fatal error: stack overflow" in (*footerGuard).value (1 MiB survived).
+func TestParseFooterFromBytes_RejectsDeepNesting(t *testing.T) {
+	for _, nest := range []string{"list", "map", "struct"} {
+		for _, size := range []int{1 << 20, 8 << 20} {
+			meta := nestedFooter(nest, size/2)
+			footer := footerWithMeta(meta)
+			var err error
+			alloc := allocatedBy(func() { _, _, err = ParseFooterFromBytes("deep.parquet", footer, int64(len(footer))+1<<20) })
+			if err == nil || !strings.Contains(err.Error(), "nesting too deep") {
+				t.Fatalf("%s nesting of %d bytes must be rejected as too deep, got %v", nest, len(meta), err)
+			}
+			if bound := footerAllocBound(len(footer)); alloc > bound {
+				t.Fatalf("%s nesting of %d bytes allocated %d (bound %d)", nest, len(meta), alloc, bound)
+			}
+		}
+	}
+}
+
+// fmdField appends a compact field header for id after prev (ids ascend).
+func fmdField(b []byte, prev, id int, typ byte) []byte {
+	return append(b, byte(id-prev)<<4|typ)
+}
+
+// budgetFooter builds a FileMetaData body of n empty struct elements in field
+// 1 (each one byte on the wire, charged 3 against the budget) plus a binary
+// padding field so the whole body is exactly total bytes.
+func budgetFooter(t *testing.T, n, total int) []byte {
+	t.Helper()
+	b := fmdField(nil, 0, 1, tcList)
+	b = append(b, byte(n)<<4|tcStruct) // n < 15
+	b = append(b, make([]byte, n)...)
+	for pad := 0; pad < 400; pad++ { // find the padding that makes the body total bytes
+		c := fmdField(append([]byte(nil), b...), 1, 2, tcBinary)
+		c = thriftUvarint(c, uint64(pad))
+		c = append(c, make([]byte, pad)...)
+		c = append(c, tcStop)
+		if len(c) == total {
+			return c
+		}
+	}
+	t.Fatalf("no padding gives a %d byte body for %d elements", total, n)
+	return nil
+}
+
+// TestCheckFooterThriftBounds_BudgetBoundary pins the budget at its edge: n
+// struct elements are charged 3 bytes each, so a body of exactly 3n bytes
+// holds them and a body one byte shorter does not.
+func TestCheckFooterThriftBounds_BudgetBoundary(t *testing.T) {
+	for _, n := range []int{3, 7, 14} {
+		if err := checkFooterThriftBounds(budgetFooter(t, n, 3*n)); err != nil {
+			t.Fatalf("n=%d: exactly the budget's worth (%d bytes) must pass: %v", n, 3*n, err)
+		}
+		if err := checkFooterThriftBounds(budgetFooter(t, n, 3*n-1)); err == nil {
+			t.Fatalf("n=%d: one byte under the budget (%d bytes) must fail", n, 3*n-1)
+		}
+	}
+}
+
+// metaOf builds FileMetaData with a root group over leaves int64 columns and
+// rowGroups row groups that each carry chunks column chunks.
+func metaOf(leaves, rowGroups, chunks int) *format.FileMetaData {
+	m := &format.FileMetaData{Version: 1}
+	m.Schema = append(m.Schema, format.SchemaElement{Name: "root", NumChildren: thrift.New[int32](int32(leaves))})
+	for i := 0; i < leaves; i++ {
+		m.Schema = append(m.Schema, format.SchemaElement{
+			Type: thrift.New(format.Int64), RepetitionType: thrift.New(format.Required), Name: "c",
+		})
+	}
+	for r := 0; r < rowGroups; r++ {
+		m.RowGroups = append(m.RowGroups, format.RowGroup{Columns: make([]format.ColumnChunk, chunks)})
+	}
+	return m
+}
+
+func footerOfMeta(t *testing.T, m *format.FileMetaData) []byte {
+	t.Helper()
+	meta, err := thrift.Marshal(new(thrift.CompactProtocol), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return footerWithMeta(meta)
+}
+
+// TestParseFooterFromBytes_RejectsQuadraticColumnAllocation: columnLoader.reserve
+// allocates one chunk pointer per (leaf x row group) and one path string per
+// schema element and ancestor, before validating anything. Measured on the
+// previous guard (list sizes only), which accepted all of these: 3000 leaves x
+// 3000 row groups (a 45 KB footer) 73.5 MB, 6000 x 6000 (90 KB) 291 MB, a
+// schema chain of 8000 groups (48 KB) 515 MB.
+func TestParseFooterFromBytes_RejectsQuadraticColumnAllocation(t *testing.T) {
+	chain := &format.FileMetaData{Version: 1}
+	for i := 0; i < 8000; i++ {
+		chain.Schema = append(chain.Schema, format.SchemaElement{Name: "g", NumChildren: thrift.New[int32](1)})
+	}
+	chain.Schema = append(chain.Schema, format.SchemaElement{Type: thrift.New(format.Int64), Name: "leaf"})
+	for _, tc := range []struct {
+		name string
+		m    *format.FileMetaData
+	}{
+		{"3000x3000", metaOf(3000, 3000, 0)},
+		{"6000x6000", metaOf(6000, 6000, 0)},
+		{"schema chain 8000", chain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			footer := footerOfMeta(t, tc.m)
+			var err error
+			alloc := allocatedBy(func() { _, _, err = ParseFooterFromBytes("quad.parquet", footer, int64(len(footer))+1<<20) })
+			if err == nil {
+				t.Fatalf("a %d-byte footer with a shape parquet-go cannot hold must be rejected", len(footer))
+			}
+			t.Logf("%s: %d-byte footer, rejected, %d bytes allocated", tc.name, len(footer), alloc)
+			if bound := footerAllocBound(len(footer)); alloc > bound {
+				t.Fatalf("allocated %d bytes (bound %d)", alloc, bound)
+			}
+		})
+	}
+}
+
+// TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries pins the two shape
+// checks at their edges. Leaves x row groups x 3 may equal the footer length
+// and not exceed it; a schema may nest parquet.MaxColumnDepth levels and not one
+// more.
+func TestCheckFooterThriftBounds_SchemaAndRowGroupBoundaries(t *testing.T) {
+	// 10 leaves (3 bytes each: type + stop... see below) and 10 row groups.
+	build := func(total int) []byte {
+		b := fmdField(nil, 0, 2, tcList)
+		b = append(b, 10<<4|tcStruct)
+		for i := 0; i < 10; i++ {
+			b = append(b, 0x15, 0x04, tcStop) // SchemaElement{type: 2}: a leaf
+		}
+		b = fmdField(b, 2, 4, tcList)
+		b = append(b, 10<<4|tcStruct)
+		b = append(b, make([]byte, 10)...) // ten empty RowGroups
+		for pad := 0; pad < 400; pad++ {
+			c := fmdField(append([]byte(nil), b...), 4, 6, tcBinary)
+			c = thriftUvarint(c, uint64(pad))
+			c = append(c, make([]byte, pad)...)
+			c = append(c, tcStop)
+			if len(c) == total {
+				return c
+			}
+		}
+		t.Fatalf("no padding for %d", total)
+		return nil
+	}
+	if err := checkFooterThriftBounds(build(10 * 10 * 3)); err != nil {
+		t.Fatalf("10 leaves x 10 row groups in exactly 300 bytes must pass: %v", err)
+	}
+	if err := checkFooterThriftBounds(build(10*10*3 - 1)); err == nil {
+		t.Fatal("10 leaves x 10 row groups in 299 bytes must fail")
+	}
+
+	// A chain of groups, each with one child, ending in a leaf: depth is the
+	// number of open ancestors of the last element.
+	chain := func(levels int) []byte {
+		m := &format.FileMetaData{Version: 1}
+		for i := 0; i < levels; i++ {
+			m.Schema = append(m.Schema, format.SchemaElement{Name: "g", NumChildren: thrift.New[int32](1)})
+		}
+		m.Schema = append(m.Schema, format.SchemaElement{Type: thrift.New(format.Int64), Name: "leaf"})
+		meta, err := thrift.Marshal(new(thrift.CompactProtocol), m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return meta
+	}
+	if err := checkFooterThriftBounds(chain(parquet.MaxColumnDepth)); err != nil {
+		t.Fatalf("a schema nested %d levels (parquet-go's limit) must pass: %v", parquet.MaxColumnDepth, err)
+	}
+	if err := checkFooterThriftBounds(chain(parquet.MaxColumnDepth + 1)); err == nil {
+		t.Fatalf("a schema nested %d levels must fail", parquet.MaxColumnDepth+1)
+	}
+}
+
+// TestCheckFooterThriftBounds_AcceptsEdgeShapedRealFiles: files a standard
+// writer produces whose footers sit at the edges of the shape checks must keep
+// passing, and parse: no row groups with a schema, a deeply nested schema,
+// many leaf columns in few row groups, many row groups with few columns.
+func TestCheckFooterThriftBounds_AcceptsEdgeShapedRealFiles(t *testing.T) {
+	type l3 struct{ V int64 }
+	type l2 struct{ C l3 }
+	type l1 struct{ B l2 }
+	type nested struct {
+		A  l1
+		L  []l2
+		M  map[string]l3
+		TS int64
+	}
+	write := func(schema *parquet.Schema, rows []parquet.Row, flushEvery int) []byte {
+		var buf bytes.Buffer
+		w := parquet.NewWriter(&buf, schema)
+		for i, r := range rows {
+			if _, err := w.WriteRows([]parquet.Row{r}); err != nil {
+				t.Fatal(err)
+			}
+			if flushEvery > 0 && (i+1)%flushEvery == 0 {
+				if err := w.Flush(); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	wide := parquet.Group{}
+	for i := 0; i < 300; i++ {
+		wide[string(rune('a'+i%26))+string(rune('a'+(i/26)%26))+string(rune('a'+(i/676)%26))] = parquet.Leaf(parquet.Int64Type)
+	}
+	wideSchema := parquet.NewSchema("wide", wide)
+	wideRow := func() parquet.Row {
+		r := make(parquet.Row, 0, len(wide))
+		for i := range wideSchema.Columns() {
+			r = append(r, parquet.Int64Value(int64(i)).Level(0, 0, i))
+		}
+		return r
+	}()
+	narrow := parquet.NewSchema("narrow", parquet.Group{"x": parquet.Leaf(parquet.Int64Type)})
+	narrowRows := make([]parquet.Row, 300)
+	for i := range narrowRows {
+		narrowRows[i] = parquet.Row{parquet.Int64Value(int64(i)).Level(0, 0, 0)}
+	}
+	nestedSchema := parquet.SchemaOf(new(nested))
+	cases := map[string][]byte{
+		"schema only, zero row groups": write(wideSchema, nil, 0),
+		"300 columns, 1 row group":     write(wideSchema, []parquet.Row{wideRow}, 0),
+		"300 columns, 40 row groups":   write(wideSchema, repeatRow(wideRow, 40), 1),
+		"1 column, 300 row groups":     write(narrow, narrowRows, 1),
+		"nested, 12 levels":            write(nestedSchema, nil, 0),
+	}
+	for name, obj := range cases {
+		n := footerTotal(obj)
+		meta := obj[len(obj)-n : len(obj)-8]
+		if err := checkFooterThriftBounds(meta); err != nil {
+			t.Fatalf("%s: valid footer (%d bytes) rejected: %v", name, len(meta), err)
+		}
+		if _, _, err := ParseFooterFromBytes(name, obj[len(obj)-n:], int64(len(obj))); err != nil {
+			t.Fatalf("%s: valid footer no longer parses: %v", name, err)
+		}
+	}
+}
+
+func repeatRow(r parquet.Row, n int) []parquet.Row {
+	out := make([]parquet.Row, n)
+	for i := range out {
+		out[i] = r
+	}
+	return out
+}
+
+// TestParseFooterFromBytes_DeepSchemaResidual documents what the guard leaves to
+// parquet-go: a schema that nests at most parquet.MaxColumnDepth levels still
+// makes columnLoader.reserve allocate one string header per ancestor of each
+// element. It measures the worst shape the guard accepts (a 255-deep chain
+// with leaves at the bottom) so the PR numbers are reproducible; it asserts a
+// ceiling of 1 KiB of allocation per footer byte, well above what is measured.
+func TestParseFooterFromBytes_DeepSchemaResidual(t *testing.T) {
+	m := &format.FileMetaData{Version: 1}
+	const leaves = 4000
+	for i := 0; i < parquet.MaxColumnDepth-1; i++ {
+		m.Schema = append(m.Schema, format.SchemaElement{Name: "g", NumChildren: thrift.New[int32](1)})
+	}
+	m.Schema = append(m.Schema, format.SchemaElement{Name: "g", NumChildren: thrift.New[int32](leaves)})
+	for i := 0; i < leaves; i++ {
+		m.Schema = append(m.Schema, format.SchemaElement{Type: thrift.New(format.Int64), Name: "c"})
+	}
+	footer := footerOfMeta(t, m)
+	var err error
+	alloc := allocatedBy(func() { _, _, err = ParseFooterFromBytes("deep.parquet", footer, int64(len(footer))+1<<20) })
+	t.Logf("255-deep schema, %d leaves: %d-byte footer, err=%v, %d bytes allocated (%.0fx)", leaves, len(footer), err, alloc, float64(alloc)/float64(len(footer)))
+	if alloc > 1024*uint64(len(footer))+footerAllocBound(0) {
+		t.Fatalf("allocated %d bytes for a %d-byte footer", alloc, len(footer))
 	}
 }
