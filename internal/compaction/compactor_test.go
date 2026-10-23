@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 )
@@ -526,6 +528,88 @@ func TestCompactor_PreservesTraceIndexFooter(t *testing.T) {
 	}
 	if alpha.Partition != traceindex.Partition("trace-alpha") {
 		t.Errorf("alpha partition = %d, want %d (must match VT's xxhash%%1024)", alpha.Partition, traceindex.Partition("trace-alpha"))
+	}
+}
+
+// TestCompactor_LongTraceIDsDoNotRemoveTheMergedIndex pins #768 on the
+// compaction path: two source files from two writers carry over-long trace IDs
+// at the first, middle and last position of the sort order. The merged file
+// keeps its `_trace_idx`, which lists EVERY short ID with its exact bounds and
+// none of the long ones, and no row is lost.
+func TestCompactor_LongTraceIDsDoNotRemoveTheMergedIndex(t *testing.T) {
+	pool := newMockPool()
+	m := manifest.New("test-bucket", "traces/")
+	const partition = "dt=2026-05-04/hour=10"
+	const fp = "trace-fp"
+	long := func(c string) string { return strings.Repeat(c, traceindex.MaxTraceIDLen+5) }
+	span := func(tid string, start int64) schema.TraceRow {
+		return schema.TraceRow{TimestampUnixNano: start, TraceID: tid, SpanID: "s", SpanName: "op", ServiceName: "svc", StartTimeUnixNano: schema.Int64Ptr(start), DurationNs: schema.Int64Ptr(100)}
+	}
+	src1 := []schema.TraceRow{span(long("0"), 1000), span("a-short", 1100), span(long("m"), 1200)}
+	src2 := []schema.TraceRow{span("n-short", 2000), span(long("z"), 2100), span("b-short", 2200)}
+	data1 := makeTestTraceParquet(t, src1)
+	data2 := makeTestTraceParquet(t, src2)
+	const key1 = "traces/dt=2026-05-04/hour=10/src-001.parquet"
+	const key2 = "traces/dt=2026-05-04/hour=10/src-002.parquet"
+	for k, d := range map[string][]byte{key1: data1, key2: data2} {
+		if err := pool.Upload(context.Background(), k, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fi1 := manifest.FileInfo{Key: key1, Size: int64(len(data1)), RowCount: 3, MinTimeNs: 1000, MaxTimeNs: 1200, SchemaFingerprint: fp}
+	fi2 := manifest.FileInfo{Key: key2, Size: int64(len(data2)), RowCount: 3, MinTimeNs: 2000, MaxTimeNs: 2200, SchemaFingerprint: fp}
+	m.AddFile(partition, fi1)
+	m.AddFile(partition, fi2)
+
+	before := metrics.WriterTraceIdxOmittedTotal.Get("id_over_limit")
+	compactor := NewCompactor(CompactorConfig{
+		Pool: pool, Manifest: m, Prefix: "traces/", Mode: config.ModeTraces,
+		RowGroupSize: 1000, CompressionLevel: 7,
+	})
+	result, err := compactor.Compact(context.Background(), partition, []manifest.FileInfo{fi1, fi2}, 0)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	pool.mu.Lock()
+	out := pool.uploaded[result.OutputFile]
+	pool.mu.Unlock()
+
+	pf, err := parquet.OpenFile(bytes.NewReader(out), int64(len(out)))
+	if err != nil {
+		t.Fatalf("parquet.OpenFile: %v", err)
+	}
+	var blob string
+	for _, kv := range pf.Metadata().KeyValueMetadata {
+		if kv.Key == traceindex.MetadataKey {
+			blob = kv.Value
+		}
+	}
+	if blob == "" {
+		t.Fatal("a long ID in a source removed the merged file's index; it must list the short IDs")
+	}
+	entries, err := traceindex.Unmarshal([]byte(blob))
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	want := map[string][2]int64{"a-short": {1100, 1200}, "n-short": {2000, 2100}, "b-short": {2200, 2300}}
+	if len(entries) != len(want) {
+		t.Fatalf("index lists %d IDs, want exactly the %d short IDs", len(entries), len(want))
+	}
+	for _, e := range entries {
+		w, ok := want[e.TraceID]
+		if !ok || e.StartNs != w[0] || e.EndNs != w[1] {
+			t.Fatalf("unexpected entry %q [%d,%d]", e.TraceID, e.StartNs, e.EndNs)
+		}
+	}
+	if d := metrics.WriterTraceIdxOmittedTotal.Get("id_over_limit") - before; d != 3 {
+		t.Fatalf("omitted IDs counted %d, want 3", d)
+	}
+	rows, err := readTraceRows(out)
+	if err != nil {
+		t.Fatalf("readTraceRows: %v", err)
+	}
+	if len(rows) != 6 {
+		t.Fatalf("merge lost rows: %d, want 6", len(rows))
 	}
 }
 

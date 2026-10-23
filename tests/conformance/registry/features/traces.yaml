@@ -90,6 +90,25 @@
     - internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_RoundTripUnchanged
     - lakehouse-traces/internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_DeclaredCountBounded
     - lakehouse-traces/internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_RoundTripUnchanged
+    - internal/traceindex/traceindex_longid_test.go#TestMarshal_OverLongIDsAreLeftOutAndEveryOtherIDIsListed
+    - internal/traceindex/traceindex_longid_test.go#TestMarshal_TraceIDAtUint16LimitRoundTrips
+    - internal/traceindex/traceindex_longid_test.go#TestMarshal_AllIDsOverLongListsNothing
+    - internal/traceindex/traceindex_longid_test.go#TestListed
+    - internal/traceindex/traceindex_longid_test.go#TestMarshal_RandomMixListsEveryShortID
+    - internal/traceindex/traceindex_longid_test.go#TestUnmarshal_RejectsTrailingByteAfterEmptyLastID
+    - internal/traceindex/traceindex_longid_test.go#TestUnmarshal_RejectsLegacyWrappedIndex
+    - internal/traceindex/traceindex_longid_test.go#TestFromMetadata_LegacyWrappedIndexIsNoIndex
+    - internal/traceindex/traceindex_longid_test.go#TestUnmarshal_RejectsTrailingBytes
+    - internal/traceindex/traceindex_longid_test.go#TestMarshal_EntryCountAgreesWithDecoder
+    - internal/traceindex/traceindex_longid_test.go#TestUnmarshal_NoDivergenceFromLegacyOnWriterOutput
+    - internal/compaction/compactor_test.go#TestCompactor_LongTraceIDsDoNotRemoveTheMergedIndex
+    - lakehouse-traces/internal/storage/parquets3/trace_index_longid_test.go#TestTraceIndex_LongTraceIDsAreLeftOutAndEveryShortIDIsListed
+    - lakehouse-traces/internal/storage/parquets3/trace_index_longid_test.go#TestTraceIndex_LegacyWrappedIndexKeepsFile
+    - lakehouse-traces/internal/storage/parquets3/trace_index_longid_test.go#TestTraceIndex_LongTraceIDColdTraceByID
+    - lakehouse-traces/internal/storage/parquets3/trace_index_longid_test.go#TestLookupTraceIndex_SplitTraceKeepsFullBoundWithLongIDInTheFile
+    - lakehouse-traces/internal/storage/parquets3/trace_index_longid_test.go#TestTraceIndex_EmptyTraceIDIsNotPrunedByTheIndex
+    - internal/storage/parquets3/trace_index_longid_test.go#TestWriteTracesParquet_LongTraceIDsAreLeftOutOfTheIndexAndNothingElse
+    - internal/storage/parquets3/trace_index_longid_test.go#TestTraceIndexFromMetadata_RejectsWrappedLegacyValue
   docs:
     - docs/read-path.md
     - docs/open-parquet-format.md
@@ -100,7 +119,11 @@
     plain Parquet while still answering the trace UX's most important query — "show me this
     trace" — in one or two reads. The decoder is fuzzed and its declared entry count is bounded by the
     bytes that can hold it, because a corrupt or hostile footer must degrade to a miss, never to
-    a panic or a multi-GB allocation.
+    a panic or a multi-GB allocation. The index lists every non-empty trace ID of at most 65,535 bytes in the file and no other: an
+    over-long ID is left out (counted), the rest stay listed, so a short ID missing from the index
+    is really missing from the file, while a queried over-long or empty ID makes the lookup scan. A file with
+    more than 2^20 IDs gets no index. The decoder requires the value to be consumed exactly, so a
+    footer written with a wrapped length by an older release is a miss too, never wrong entries.
 
 - id: lh.feature.traces.trace_by_id_fastpath
   title: Trace-by-id fast path and Loki-to-Tempo drilldown
