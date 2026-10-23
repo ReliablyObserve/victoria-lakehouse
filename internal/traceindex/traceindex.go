@@ -42,6 +42,10 @@ const Version byte = 1
 // Defined here to avoid importing the VT module from compaction.
 const PartitionCount = uint64(1024)
 
+// minEntrySize is the smallest encoded entry: an empty trace ID
+// (traceIDLen:2 + partition:2 + startNs:8 + endNs:8).
+const minEntrySize = 2 + 2 + 8 + 8
+
 // Entry is a single trace's index record.
 type Entry struct {
 	TraceID   string
@@ -169,6 +173,14 @@ func Unmarshal(data []byte) ([]Entry, error) {
 	const maxEntries = 1 << 20
 	if count > maxEntries {
 		return nil, fmt.Errorf("trace index count too large: %d (max %d)", count, maxEntries)
+	}
+	// The cap above still lets a 5-byte value ask for ~42 MB (1<<20
+	// entries x 40 B). Bound the declared count by what the remaining
+	// bytes can hold: every entry takes at least minEntrySize bytes, so a
+	// count that cannot fit is truncated input and is rejected before
+	// anything is allocated. Valid payloads always satisfy this.
+	if remaining := len(data) - 5; count > remaining/minEntrySize {
+		return nil, fmt.Errorf("trace index count %d exceeds payload: %d bytes hold at most %d entries", count, remaining, remaining/minEntrySize)
 	}
 	entries := make([]Entry, 0, count)
 	off := 5
