@@ -294,7 +294,7 @@
     },
     "peer.auth_enabled": {
       "name": "AuthEnabled",
-      "doc": "AuthEnabled makes the pods require AuthKey on their internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync); false (the default) serves them without a credential. A pod sends AuthKey on its own peer calls whenever one is set, whatever this says, so the key can be rolled out before enforcement is switched on. true needs AuthKey; the process refuses to start without it."
+      "doc": "AuthEnabled is tri-state: unset enforces a configured AuthKey on the internal endpoints (the buffer bridge, the peer cache, manifest, stats and tenant sync), false only sends the key and serves them without a credential, true enforces and requires AuthKey. Unset is the behaviour before this setting existed, and without a key nothing is enforced. false is step 1 of a rolling rollout of the key: every pod sends the key before any pod enforces it. true makes the process refuse to start without AuthKey."
     },
     "peer.auth_key": {
       "name": "AuthKey",

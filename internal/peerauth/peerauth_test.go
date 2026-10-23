@@ -225,7 +225,7 @@ func TestNoHandlerComparesTheKeyItself(t *testing.T) {
 }
 
 // The key check runs once per internal request, none of them on a query path:
-// the cost is two SHA-256 digests of a short key.
+// the cost is one constant-time comparison of two short strings (no digest; a different length returns at once).
 func BenchmarkBearer(b *testing.B) {
 	r := httptest.NewRequest(http.MethodPost, "/internal/x", nil)
 	r.Header.Set("Authorization", "Bearer cluster-gossip-secret")

@@ -202,7 +202,7 @@ graph LR
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `lakehouse_peer_auth_enabled` | Gauge | | 1 when this pod requires the peer key on its internal endpoints (`peer.auth_enabled`), 0 when it serves them without a credential (the default). Set once at startup; also reported by `/lakehouse/info` (`peer_auth`) |
+| `lakehouse_peer_auth_enabled` | Gauge | | 1 when this pod requires the peer key on its internal endpoints (a key is set and `peer.auth_enabled` is not `false`), 0 when it serves them without a credential (no key, or `peer.auth_enabled: false`). Set once at startup; also reported by `/lakehouse/info` (`peer_auth`) |
 
 ### Tenant Metrics
 
