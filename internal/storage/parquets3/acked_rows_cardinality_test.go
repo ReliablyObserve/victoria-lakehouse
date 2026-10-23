@@ -199,10 +199,7 @@ func TestAckedRows_NotRejudgedByAFreshCardinalityLimiter(t *testing.T) {
 				}
 				return uploads > 1
 			})
-			// The same group size as the drain after the restart: the plan of a segment depends on it, and the objects
-			// of the first attempt are the ones the restart recognises. Each tenant is a group, so the drain stops
-			// after the first upload.
-			f := e.flusher(1000)
+			f := e.flusher(5) // small groups: the drain stops after the first upload
 			e.drainAll(f)
 			e.failFn.Store(func(string) bool { return false })
 			e.restart()
