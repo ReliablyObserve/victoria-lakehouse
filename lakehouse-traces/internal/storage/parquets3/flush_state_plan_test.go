@@ -158,6 +158,13 @@ func flushStateDecoderRun(t *testing.T, seed int64) {
 	if err != nil {
 		return
 	}
+	checkAcceptedFlushState(t, p, got)
+}
+
+// checkAcceptedFlushState: a state the decoder accepted is one the flusher can use
+// and writes back as it is.
+func checkAcceptedFlushState(t *testing.T, p string, got flushState) {
+	t.Helper()
 	if got.Version != flushStateVersion {
 		t.Fatalf("accepted version %d", got.Version)
 	}
@@ -177,13 +184,24 @@ func flushStateDecoderRun(t *testing.T, seed int64) {
 	}
 }
 
-// FuzzReadFlushState is the same property for the fuzz engine on its own;
-// CI runs it through FuzzBufferRestart, which calls flushStateDecoderRun too.
+// FuzzReadFlushState takes any bytes: the decoder never panics, and a state it
+// accepts is one the flusher can use. (flushStateDecoderRun, which FuzzBufferRestart
+// calls, is the same property over states made of random field values.)
 func FuzzReadFlushState(f *testing.F) {
-	for _, seed := range []int64{0, 1, 7, 42, 1 << 40} {
-		f.Add(seed)
-	}
-	f.Fuzz(func(t *testing.T, seed int64) { flushStateDecoderRun(t, seed) })
+	f.Add([]byte(fmt.Sprintf(`{"version":%d,"committed_through_seq":1,"draining_seq":2,"draining_max_rows":5,"draining_plan":1}`, flushStateVersion)))
+	f.Add([]byte(fmt.Sprintf(`{"version":%d,"draining_seq":2}`, flushStateVersion)))
+	f.Add([]byte(`{"version":5,"draining_seq":2}`))
+	f.Add([]byte(`{`))
+	f.Add([]byte(`{"version":5,"draining_max_rows":-1,"draining_seq":18446744073709551615}`))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		p := filepath.Join(t.TempDir(), "state")
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if st, err := readFlushState(p); err == nil {
+			checkAcceptedFlushState(t, p, st)
+		}
+	})
 }
 
 func TestReadFlushState_RandomStates(t *testing.T) {
