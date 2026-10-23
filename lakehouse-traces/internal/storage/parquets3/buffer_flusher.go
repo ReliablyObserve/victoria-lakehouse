@@ -603,7 +603,7 @@ func hourEnd(h int64) int64 {
 // the rows per hour (one query, one entry per hour of the segment); for an hour
 // that holds more than maxRows rows, the rows per second of that hour (at most
 // 3,600 entries); for a second that holds more than maxRows rows, the rows per
-// bucket of that second (at most splitBuckets+1 entries). An hour that fits is
+// bucket of that second (at most splitBuckets entries). An hour that fits is
 // one group, which is what planSlices makes of it too, so the plan of a segment
 // without a crowded second is the plan planSlices made from every second.
 func (f *BufferFlusher) planGroups(ctx context.Context, g *membuffer.Segment, tenant logstorage.TenantID) ([]flushSlice, error) {

@@ -282,7 +282,7 @@ second. They are planned from summaries whose size does not depend on the
 number of distinct seconds: the rows per hour (one query per tenant and
 segment); for an hour that holds more rows than a slice, the rows per second of
 that hour (at most 3,600 entries); for a second that holds more rows than a
-slice, the rows per bucket of that second (at most 1,025 entries), where the
+slice, the rows per bucket of that second (at most 1,024 entries), where the
 bucket is upstream's `hash` pipe over the row's time, stream and message (the
 span's time, trace id and span id in traces), cut into 1,024 equal ranges. A
 crowded second is therefore written as ceil(rows / limit) objects, each of
