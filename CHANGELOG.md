@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.6] - 2026-10-23
+
 ### Changed
 
 - **CI no longer finishes runs that a newer push or a conflict with `main` made pointless (CI only; no change to the Lakehouse binaries or to runtime behaviour).** Every workflow that runs on a pull request now cancels the run still going for the previous head of the same pull request, and only that: runs of a push to `main`, a schedule or a manual run get a group of their own and are never cancelled or replaced (`ci`, `e2e`, `parity`, `security`, `codeql`, `fuzz-stress-memleak`, `changelog-pr`, `pr-labeler`, `verification-matrix-check`, `proof-metrics`, `s3-compat` and `market-data` had no `concurrency:` block; `conformance`, `gate-selftest`, `workflow-lint`, `parquet-readers` and `semgrep` could replace a queued run of `main`; `minio-images` never cancelled a superseded run and `docs-site` could cancel a deploy of `main`). A new workflow, `cancel-conflicting-pr-runs.yaml`, runs on every push to `main` and cancels the queued and in-progress `pull_request` runs of the head of each open pull request that has become `CONFLICTING`, with only `actions: write` and `pull-requests: read`. A new test, `scripts/ci/tests/test_workflow_concurrency.py`, fails when a pull request workflow has no such block, when a run of `main` could be cancelled or replaced, or when the new workflow gains a permission; its script is also run against a stub `gh`. See [Security posture](docs/security-posture.md#superseded-and-conflicting-pull-request-runs).
