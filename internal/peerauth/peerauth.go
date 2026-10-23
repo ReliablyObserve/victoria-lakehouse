@@ -73,6 +73,14 @@ func Header(r *http.Request, name, key string) bool {
 	return got != "" && Equal(got, key)
 }
 
+// RefuseRedirects is the CheckRedirect of every HTTP client that sends the peer
+// key (or another internal credential) to a peer. A peer answers its own
+// internal endpoints; a redirect from one would make the client repeat the
+// request, with the key header (a custom header is forwarded across hosts), at
+// a place the operator never configured. The client returns the redirect
+// response itself, which the callers already treat as a failed call.
+func RefuseRedirects(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
 // maxBodyBytes is the configured cap; 0 means DefaultMaxBodyBytes.
 var maxBodyBytes atomic.Int64
 

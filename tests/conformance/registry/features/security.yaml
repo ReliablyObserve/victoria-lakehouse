@@ -108,6 +108,14 @@
     - lakehouse-traces/peer_auth_test.go#TestPeerEndpoints_NotEnforcedServesWithoutKey
     - lakehouse-traces/peer_auth_test.go#TestTenantAliasAPI_FollowsTheEnforcedKey
     - charts/victoria-lakehouse/test_templates.sh
+    - internal/manifest/push_redirect_test.go#TestPusher_RefusesRedirects
+    - internal/peercache/redirect_test.go#TestPeerCache_RefusesRedirects
+    - internal/stats/sync_redirect_test.go#TestSyncPusher_RefusesRedirects
+    - internal/storage/parquets3/peer_redirect_test.go#TestBufferBridge_RefusesRedirects
+    - internal/storage/parquets3/peer_redirect_test.go#TestStorage_FetchPeerAZ_RefusesRedirects
+    - internal/tenant/sync_redirect_test.go#TestSyncPusher_RefusesRedirects
+    - lakehouse-traces/internal/storage/parquets3/peer_redirect_test.go#TestBufferBridge_RefusesRedirects
+    - lakehouse-traces/internal/storage/parquets3/peer_redirect_test.go#TestStorage_FetchPeerAZ_RefusesRedirects
   rows:
     - lh.internal.peer_auth.off_by_default_logs
     - lh.internal.peer_auth.off_by_default_traces
@@ -139,6 +147,9 @@
   tests:
     - internal/crosssignal/handler_test.go#TestEvictHintHandler_NoAuthKey_AllowAll
     - internal/crosssignal/handler_test.go#TestEvictHintHandler_ValidRequest
+    - internal/crosssignal/hardening_test.go#TestClient_RefusesRedirects
+    - internal/crosssignal/hardening_test.go#TestHandler_BodyCap
+    - internal/crosssignal/hardening_test.go#TestHandler_KeyTable
   docs:
     - docs/security.md
     - docs/configuration.md
