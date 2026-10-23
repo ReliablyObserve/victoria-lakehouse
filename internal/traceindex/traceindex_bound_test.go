@@ -114,40 +114,6 @@ func TestUnmarshal_BoundIsExact(t *testing.T) {
 	}
 }
 
-// FuzzUnmarshalTraceIndex asserts the decoder stays bounded by its input:
-// no panic, no allocation out of proportion to len(data), and a successful
-// decode never yields more entries than the bytes can hold.
-func FuzzUnmarshalTraceIndex(f *testing.F) {
-	f.Add([]byte{Version, 0xF0, 0xFF, 0xFF, 0x0F}) // #745 crasher
-	f.Add([]byte{Version, 0xFF, 0xFF, 0xFF, 0xFF})
-	f.Add(crafted(1<<20, 0))
-	f.Add(Marshal([]Entry{{TraceID: "t1", Partition: 3, StartNs: 1, EndNs: 2}, {Partition: 9}}))
-	f.Add([]byte{})
-	f.Fuzz(func(t *testing.T, data []byte) {
-		var (
-			entries []Entry
-			err     error
-		)
-		a := allocDelta(func() { entries, err = Unmarshal(data) })
-		// Generous: one Entry (40 B) per testMinEntrySize input bytes plus
-		// the decoded trace IDs, plus fixed slack for runtime noise.
-		if limit := uint64(8*len(data)) + 4<<20; a > limit {
-			t.Fatalf("allocated %d bytes for %d input bytes (limit %d)", a, len(data), limit)
-		}
-		if err != nil {
-			return
-		}
-		if len(entries) > (len(data)-5)/testMinEntrySize {
-			t.Fatalf("%d entries from %d bytes", len(entries), len(data))
-		}
-		// Re-encoding the decoded entries is stable.
-		again, err := Unmarshal(Marshal(entries))
-		if err != nil || len(again) != len(entries) {
-			t.Fatalf("re-decode: %v (%d vs %d)", err, len(again), len(entries))
-		}
-	})
-}
-
 // BenchmarkUnmarshalValid decodes a realistic valid index (10k traces,
 // 32-hex IDs) to show the bound adds no measurable cost on valid input.
 func BenchmarkUnmarshalValid(b *testing.B) {

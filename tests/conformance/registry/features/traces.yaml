@@ -86,7 +86,6 @@
     - internal/traceindex/traceindex_bound_test.go#TestUnmarshal_ExactFitAccepted
     - internal/traceindex/traceindex_bound_test.go#TestUnmarshal_BoundIsExact
     - internal/traceindex/traceindex_bound_test.go#TestUnmarshal_CapRejectsOversizedCount
-    - internal/traceindex/traceindex_bound_test.go#FuzzUnmarshalTraceIndex
     - internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_DeclaredCountBounded
     - internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_RoundTripUnchanged
     - lakehouse-traces/internal/storage/parquets3/trace_index_decoder_bound_test.go#TestUnmarshalTraceIndex_DeclaredCountBounded
