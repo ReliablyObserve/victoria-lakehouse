@@ -236,6 +236,8 @@
   tests:
     - internal/selectapi/handler_test.go
     - internal/selectapi/coverage_hardening_test.go
+    - internal/storage/field_names_block_memory_test.go#TestFieldNamesCounter_PastCapKeepsNamesTheReaderReuses
+    - internal/storage/field_names_block_memory_test.go#TestValuesWithHitsOfBlock_KeepsNoBlockMemory
     - lakehouse-traces/internal/selectapi/handler_test.go
     - tests/e2e/vlselect_multilevel_test.go#TestVLSelect_QueryReturnsData
     - tests/parity/coldhot_endpoint_parity_test.go#TestParity_LogsQL_FieldNamesSuperset

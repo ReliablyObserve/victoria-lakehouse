@@ -61,9 +61,16 @@ func bufferReq(t *testing.T, mux http.Handler, all bool, authz string) (int, str
 
 func TestMountBufferQuery_PeerKey(t *testing.T) {
 	keyed := http.NewServeMux()
-	mountBufferQuery(keyed, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k", AuthEnabled: true})
+	mountBufferQuery(keyed, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k", AuthEnabled: boolPtr(true)})
 	open := http.NewServeMux()
 	mountBufferQuery(open, twoTenantBuffer{}, config.PeerConfig{})
+	// a key and nothing else (a configuration from before peer.auth_enabled
+	// existed) enforces, like the explicit true
+	keyOnly := http.NewServeMux()
+	mountBufferQuery(keyOnly, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k"})
+	// peer.auth_enabled: false holds the key without enforcing it
+	sendOnly := http.NewServeMux()
+	mountBufferQuery(sendOnly, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k", AuthEnabled: boolPtr(false)})
 
 	for _, tc := range []struct {
 		name     string
@@ -78,6 +85,12 @@ func TestMountBufferQuery_PeerKey(t *testing.T) {
 		{"keyed, all_tenants, right key", keyed, true, "Bearer k", 200, "[t0 t7]"},
 		{"keyed, one tenant, no credential", keyed, false, "", 401, buffer.MissingKeyMessage},
 		{"keyed, one tenant, right key", keyed, false, "Bearer k", 200, "[t7]"},
+		{"key only, all_tenants, no credential", keyOnly, true, "", 401, buffer.MissingKeyMessage},
+		{"key only, one tenant, no credential", keyOnly, false, "", 401, buffer.MissingKeyMessage},
+		{"key only, one tenant, right key", keyOnly, false, "Bearer k", 200, "[t7]"},
+		{"send-only, one tenant, no credential", sendOnly, false, "", 200, "[t7]"},
+		{"send-only, all_tenants, no credential", sendOnly, true, "", 403, buffer.AllTenantsRefusedMessage},
+		{"send-only, all_tenants, right key", sendOnly, true, "Bearer k", 200, "[t0 t7]"},
 		{"open, all_tenants", open, true, "", 403, buffer.AllTenantsRefusedMessage},
 		{"open, all_tenants, any bearer", open, true, "Bearer k", 403, buffer.AllTenantsRefusedMessage},
 		{"open, one tenant", open, false, "", 200, "[t7]"},
@@ -98,7 +111,7 @@ func TestInternalSelectDisable_TurnsOffBothInternalReadRoutes(t *testing.T) {
 	}
 	mux := http.NewServeMux()
 	mountInternalProtocol(mux, false)
-	mountBufferQuery(mux, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k", AuthEnabled: true})
+	mountBufferQuery(mux, twoTenantBuffer{}, config.PeerConfig{AuthKey: "k", AuthEnabled: boolPtr(true)})
 
 	if err := flag.Set(buffer.InternalSelectDisableFlag, "true"); err != nil {
 		t.Fatal(err)

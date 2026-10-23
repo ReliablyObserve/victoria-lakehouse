@@ -5,7 +5,18 @@ import (
 	"net/http"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/peerauth"
 )
+
+// MaxHintBodyBytes caps the JSON body of a hint. A hint carries trace IDs (32
+// hex characters each) and a few numbers, and the sender batches at most
+// ClientConfig.MaxBatch of them (default 100, about 4 KB); 4 MiB leaves room
+// for about 100 000 IDs per request and keeps an unauthenticated peer port
+// from buffering more.
+const MaxHintBodyBytes = 4 << 20
+
+// KeyHeader is the header a hint carries the cross_signal.auth_key in.
+const KeyHeader = "X-Cross-Signal-Key"
 
 // PrefetchRouter enqueues cross-signal prefetch work.
 type PrefetchRouter interface {
@@ -58,7 +69,12 @@ func (h *Handler) HandlePrefetchHint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var hint PrefetchHint
+	r.Body = http.MaxBytesReader(w, r.Body, MaxHintBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&hint); err != nil {
+		if peerauth.TooLarge(err) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -84,7 +100,12 @@ func (h *Handler) HandleEvictHint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var hint EvictionHint
+	r.Body = http.MaxBytesReader(w, r.Body, MaxHintBodyBytes)
 	if err := json.NewDecoder(r.Body).Decode(&hint); err != nil {
+		if peerauth.TooLarge(err) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -99,14 +120,12 @@ func (h *Handler) HandleEvictHint(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// checkAuth validates the X-Cross-Signal-Key header against the configured auth key.
+// checkAuth validates the X-Cross-Signal-Key header against the configured auth key
+// (in constant time, through internal/peerauth).
 // If no auth key is configured (empty string), all requests are allowed.
 // Returns true if the request is authorized, false if it was rejected (and a 401 was written).
 func (h *Handler) checkAuth(w http.ResponseWriter, r *http.Request) bool {
-	if h.authKey == "" {
-		return true
-	}
-	if r.Header.Get("X-Cross-Signal-Key") != h.authKey {
+	if !peerauth.Header(r, KeyHeader, h.authKey) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
 	}

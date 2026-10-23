@@ -192,7 +192,19 @@ func assertConverged(t *testing.T, pods []*clusterPod, tag, what string) {
 // caller without the key is refused on every mutating and read endpoint of
 // every pod without changing it.
 func TestPeerAuthMultiInstance_AllKeyedAndEnforcing(t *testing.T) {
-	on := config.PeerConfig{AuthKey: peerKey, AuthEnabled: true}
+	allKeyedAndEnforcing(t, boolPtr(true))
+}
+
+// The same cluster configured the way it was before peer.auth_enabled existed
+// (the key and nothing else): it enforces, so an upgrade does not turn the
+// enforcement off.
+func TestPeerAuthMultiInstance_KeyOnlyConfigEnforces(t *testing.T) {
+	allKeyedAndEnforcing(t, nil)
+}
+
+func allKeyedAndEnforcing(t *testing.T, enabled *bool) {
+	t.Helper()
+	on := config.PeerConfig{AuthKey: peerKey, AuthEnabled: enabled}
 	pods := newCluster(t, map[string]config.PeerConfig{"writer-1": on, "writer-2": on, "reader-1": on, "reader-2": on, "select-1": on})
 	for _, p := range pods {
 		if errs := p.gossip(t, pods, "a"); len(errs) > 0 {
@@ -270,14 +282,15 @@ func bodyReader(f func(*testing.T) []byte, t *testing.T) io.Reader {
 	return strings.NewReader(string(f(t)))
 }
 
-// (b) a rolling upgrade without a flag day. Step 0: old pods (no key, as
-// before) and new pods (key configured, enforcement off) interoperate in both
-// directions. Step 1: every pod holds the key, still not enforcing. Step 2:
+// (b) a rolling rollout of the key without a flag day. Step 0: old pods (no
+// key) and new pods (key configured, peer.auth_enabled: false, send-only)
+// interoperate in both directions. Step 1: every pod holds the key, still
+// send-only. Step 2:
 // every pod enforces: the cluster still works, and a pod that missed the key
 // is refused.
 func TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps(t *testing.T) {
 	old := config.PeerConfig{}
-	keyed := config.PeerConfig{AuthKey: peerKey}
+	keyed := config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(false)} // send-only
 	pods := newCluster(t, map[string]config.PeerConfig{"writer-1": old, "writer-2": keyed, "reader-1": keyed, "reader-2": old, "select-1": keyed})
 
 	// Step 0: mixed old and new, nobody enforces.
@@ -298,7 +311,7 @@ func TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps(t *testing.T) {
 		}
 	}
 	// the select pod's global read: a keyed writer serves it, an old (keyless)
-	// writer refuses it exactly as before the setting existed
+	// writer refuses it, having no key to prove it
 	if code, _ := bufferQuery(t, pods[1], peerKey, true); code != 200 {
 		t.Errorf("select -> keyed writer, not enforcing, all_tenants with the key: %d, want 200", code)
 	}
@@ -327,7 +340,7 @@ func TestPeerAuthMultiInstance_RollingUpgradeInTwoSteps(t *testing.T) {
 
 	// Step 2: enforce, pod by pod. While the rollout is half done, the pods that
 	// enforce still accept the keyed calls of the others.
-	on := config.PeerConfig{AuthKey: peerKey, AuthEnabled: true}
+	on := config.PeerConfig{AuthKey: peerKey, AuthEnabled: boolPtr(true)}
 	for i, p := range pods {
 		p.remount(on)
 		tag := fmt.Sprintf("s2-%d", i)

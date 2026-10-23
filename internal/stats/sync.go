@@ -105,7 +105,7 @@ type SyncPusher struct {
 func NewSyncPusher(cfg SyncPusherConfig) *SyncPusher {
 	return &SyncPusher{
 		cfg:        cfg,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{CheckRedirect: peerauth.RefuseRedirects},
 	}
 }
 

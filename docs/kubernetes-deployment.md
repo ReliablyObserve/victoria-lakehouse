@@ -195,7 +195,7 @@ lakehouseConfig:
     memory_limit: 1GB            # L1 memory LRU per pod
     eviction_watermark: 0.8      # L2 eviction at 80% disk usage
   peer:
-    auth_key: "shared-secret"    # peer key of the internal endpoints (buffer bridge, peer cache, sync), sent by the pod when set; prefer peerAuth.existingSecret. Enforced only with peerAuth.enabled: true (off by default), see docs/security.md
+    auth_key: "shared-secret"    # peer key of the internal endpoints (buffer bridge, peer cache, sync), sent by the pod when set and required by it unless peerAuth.enabled is false; prefer peerAuth.existingSecret, see docs/security.md
     timeout: 5s
     max_connections: 32
 ```
@@ -375,21 +375,22 @@ common:
 ### Peer Authentication
 
 The pods' internal endpoints (manifest push, cache, stats and tenant sync, the buffer bridge) take requests without a
-credential by default, as upstream's internal endpoints do; `helm install` prints a warning saying so. Keep the pods on a
-protected network (`networkPolicy`, vmauth in front), or turn peer authentication on in two steps so a rolling restart
-never refuses a pod. The key must come from a Secret:
+credential while no peer key is set, as upstream's internal endpoints do; `helm install` prints a warning saying so.
+Keep the pods on a protected network (`networkPolicy`, vmauth in front), or set the key, which the pods then require.
+`peerAuth.enabled` is unset by default (a configured key is enforced); `false` makes the pods send the key without
+requiring it, so a rolling restart never refuses a pod. The key must come from a Secret:
 
 ```sh
 kubectl create secret generic lakehouse-peer --from-literal=peer-auth-key="$(openssl rand -hex 32)"
 # step 1: every pod gets the key and sends it; nothing is refused yet
-helm upgrade --install lh charts/victoria-lakehouse --set peerAuth.existingSecret=lakehouse-peer
-# step 2, once step 1 has rolled out: the pods require it
+helm upgrade --install lh charts/victoria-lakehouse --set peerAuth.existingSecret=lakehouse-peer --set peerAuth.enabled=false
+# step 2, once step 1 has rolled out: the pods require it (leaving peerAuth.enabled unset does the same)
 helm upgrade --install lh charts/victoria-lakehouse --set peerAuth.existingSecret=lakehouse-peer --set peerAuth.enabled=true
 ```
 
-`peerAuth.enabled` without `peerAuth.existingSecret` (or with a key in `lakehouseConfig.peer.auth_key`) fails the render.
+`peerAuth.enabled=true` without `peerAuth.existingSecret` (or with a key in `lakehouseConfig.peer.auth_key`) fails the render.
 The chart's default vmauth config forwards every path to the logs select pods, `/internal/*` included, and is not changed
-by this setting. See [Security](security.md#peer-authentication-opt-in-off-by-default).
+by this setting. See [Security](security.md#peer-authentication).
 
 ## Registering with vlselect/vtselect
 

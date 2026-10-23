@@ -21,12 +21,12 @@ import (
 // warning) of the peer authentication state.
 func initPeerAuth(cfg *config.Config) {
 	peerauth.SetMaxBodyBytes(cfg.Peer.MaxRequestBodyBytes)
-	peerauth.Report(cfg.Peer.AuthEnabled, cfg.Peer.AuthKey != "", cfg.Discovery.PeerHeadlessService != "" || cfg.Role == config.RoleInsert || cfg.Role == config.RoleSelect)
+	peerauth.Report(cfg.Peer.EnforcedKey() != "", cfg.Peer.AuthKey != "", cfg.Discovery.PeerHeadlessService != "" || cfg.Role == config.RoleInsert || cfg.Role == config.RoleSelect)
 }
 
 // peerAuthInfoFor is the peer_auth field of /lakehouse/info.
 func peerAuthInfoFor(peer config.PeerConfig) PeerAuthInfo {
-	return PeerAuthInfo{Enabled: peer.AuthEnabled, KeyConfigured: peer.AuthKey != ""}
+	return PeerAuthInfo{Enabled: peer.EnforcedKey() != "", KeyConfigured: peer.AuthKey != ""}
 }
 
 // newManifestPusher is the pusher that tells the peers about new and removed
