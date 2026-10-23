@@ -395,6 +395,14 @@ def apply_command(out_dir, count):
     )
 
 
+APPLY_NOTE = (
+    "The bodies to write are in `new/`, the current ones in `old/`; apply needs this directory (plan.json, new/) to still be here "
+    "and the dry run to match the live releases, otherwise it refuses. It needs the flag AND the variable, and it is the only apply "
+    "path: it checks the cutoff, immutability, the live body and the artifacts part, writes backup/TAG.md before each edit, "
+    "verifies the body afterwards and resumes from apply.log.jsonl:"
+)
+
+
 def render_report(plan, out_dir, repo_name, max_ref, samples_head=18):
     counts = {}
     for entry in plan:
@@ -472,10 +480,7 @@ def render_report(plan, out_dir, repo_name, max_ref, samples_head=18):
         "",
         "## Apply (not run)",
         "",
-        "The bodies to write are in `new/`, the current ones in `old/`; apply needs this directory (plan.json, new/) to still be here "
-        "and the dry run to match the live releases, otherwise it refuses. It needs the flag AND the variable, and it is the only apply "
-        "path: it checks the cutoff, immutability, the live body and the artifacts part, writes backup/TAG.md before each edit, "
-        "verifies the body afterwards and resumes from apply.log.jsonl:",
+        APPLY_NOTE,
         "",
         "```bash",
         "# a batch of the oldest unedited eligible releases; repeat (resumes from apply.log.jsonl) or drop --max for all",
