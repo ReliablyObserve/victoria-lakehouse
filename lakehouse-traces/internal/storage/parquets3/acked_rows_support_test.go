@@ -5,6 +5,7 @@ import (
 	"flag"
 	"math"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -90,7 +91,9 @@ func (e *segEnv) bufferMsgs() map[string]int {
 				}
 				mu.Lock()
 				for _, v := range c.Values {
-					out[v]++
+					// Clone: upstream reuses the block's memory for the worker's next
+					// block, and a map key that points into it changes under the map.
+					out[strings.Clone(v)]++
 				}
 				mu.Unlock()
 			}

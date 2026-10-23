@@ -41,6 +41,7 @@
       - internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_EpochEdgeAndAllRefusedBatch
       - internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_AreNotReadableFromTheBuffer
       - internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce
+      - internal/storage/parquets3/acked_rows_buffer_read_test.go#TestAckedRowsBufferRead_FindsEveryRowOfEveryBlock
       - internal/vlstorage/insert_before_epoch_test.go#TestInsertAdapter_RefusesRowsBeforeTheEpoch
       - internal/vlstorage/insert_before_epoch_test.go#TestInsertAdapter_RefusedRowsTakeNoCardinalitySlot
       - internal/vlstorage/insert_before_epoch_test.go#TestInsertAdapter_BeforeEpochProperty
@@ -72,6 +73,7 @@
       - lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_EpochEdgeAndAllRefusedBatch
       - lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_AreNotReadableFromTheBuffer
       - lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go#TestPre1970Rows_PropertyEveryRowIsRefusedOrStoredOnce
+      - lakehouse-traces/internal/storage/parquets3/acked_rows_buffer_read_test.go#TestAckedRowsBufferRead_FindsEveryRowOfEveryBlock
       - lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go#TestPre1970Rows_SpanWithAnIndexStartBeforeTheEpochIsFoundByTraceID
       - lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go#TestIngestPremise_OTLPTimesAboveInt64NeverReachTheBuffer
       - lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go#TestPre1970Rows_NativeInsertIsRefusedAtTheBuffer
