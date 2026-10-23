@@ -58,6 +58,7 @@ func FuzzIndexMarshalUnmarshal(f *testing.F) {
 	f.Add([]byte{1, 0x40, 0x42, 0x0F, 0x00})
 	f.Add([]byte{2, 0x40, 0x42, 0x0F, 0x00})
 	f.Add([]byte{2, 1, 0, 0, 0, 0, 0, 0xFF, 0xFF})
+	f.Add([]byte{2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF}) // column count declared by a LATER entry
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// Must not panic. The allocation must stay in proportion to the
@@ -95,19 +96,47 @@ func FuzzIndexMarshalUnmarshal(f *testing.F) {
 }
 
 // declaresLargeCount reports whether data is a v1/v2 value whose header
-// declares more than 1024 entries, or whose first v2 entry declares more than
-// 1024 columns: the shapes whose preallocation was not bounded by the payload.
+// declares more than 1024 entries, or (v2) in which any entry declares more
+// than 1024 columns: the shapes whose preallocation was not bounded by the
+// payload. It walks the entries as the decoder does, so it is bounded by
+// len(data), and stops at the first byte it cannot follow.
 func declaresLargeCount(data []byte) bool {
 	if len(data) < 5 || (data[0] != 1 && data[0] != 2) {
 		return false
 	}
-	if binary.LittleEndian.Uint32(data[1:5]) > 1024 {
+	count := binary.LittleEndian.Uint32(data[1:5])
+	if count > 1024 {
 		return true
 	}
-	if data[0] == 2 && len(data) >= 9 {
-		keyLen := int(binary.LittleEndian.Uint16(data[5:]))
-		if p := 7 + keyLen; p+2 <= len(data) && binary.LittleEndian.Uint16(data[p:]) > 1024 {
+	if data[0] != 2 {
+		return false
+	}
+	pos := 5
+	for i := uint32(0); i < count; i++ {
+		if pos+2 > len(data) {
+			return false
+		}
+		pos += 2 + int(binary.LittleEndian.Uint16(data[pos:]))
+		if pos+2 > len(data) {
+			return false
+		}
+		cols := int(binary.LittleEndian.Uint16(data[pos:]))
+		pos += 2
+		if cols > 1024 {
 			return true
+		}
+		for c := 0; c < cols; c++ {
+			if pos+1 > len(data) {
+				return false
+			}
+			pos += 1 + int(data[pos])
+			if pos+4 > len(data) {
+				return false
+			}
+			pos += 4 + int(binary.LittleEndian.Uint32(data[pos:]))
+			if pos < 0 || pos > len(data) {
+				return false
+			}
 		}
 	}
 	return false

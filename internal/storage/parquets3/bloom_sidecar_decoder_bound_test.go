@@ -59,3 +59,40 @@ func TestCheckFileBloom_HostileSidecarBounded(t *testing.T) {
 		}
 	}
 }
+
+// TestBloomS3Loader_HostileBundleBounded: the partition `_bloom.bin` loader
+// (bloomS3Loader, used by the bloom cache) decodes the same untrusted bytes
+// with bloomindex.Unmarshal. A corrupt bundle is skipped (nil index, no error)
+// without allocating in proportion to the declared count (#763).
+func TestBloomS3Loader_HostileBundleBounded(t *testing.T) {
+	const ceiling = 4 << 20 // assumed generous: TotalAlloc is process-wide; the crashers allocated ~56 MB
+	mock := newMockS3Server()
+	defer mock.close()
+	pool := testPool(t, mock.url())
+	loader := bloomS3Loader(pool, "logs/")
+
+	good := bloomindex.NewFileBloomIndex(map[string][]string{"service.name": {"api-gw"}}, 0.01)
+	mock.putFile("logs/dt=2026-05-10/hour=01/_bloom.bin", good.Marshal())
+	if idx, err := loader(context.Background(), "dt=2026-05-10/hour=01"); err != nil || idx == nil {
+		t.Fatalf("valid bundle must load: idx=%v err=%v", idx, err)
+	}
+
+	for i, data := range [][]byte{
+		{1, 0x40, 0x42, 0x0F, 0x00},
+		{2, 0x40, 0x42, 0x0F, 0x00},
+	} {
+		part := "dt=2026-05-10/hour=0" + string(rune('2'+i))
+		mock.putFile("logs/"+part+"/_bloom.bin", data)
+		var (
+			idx *bloomindex.Index
+			err error
+		)
+		a := bloomSidecarAllocDelta(func() { idx, err = loader(context.Background(), part) })
+		if err != nil || idx != nil {
+			t.Errorf("v%d: a corrupt bundle must be skipped (nil, nil), got idx=%v err=%v", i+1, idx, err)
+		}
+		if a > ceiling {
+			t.Errorf("v%d: loader allocated %d bytes for a %d-byte bundle (ceiling %d)", i+1, a, len(data), ceiling)
+		}
+	}
+}

@@ -54,17 +54,16 @@ func marshalV1(entries map[string]*Filter) []byte {
 func TestUnmarshal_DeclaredCountBoundedByPayload(t *testing.T) {
 	const ceiling = 4 << 20 // 4 MiB (assumed generous: TotalAlloc is process-wide)
 	cases := map[string][]byte{
-		"v1 5 bytes count 1M":          {1, 0x40, 0x42, 0x0F, 0x00},
-		"v2 5 bytes count 1M":          {2, 0x40, 0x42, 0x0F, 0x00},
-		"v1 count at cap":              crafted(1, maxIndexEntries, 0),
-		"v2 count at cap":              crafted(2, maxIndexEntries, 0),
-		"v1 count 1":                   crafted(1, 1, 0),
-		"v2 count 1":                   crafted(2, 1, 0),
-		"v1 count exceeds fit":         crafted(1, 1000, 8*1000-1),
-		"v2 count exceeds fit":         crafted(2, 1000, 4*1000-1),
-		"v1 count > cap":               crafted(1, maxIndexEntries+1, 0),
-		"v2 count 2^32-1":              crafted(2, 0xFFFFFFFF, 0),
-		"v2 one entry col count 65535": append(crafted(2, 1, 0), 0, 0, 0xFF, 0xFF), // key_len 0, col_count 65535, no columns
+		"v1 5 bytes count 1M":  {1, 0x40, 0x42, 0x0F, 0x00},
+		"v2 5 bytes count 1M":  {2, 0x40, 0x42, 0x0F, 0x00},
+		"v1 count at cap":      crafted(1, maxIndexEntries, 0),
+		"v2 count at cap":      crafted(2, maxIndexEntries, 0),
+		"v1 count 1":           crafted(1, 1, 0),
+		"v2 count 1":           crafted(2, 1, 0),
+		"v1 count exceeds fit": crafted(1, 1000, 8*1000-1),
+		"v2 count exceeds fit": crafted(2, 1000, 4*1000-1),
+		"v1 count > cap":       crafted(1, maxIndexEntries+1, 0),
+		"v2 count 2^32-1":      crafted(2, 0xFFFFFFFF, 0),
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -396,7 +395,10 @@ func mutate(r *rand.Rand, in []byte) []byte {
 // random byte/count/length mutations. 0 divergences required.
 func TestUnmarshal_DifferentialAgainstLegacy(t *testing.T) {
 	iters := 400
-	if testing.Short() {
+	switch {
+	case raceEnabled:
+		iters = 25 // ~20x slower under the race detector; the logic under test is single-threaded
+	case testing.Short():
 		iters = 120
 	}
 	r := rand.New(rand.NewSource(763))
@@ -530,5 +532,65 @@ func TestUnmarshal_DeclaredColumnCountBounded(t *testing.T) {
 	}
 	if a > ceiling {
 		t.Fatalf("allocated %d bytes for a %d-byte value (ceiling %d)", a, len(data), ceiling)
+	}
+}
+
+// hostileColumnCount builds a v2 value of two entries: entry 0 is an empty key
+// with no columns, entry 1 an empty key declaring 65535 columns with no column
+// bytes at all.
+func hostileColumnCount() []byte {
+	b := crafted(2, 2, 0)
+	b = binary.LittleEndian.AppendUint16(b, 0) // entry 0: empty key
+	b = binary.LittleEndian.AppendUint16(b, 0) // entry 0: no columns
+	b = binary.LittleEndian.AppendUint16(b, 0) // entry 1: empty key
+	b = binary.LittleEndian.AppendUint16(b, 0xFFFF)
+	return b
+}
+
+// TestUnmarshal_DeclaredColumnCountBoundedOnLaterEntry: the column-count bound
+// applies to EVERY entry, not just the first (a mutant that checked entry 0
+// only still let each later entry size a ~3.5 MB map from 2 bytes).
+func TestUnmarshal_DeclaredColumnCountBoundedOnLaterEntry(t *testing.T) {
+	const ceiling = 256 << 10 // assumed generous: the check-on-entry-0-only mutant allocated ~3.5 MB; the fix allocates well under 1 KiB
+	data := hostileColumnCount()
+	var err error
+	a := allocDelta(func() { _, err = Unmarshal(data) })
+	if a > ceiling {
+		t.Fatalf("allocated %d bytes for a %d-byte value (ceiling %d)", a, len(data), ceiling)
+	}
+	if err == nil || !strings.Contains(err.Error(), "exceeds payload") {
+		t.Fatalf("expected the payload-bound error, got %v", err)
+	}
+}
+
+// TestUnmarshal_BoundIsExactOnLaterEntry: the per-entry column bound is exact
+// for a NON-first entry too: c minimum-size columns after a normal first entry
+// decode, and one byte less is refused by the bound.
+func TestUnmarshal_BoundIsExactOnLaterEntry(t *testing.T) {
+	const c = 300
+	build := func(colBytes int) []byte {
+		b := crafted(2, 2, 0)
+		// entry 0: empty key, one minimum-size column (empty name, 2-byte filter)
+		b = binary.LittleEndian.AppendUint16(b, 0)
+		b = binary.LittleEndian.AppendUint16(b, 1)
+		b = append(b, 0)
+		b = binary.LittleEndian.AppendUint32(b, 2)
+		b = append(b, 1, 0)
+		// entry 1: empty key, c columns declared, colBytes bytes of columns
+		b = binary.LittleEndian.AppendUint16(b, 0)
+		b = binary.LittleEndian.AppendUint16(b, c)
+		for i := 0; i < colBytes/7; i++ {
+			b = append(b, 0)
+			b = binary.LittleEndian.AppendUint32(b, 2)
+			b = append(b, 1, 0)
+		}
+		return append(b, make([]byte, colBytes%7)...)
+	}
+	got, err := Unmarshal(build(7 * c))
+	if err != nil || got.Len() != 1 { // both entries have the empty key; the later one wins
+		t.Fatalf("exact fit: %v err %v", got, err)
+	}
+	if _, err := Unmarshal(build(7*c - 1)); err == nil || !strings.Contains(err.Error(), "exceeds payload") {
+		t.Fatalf("expected the payload-bound error one byte short, got %v", err)
 	}
 }
