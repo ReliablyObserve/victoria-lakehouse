@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.8] - 2026-10-23
+
 ### Fixed
 
 - **The `_trace_idx` footer value is decoded by one bounded decoder, so a hostile or corrupt value can no longer make the traces binary's trace-by-ID read path allocate tens of megabytes, and the logs module's unbounded copy of the decoder is gone (#745).** The decoder reads the entry count the value declares and preallocated from it. The logs module's own copy had no limit: a 5-byte value declaring 268 million entries allocated 10.7 GB (2^32-1 entries, 172 GB). That copy was not called by the logs binary, which only writes `_trace_idx`, and the compactor only writes it too. The shared decoder in `internal/traceindex`, whose only runtime caller is the traces binary's trace-by-ID read path (the footer pre-filter and the per-file lookup), was capped at 2^20 entries but still allocated 42 MB for the same 5 bytes. The logs copy now routes through the shared decoder, and the shared decoder also refuses a declared count that the bytes after the header cannot hold (an entry takes at least 20 bytes), before it allocates. Every valid index already satisfies that, so a valid value decodes exactly as before and the Parquet files do not change; a value that does not fit is refused as before (the file is treated as having no index), now with an allocation bounded by the size of the value. Measured on a 10,000-entry index: 218 µs before and 193 µs after per decode (no significant difference, p=0.53, n=10), 704.5 KiB and 10,000 allocations per decode both ways.
