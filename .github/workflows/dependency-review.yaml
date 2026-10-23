@@ -1,0 +1,35 @@
+name: Dependency Review
+
+# Blocks a pull request that adds or upgrades a dependency with a known HIGH or CRITICAL
+# vulnerability (GitHub dependency graph and advisory database: Go modules, npm and pip lock
+# files, Dockerfiles, workflows). License checks are off. The vulnerabilities already in the
+# default branch are tracked by Dependabot alerts and govulncheck, not by this job.
+#
+# No checkout, no secrets, read-only token. Not a required check and not gated by the CI scope.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: dependency-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          license-check: false
+          comment-summary-in-pr: never

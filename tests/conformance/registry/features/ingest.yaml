@@ -43,6 +43,8 @@
     - lh.durability.select_pod_lists_after_segment_retired_traces
     - lh.durability.kill_between_upload_and_commit_logs
     - lh.durability.kill_between_upload_and_commit_traces
+    - lh.durability.kill_during_segment_reap_logs
+    - lh.durability.kill_during_segment_reap_traces
   tests:
     - internal/storage/parquets3/buffer_flusher_segments_test.go
     - internal/storage/parquets3/buffer_restart_test.go

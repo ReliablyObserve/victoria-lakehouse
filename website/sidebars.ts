@@ -59,6 +59,7 @@ const sidebars: SidebarsConfig = {
         'tenant-stats',
         'lakehouse-explorer',
         'security',
+        'security-posture',
         'scaling',
         'upstream-sync',
         'release-notes',

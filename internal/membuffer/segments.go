@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/fs"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 )
 
@@ -205,6 +206,14 @@ func nonceTime(nonce string) time.Time {
 // and a new active segment is created for the writes. Which of the found
 // segments are already committed is the flusher's record (CommitThrough).
 //
+// A segment directory that a Reap was removing when the process died is removed
+// again, not opened, as upstream does with its own directories (#390): Reap
+// removes with fs.MustRemoveDir, which writes and fsyncs a marker file before it
+// deletes anything, and fs.IsPartiallyRemovedDir finds the marker (or the empty
+// directory left after it). Only Reap removes a segment directory, and only a
+// committed one, so the rows of such a directory are already in Parquet; an
+// empty directory (a crash right after a new segment's mkdir) holds no rows.
+//
 // A directory left by an earlier, single-store buffer (upstream parts directly
 // under cfg.Path) is moved aside, not read: its rows were written to Parquet by
 // that release's own flush path.
@@ -234,12 +243,19 @@ func OpenSegments(cfg Config) (*Segments, error) {
 			continue
 		}
 		dir := filepath.Join(cfg.Path, e.Name())
-		g := &Segment{seq: seq, nonce: m[2], dir: dir, created: nonceTime(m[2]), sealed: true}
-		g.st = logstorage.MustOpenStorage(dir, s.storageConfig())
-		s.list = append(s.list, g)
+		// The seq is taken even from a directory that is removed below: a new
+		// segment must never reuse the seq of one that was committed.
 		if seq >= s.nextSeq {
 			s.nextSeq = seq + 1
 		}
+		if fs.IsPartiallyRemovedDir(dir) {
+			logger.Infof("membuffer: removing segment directory %s, whose removal was interrupted (its rows are already written to object storage)", dir)
+			fs.MustRemoveDir(dir)
+			continue
+		}
+		g := &Segment{seq: seq, nonce: m[2], dir: dir, created: nonceTime(m[2]), sealed: true}
+		g.st = logstorage.MustOpenStorage(dir, s.storageConfig())
+		s.list = append(s.list, g)
 	}
 	sort.Slice(s.list, func(i, j int) bool { return s.list[i].seq < s.list[j].seq })
 	s.active = s.newSegment()
@@ -440,7 +456,9 @@ func (s *Segments) ReleaseHeld() int {
 // Reap retires the committed segments whose grace has passed, so no new
 // snapshot takes them, and removes every retired segment no snapshot holds any
 // more (or that a snapshot has held for RetiredHoldLimit): upstream MustClose,
-// then the directory. It returns how many it removed.
+// then the directory with upstream fs.MustRemoveDir, so a crash in the middle of
+// the removal leaves a directory OpenSegments recognises and removes (#390). It
+// returns how many it removed.
 func (s *Segments) Reap(now time.Time, grace time.Duration) int {
 	s.mu.Lock()
 	keep := s.list[:0]
@@ -472,9 +490,7 @@ func (s *Segments) Reap(now time.Time, grace time.Duration) int {
 	s.mu.Unlock()
 	for _, g := range gone {
 		g.closeForGood()
-		if err := os.RemoveAll(g.dir); err != nil {
-			logger.Errorf("membuffer: cannot remove committed segment %s: %s", g.dir, err)
-		}
+		fs.MustRemoveDir(g.dir)
 	}
 	return len(gone)
 }

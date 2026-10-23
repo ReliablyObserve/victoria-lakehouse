@@ -252,7 +252,8 @@ fault; `make conformance-check` verifies that every test they cite exists, that
 the twins agree, that a loss-counted cell names a registered metric and that this
 document names every cell) are `lh.durability.pre1970_rows_*`,
 `lh.durability.pre1970_stored_*` (the known difference from hot VictoriaLogs/VictoriaTraces),
-`lh.durability.restart_cardinality_gate_*`, `lh.durability.drain_plan_mismatch_*`
+`lh.durability.restart_cardinality_gate_*`, `lh.durability.drain_plan_mismatch_*`,
+`lh.durability.kill_during_segment_reap_*`
 and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 
 ### 2.0 Durability matrix — what survives what
@@ -261,6 +262,7 @@ and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 |---|---|
 | **`kill -9` / power loss** | Rows older than upstream's flush window (about 11 s at worst) are in fsynced parts and are restored when the pod starts; the restarted flusher drains every segment it finds. Loss window = upstream's, as in hot VL/VT. |
 | **`kill -9` between a drain's upload and its commit** | Not proven by a test: the recovery code (stored marks, HEAD adoption, marker before commit, §2.1) exists, but no test kills the process at those steps. Known gap, #497 (`lh.durability.kill_between_upload_and_commit_*`). |
+| **`kill -9` while a committed segment's directory is removed** | The removal is upstream's `fs.MustRemoveDir`: a marker file (`.delete-this-dir`) is written and fsynced before anything is deleted. At the next start a segment directory that upstream's `fs.IsPartiallyRemovedDir` reports (the marker, or an empty directory) is removed before the buffer opens, as upstream does with its own partitions; its rows are in Parquet already, since only committed segments are removed. The pod starts and nothing is lost or served twice (§2.3, `lh.durability.kill_during_segment_reap_*`). |
 | **Normal shutdown (SIGTERM)** | The flusher stops (a drain cut short resumes after the restart) and the buffer closes: upstream writes the in-memory rows of every segment to disk. Nothing is lost. The manifest snapshot is saved before and after the close. |
 | **Object store unreachable or slow** | Nothing is refused. Sealed segments wait on disk; each failed drain is retried with the same bytes after a back-off (1 s doubling to 30 s). Past the volume's free-space floor inserts get 429. |
 | **A segment whose rows the drain cannot all plan** | The segment is stalled (`lakehouse_buffer_stalled_segments` = 1) and not committed; the plan check uploads nothing, a group check can fire after earlier groups were uploaded (§2.1); an error is logged and `lakehouse_buffer_flush_errors_total{stage="invariant"}` rises (§2.1 and its runbook, `lh.durability.drain_plan_mismatch_*`); the plan is made again on every attempt, so a mismatch that does not repeat clears. Inserts continue until the buffer volume's floor answers 429. |
@@ -547,7 +549,17 @@ binaries). Once the grace has passed the segment is
 the queries that already hold it finish on it. It is closed and its directory
 removed at the first flusher tick (1 s) after the last of those queries ends,
 so a steady stream of overlapping queries cannot keep it alive
-(`lakehouse_buffer_segments{state="retired"}`). A snapshot that holds a
+(`lakehouse_buffer_segments{state="retired"}`). The directory is removed the way
+upstream removes its own directories (`fs.MustRemoveDir`, marker first), so a
+kill in the middle of the removal leaves a directory the next start recognises
+and removes instead of opening it (#390); that removal keeps the marker until the
+directory is gone, so a start stopped in the middle of it is finished by the next.
+A removal that fails for any other
+reason (missing permissions, a read-only volume) stops the process, as
+it stops upstream. **Upgrading from a build before this fix:** a segment directory
+that such a build left half-deleted has no marker and still fails the start (or the first query); remove
+that `seg-*` directory under `insert.buffer_dir` by hand. No row is lost: only
+committed segments are removed, so its rows are already in Parquet. A snapshot that holds a
 retired segment for 30 minutes is treated as leaked: the segment is closed
 anyway, and that query's late read of it fails with a logged warning. The rows are served with **no
 time watermark**: a late row, a backfilled row or a restarted pod needs no
@@ -560,7 +572,13 @@ each group of the drain, committed, late rows, segment removed, restart),
 `TestBufferView_PeerWithoutNoncesExcludesNothing`, `TestBufferView_TraceByIDThroughTheHandoff`,
 `TestBufferView_SegmentsInOnePartitionAreReadTogether`,
 `TestBufferBridge_NoncesComeWithTheRows`, `TestSegmentsHeader_ListsTheNonces`,
-`TestSegmentsHeader_SentWithAnEmptyAnswer`, `TestParseSegments`.
+`TestSegmentsHeader_SentWithAnEmptyAnswer`, `TestParseSegments`; for a kill during
+the removal: `TestSegments_InterruptedReapIsRemovedAtOpen` (every state the
+removal can leave), `TestSegments_CrashDuringReapThenRestart` (a removal stopped
+half-way by the code), `TestSegments_StartupRemovalStoppedHalfWayIsFinishedNextStart`
+(the start's own removal stopped half-way), `TestSegments_InterruptedRemovalNeverReusesASeq` and
+`TestSegments_RestartAfterAnInterruptedReap` (the drain after the restart is
+exact).
 
 ### 2.4 Compaction leaves live segments alone
 
