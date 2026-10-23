@@ -122,12 +122,13 @@ A PR that adds a Lakehouse feature or extends an existing one is not mergeable u
    affects the read or write path (validated responses, compared against the recorded baseline).
 3. **Generated docs** — run `make conformance-gen`; `docs/features.md`, `UPSTREAM_COVERAGE.md` and the README
    highlights block are generated from the registry and must be committed current.
-4. **CHANGELOG** — an `[Unreleased]` `### Added` bullet whose bold lead-in maps to the feature (the catalog gate
-   matches `### Added` lead-ins; an extension of an existing feature may use `### Changed`, and still updates the
-   catalog when it adds a route, handler, flag or registry row).
+4. **CHANGELOG** — a fragment, `changelog.d/<PR-or-slug>.added.md`, whose bullet has a bold lead-in that maps to
+   the feature (the catalog gate matches `### Added` lead-ins, and an `added` fragment is one; an extension of an
+   existing feature may use `changed`, and still updates the catalog when it adds a route, handler, flag or
+   registry row). `CHANGELOG.md` itself is not edited by hand: see [changelog.d/README.md](changelog.d/README.md).
 
 CI enforces this through the required `conformance-inventory` check: it fails a PR that adds a CHANGELOG
-`### Added` bullet, a route or handler, a `lakehouse.*` flag, or an `lh.*` registry row without changing
+`### Added` bullet (or an `added` fragment), a route or handler, a `lakehouse.*` flag, or an `lh.*` registry row without changing
 `tests/conformance/registry/features/`, and any PR whose generated files (`docs/features.md`,
 `UPSTREAM_COVERAGE.md`, the README highlights block, the upstream inventory) are stale.
 
@@ -173,7 +174,8 @@ token it needs.
 
 The GitHub release notes are generated from `CHANGELOG.md` in the VictoriaLogs style
 (`SECURITY`, `FEATURE`, `BUGFIX` bullets). Behaviour an operator has to act on when upgrading
-goes in a `### Update notes` subsection of `[Unreleased]`, one bullet per note. The mapping and
+goes in a `### Update notes` subsection of the release's `CHANGELOG.md` section, one bullet per note (a fragment
+has no such kind yet: put the instruction in the bullet of the change). The mapping and
 the preview command are in [docs/release-notes.md](docs/release-notes.md).
 
 ## Architecture

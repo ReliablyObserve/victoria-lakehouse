@@ -394,6 +394,7 @@ class MetadataStep(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
         (self.meta / "pr-body.md").write_text("body\n")
+        (self.meta / "consumed.txt").write_text("")
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.work), *args], check=True, capture_output=True, text=True, env=self.env)
@@ -403,6 +404,11 @@ class MetadataStep(unittest.TestCase):
         calls.write_text("")
         env = dict(self.env, PATH=f"{self.bindir}{os.pathsep}{os.environ['PATH']}", VERSION="v1.2.3",
                    RUNNER_TEMP=str(self.runner), GH_CALLS=str(calls), GH_TOKEN="x")
+        # the list is checked by its own step, before the tag is pushed and the release published
+        check = subprocess.run(["bash", "-e", "-c", step_run("metadata", "Check the released fragment list")],
+                               cwd=self.work, env=env, capture_output=True, text=True)
+        if check.returncode != 0:
+            return check, calls.read_text()
         script = step_run("metadata", "Create release metadata PR")
         result = subprocess.run(["bash", "-e", "-c", script], cwd=self.work, env=env, capture_output=True, text=True)
         return result, calls.read_text()
@@ -449,6 +455,61 @@ class MetadataStep(unittest.TestCase):
 
     def test_a_missing_file_is_refused(self):
         self.refused(lambda: (self.meta / "files" / "docs" / "features.md").unlink())
+
+    def test_the_released_fragments_are_removed_in_the_same_pull_request(self):
+        # two fragments on main; the release consumed the first, the second was merged after the release commit
+        self.git("rm", "-q", "-r", "--cached", ".")
+        for name in ("changelog.d/1.fixed.md", "changelog.d/2.added.md"):
+            path = self.work / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("- **F.** t\n")
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "fragments")
+        self.git("push", "-q", "origin", "HEAD:main")
+        (self.meta / "consumed.txt").write_text("changelog.d/1.fixed.md\n")
+        result, calls = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        changed = subprocess.run(["git", "-C", str(self.origin), "diff", "--name-status", "main", "chore/release-metadata-v1.2.3"],
+                                 capture_output=True, text=True).stdout.split("\n")
+        self.assertIn("D\tchangelog.d/1.fixed.md", changed)
+        self.assertNotIn("D\tchangelog.d/2.added.md", changed)
+
+    def test_a_consumed_list_with_anything_but_a_fragment_path_is_refused(self):
+        for line in ("CHANGELOG.md", "changelog.d/../.github/workflows/x.yaml", "changelog.d/x.fix.md",
+                     "/etc/passwd", "changelog.d/README.md", "changelog.d/a/b.fixed.md",
+                     "x/changelog.d/1.fixed.md", "changelog.d/1.fixed.md.sh", "changelog.d/-a.fixed.md",
+                     "changelog.d/" + "a" * 82 + ".fixed.md", "changelog.d/1.fixed.md ", " changelog.d/1.fixed.md",
+                     "changelog.d/1.fixed.md\nCHANGELOG.md", "changelog.d/UP.fixed.md"):
+            with self.subTest(line=line):
+                (self.meta / "consumed.txt").write_text(f"changelog.d/1.fixed.md\n{line}\n")
+                result, calls = self.run_step()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("not a changelog fragment", result.stdout)  # refused by the check, not by a later git failure
+                self.assertEqual(calls, "")
+                self.assertEqual(self.pushed_branches(), ["main"])
+
+    def test_a_bad_list_stops_the_release_before_the_tag_is_pushed(self):
+        """The list is its own step, ahead of 'Push the tag' and 'Publish the release'."""
+        names = [step.get("name") for step in JOBS["metadata"]["steps"]]
+        self.assertLess(names.index("Check the released fragment list"), names.index("Push the tag"))
+        self.assertLess(names.index("Check the released fragment list"), names.index("Publish the release"))
+
+    def test_a_symlink_in_the_checkout_is_not_removed(self):
+        self.git("rm", "-q", "-r", "--cached", ".")
+        (self.work / "changelog.d").mkdir(exist_ok=True)
+        (self.work / "changelog.d" / "1.fixed.md").symlink_to("../README.md")
+        self.git("add", "-A")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "a link")
+        self.git("push", "-q", "origin", "HEAD:main")
+        (self.meta / "consumed.txt").write_text("changelog.d/1.fixed.md\n")
+        result, calls = self.run_step()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        changed = subprocess.run(["git", "-C", str(self.origin), "diff", "--name-status", "main", "chore/release-metadata-v1.2.3"],
+                                 capture_output=True, text=True).stdout.split("\n")
+        self.assertNotIn("D\tchangelog.d/1.fixed.md", changed)
+
+    def test_a_missing_consumed_list_is_refused(self):
+        self.refused(lambda: (self.meta / "consumed.txt").unlink())
 
     def test_a_missing_or_linked_body_is_refused(self):
         self.refused(lambda: (self.meta / "pr-body.md").unlink())
