@@ -193,6 +193,10 @@ func (c *Controller) Get(ctx context.Context, key string, size int64) ([]byte, e
 	return data, nil
 }
 
+// DownloadWaiters is the number of callers that have joined the download in flight
+// for key (0 when none is in flight).
+func (c *Controller) DownloadWaiters(key string) int { return c.downloads.Waiters(key) }
+
 func (c *Controller) singleflightDownload(ctx context.Context, key string, size int64) ([]byte, error) {
 	data, err, _ := c.downloads.DoCtx(ctx, key, func(ctx context.Context) ([]byte, error) {
 		return c.s3Fetcher.Download(ctx, key)

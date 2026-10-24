@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1361,20 +1362,28 @@ func TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793(t *testing.T) {
 	}
 }
 
-// Two queries share one download of an object. The query that started it stops at
-// its own deadline; the other, which has none, must read the object on its own
-// context and answer completely, not fail with the first query's deadline (a 502
-// "cannot read ...: context deadline exceeded" for a read nothing was wrong with).
+// Two queries share one download of an object. The query that started it ends
+// (its deadline passes, or it is cancelled before the response, or in the middle of
+// the body, where the SDK wraps the cause as "read s3 body: %w"); the other, which
+// has no deadline, JOINED that download (the test waits for the join, it does not
+// sleep for it) and must read the object on its own context and answer completely,
+// not fail with the first query's context error (a 502 "cannot read ...: context
+// deadline exceeded" for a read nothing was wrong with). Two whole-object downloads
+// are the price: the first, ended by its context, and the second query's own.
 func TestRowRead_SharedDownload_LeaderDeadlineDoesNotFailTheOtherQuery(t *testing.T) {
 	// The download goes through the smart cache on a select pod and through the
 	// storage's own group on a node without one: both are held to it.
-	for _, name := range []string{"storage_group", "smart_cache"} {
-		t.Run(name, func(t *testing.T) { sharedDownloadLeaderDeadline(t, name == "smart_cache") })
+	for _, group := range []string{"storage_group", "smart_cache"} {
+		for _, end := range []string{"deadline", "cancel", "cancel_mid_body"} {
+			t.Run(group+"/"+end, func(t *testing.T) { sharedDownloadLeaderEnds(t, group == "smart_cache", end) })
+		}
 	}
 }
 
-func sharedDownloadLeaderDeadline(t *testing.T, withSmartCache bool) {
+func sharedDownloadLeaderEnds(t *testing.T, withSmartCache bool, end string) {
 	fx := newRCFixtureN(t, 1, 1, rcKeyFmt)
+	key := fx.keys[0]
+	waiters := func() int { return fx.s.sfGroup.Waiters(key) }
 	if withSmartCache {
 		fx.s.smartCache = smartcache.NewController(smartcache.ControllerConfig{
 			L1:           &l1Adapter{lru: fx.s.memCache},
@@ -1387,11 +1396,18 @@ func sharedDownloadLeaderDeadline(t *testing.T, withSmartCache bool) {
 			HotWindow:    time.Minute,
 			Signal:       "traces",
 		})
+		waiters = func() int { return fx.s.smartCache.DownloadWaiters(key) }
 	}
 	var wholeGets atomic.Int32
 	started := make(chan struct{})
-	fx.fs.setFault(fx.keys[0], func(w http.ResponseWriter, r *http.Request) {
+	fx.fs.setFault(key, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.Header.Get("Range") == "" && wholeGets.Add(1) == 1 {
+			if end == "cancel_mid_body" { // the response starts, then the body stalls
+				w.Header().Set("Content-Length", strconv.Itoa(len(fx.datas[0])))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(fx.datas[0][:512])
+				w.(http.Flusher).Flush()
+			}
 			close(started)
 			<-r.Context().Done() // the first download is the one that never finishes
 			return
@@ -1399,7 +1415,15 @@ func sharedDownloadLeaderDeadline(t *testing.T, withSmartCache bool) {
 		fx.fs.mock.handler(w, r)
 	})
 
-	leaderCtx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	var leaderCtx context.Context
+	var cancel context.CancelFunc
+	wantLeader := context.Canceled
+	if end == "deadline" {
+		leaderCtx, cancel = context.WithTimeout(context.Background(), 800*time.Millisecond)
+		wantLeader = context.DeadlineExceeded
+	} else {
+		leaderCtx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 	leaderDone := make(chan error, 1)
 	go func() {
@@ -1421,15 +1445,26 @@ func sharedDownloadLeaderDeadline(t *testing.T, withSmartCache bool) {
 		rows, err := fx.query(t, context.Background(), "*", nil)
 		res <- result{rows, err}
 	}()
+	for joined := time.Now().Add(10 * time.Second); waiters() < 1; time.Sleep(time.Millisecond) {
+		if time.Now().After(joined) {
+			t.Fatal("the second query never joined the first query's download: the test would not be about a shared download")
+		}
+	}
+	if end != "deadline" {
+		cancel() // the join has happened; now the first query's context ends
+	}
 	select {
 	case r := <-res:
 		if r.err != nil || r.rows != rcRowsPerFile {
-			t.Fatalf("the query without a deadline: %d rows of %d, err %v: it must not inherit the other query's deadline", r.rows, rcRowsPerFile, r.err)
+			t.Fatalf("the query without a deadline: %d rows of %d, err %v: it must not inherit the other query's context error", r.rows, rcRowsPerFile, r.err)
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("the query without a deadline did not finish")
 	}
-	if err := <-leaderDone; err == nil {
-		t.Fatal("the query with the deadline answered although its download never finished")
+	if err := <-leaderDone; err == nil || !errors.Is(err, wantLeader) {
+		t.Fatalf("the first query: %v, want its own %v", err, wantLeader)
+	}
+	if n := wholeGets.Load(); n != 2 {
+		t.Fatalf("%d whole-object downloads, want 2: the first (ended by its context) and the second query's own", n)
 	}
 }
