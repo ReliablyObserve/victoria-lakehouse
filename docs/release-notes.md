@@ -33,15 +33,15 @@ release-metadata pull request has merged, the tree still holds the previous rele
 leaves out every fragment file (same path and same bytes) that the previous release tag already had
 (`--after-tag`, the newest plain `vX.Y.Z` tag reachable from the parent commit, from `changelog_fragments.py previous-tag`; any other tag is ignored), so a fragment is released once; a later fragment that
 reuses the name of a released one has other bytes and is released. A fragment merged after the release commit is not in the
-checkout and lands in the next release. If the tag cannot be read, all fragments are released. Until the first
-release that contains `changelog.d/`, bullets still hand-written under `[Unreleased]` are assembled too, and
-the notes leave out the ones `[Unreleased]` had at the previous tag.
+checkout and lands in the next release. If the tag cannot be read, all fragments are released. A fragment the previous release
+took whose release section is already in `CHANGELOG.md` (the file was left behind) stops the release instead of
+being skipped for ever, and so does any text under `[Unreleased]`, a fragment that repeats the lead-in of a
+released section, and a section larger than 100000 bytes (a GitHub release body holds about 125000 characters).
 
 To render the notes of any released version, or to preview the entries of a pull request:
 
 ```bash
 python3 scripts/ci/release_notes.py --version 0.157.6
-python3 scripts/ci/release_notes.py --version Unreleased --date 2026-10-22   # hand-written [Unreleased] bullets only
 python3 scripts/ci/changelog_fragments.py check                              # validate the changelog.d fragments
 ```
 
@@ -56,38 +56,24 @@ Warnings (an unknown subsection) go to stderr; the notes go to stdout.
 | `### Deprecated` | `* FEATURE: deprecated: ...` |
 | `### Removed` | `* FEATURE: removed: ...` |
 | `### Fixed` | `* BUGFIX: ...` |
-| `### Update notes` | `**Update note:** ...` paragraphs, before the bullets |
-
-- Upstream uses only the `SECURITY`, `FEATURE` and `BUGFIX` prefixes, so changes and removals are
-  `FEATURE` bullets that say what happened.
-- A bullet is one line in the notes: the lines of a wrapped bullet are joined, and the bold
-  lead-in opens the text (after the prefix, and after `removed: ` or `deprecated: ` for those two
-  sections). Nested bullets and further paragraphs of a bullet stay under it.
-- `#123` becomes a link to that issue or pull request of this repository. Code spans, existing
-  links, URLs and references to other repositories are left alone.
-- A subsection the script does not know (for example `### CI`) is rendered under `FEATURE` and
-  reported as a warning; text is never dropped. Prose before the first subsection is kept
-  right after `Released at`.
-- A release without entries reads `Released at <date>` and `No user-visible changes.`
-
-## Update notes
+| `### Update notes
 
 Behaviour that an operator has to act on when upgrading (a flag, an endpoint or a default that
-changes, a format that is no longer read) is written as one bullet each under a
-`### Update notes` subsection of the version's section of `CHANGELOG.md` (there is no fragment kind for it yet), with
-the issue or pull request number:
+changes, a format that is no longer read) goes INSIDE the bullet of the change, as an indented second
+paragraph that opens with a bold `**Update note.**`, with the issue or pull request number. A
+`### Update notes` subsection is not written by hand any more: `CHANGELOG.md` is only written by the
+release from the fragments, and the gate refuses a hand-filed subsection. A separate fragment kind for
+update notes was deferred.
 
 ```markdown
-## [0.168.0] - 2026-10-30
+- **The `/delete/run_task` endpoint accepts only `POST` (#1234).** It answered `GET` before.
 
-### Update notes
-
-- The `/delete/run_task` endpoint accepts only `POST`; change scripts that call it with `GET` (#1234).
+  **Update note.** Change scripts that call it with `GET` to use `POST`.
 ```
 
-One note renders as `**Update note:** ...`; several render as `**Update note 1:** ...`,
-`**Update note 2:** ...`. The change itself still gets its own `### Changed` or `### Fixed`
-bullet; the update note is the short instruction to the operator.
+The notes show the paragraph under its bullet. (A `### Update notes` subsection that an older
+`CHANGELOG.md` section already has still renders as `**Update note:** ...` paragraphs before the
+bullets, one `**Update note 1:** ...`, `**Update note 2:** ...` each when there are several.)
 
 ## Existing releases
 
