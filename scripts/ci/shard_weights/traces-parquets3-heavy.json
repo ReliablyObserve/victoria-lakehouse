@@ -1,0 +1,23 @@
+{
+ "note": "Relative cost (seconds) of the testing.Short()-gated tests (test-parquets3-heavy) of lakehouse-traces/internal/storage/parquets3 under go test -race. Measured on one 18-core Mac; only the ratios matter (the CI runner is 2.3-3.4x slower). Tests not listed count at the default cost. Regenerate with `python3 scripts/ci/shard_tests.py weights OUT go-test-json...` (see the header of shard_tests.py). A stale entry only costs balance, never coverage.",
+ "default": 0.78,
+ "tests": {
+  "TestFieldMetadataTracesCompactedCountersAreDeterministic": 131.4,
+  "TestFieldMetadataTraces_ExactInBothLayouts": 60.7,
+  "TestProperty_TombstoneProof_GatedEqualsScan": 23.5,
+  "TestCachedFooterWeightCalibration": 18.4,
+  "TestDrainPlan_PropertyRandomMaxRows": 15.9,
+  "TestFieldMetadataTracesCompactedLayoutIsByteReproducible": 12.2,
+  "TestColdQuery_AnswersIdenticalAcrossOpenPaths": 9.3,
+  "TestRowRead_UnreadableObject_FailsInsteadOfPartial": 8.6,
+  "TestColdQuery_CachedFooters_OnlyDataRangesReachS3": 6.9,
+  "TestFooterBudget_FortyFilesFiveEntries": 5.5,
+  "TestParseFooterFromBytes_MutatedFootersStayBounded": 5.5,
+  "TestRunQuery_ProductionShape_WildcardScalesUnderMemoryBudget": 5.5,
+  "TestRunQueryProjectionEquivalence_Random": 4.7,
+  "TestCachedFooter_OpenAndPageIndexMakeZeroGETs": 4.6,
+  "TestProjectionEquivalence_Random": 4.5,
+  "TestBufferFlusher_Property_VisibleLifetimeBelowGuard": 4.0,
+  "TestFooterWriters_AllKeepPageIndex": 2.7
+ }
+}

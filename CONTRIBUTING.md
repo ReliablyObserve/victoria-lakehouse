@@ -53,6 +53,21 @@ holds it to a `-timeout`:
   (`scripts/ci/short_gated_tests.sh` derives the list from the source, so
   nothing is enumerated by hand). Run them locally with
   `go test ./internal/storage/parquets3/ -run "$(scripts/ci/short_gated_tests.sh internal/storage/parquets3)"`.
+- Both jobs split the package into shards, each its own `go test` with its own
+  `-timeout` and headroom gate, inside the one required job (so the required
+  check names stay `test-logs` / `test-traces`). `scripts/ci/shard_tests.py`
+  places every top-level test in exactly one shard, and a guard fails the job
+  when a test ran in no shard or in two. Placement is a hash of the test name,
+  except where a weights file lists the slow tests: for
+  `lakehouse-traces/internal/storage/parquets3` (6 shards of the `-short` run,
+  3 of the heavy run) `scripts/ci/shard_weights/*.json` gives the measured cost
+  of each slow test, so the shards carry equal time rather than equal counts (3
+  count-balanced shards ran 321-480 s of a 480 s budget). A test missing from
+  the file still runs, at the default cost; a stale file costs balance, not
+  coverage. Target: every shard below about 60% of its budget. When a shard
+  warns, regenerate the file from fresh `go test -race -json` output
+  (`python3 scripts/ci/shard_tests.py weights OUT <json>...`) before touching a
+  timeout.
 - `scripts/ci/gotest_report.py` warns at 70% and fails at 90% of each package's
   timeout and lists the slowest tests in the job summary. When it warns, make
   the slowest tests faster instead of raising the timeout: share fixtures,
