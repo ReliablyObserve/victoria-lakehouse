@@ -297,6 +297,10 @@ jobs:
       #     (warn 70% / fail 90% of 480s). Unsharded it took 345-480s on a
       #     2-core runner (72-99% of the 8m budget, ~120s spread on identical
       #     code), so the gate failed at random; each shard is ~1/3 of that.
+      #     The traces package has a long tail of slow tests (the slowest ten
+      #     are ~30% of the -race time), so its shards are not hash-placed:
+      #     6 shards balanced by measured cost (scripts/ci/shard_weights/),
+      #     ~200s each; with 3 count-balanced shards one reached 408-480s.
       #     A guard fails the job if any listed test ran in no shard or in
       #     two. Shard names stay inside the one job, so the required checks
       #     test-logs / test-traces are unchanged. The tests -short skips (the memory-budget, production-shape
@@ -371,7 +375,10 @@ jobs:
           # vtstorage, ...). Previously only the config-surface golden ran.
           go test . -race -count=1 -timeout=10m -json | tee test-traces-main.json |
             python3 ../scripts/ci/gotest_report.py --budget-seconds 600 --title "traces: main package"
-          ../scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 3 "traces: parquets3" 480 test-traces-parquets3
+          # 6 shards, balanced by measured cost (scripts/ci/shard_weights/): with 3 shards balanced by
+          # test count, shard 1 ran 408-480 s of its 480 s budget on main (#788). Now each is ~200 s.
+          SHARD_WEIGHTS=../scripts/ci/shard_weights/traces-parquets3.json \
+            ../scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 6 "traces: parquets3" 480 test-traces-parquets3
 
       - name: Coverage check (traces)
         working-directory: lakehouse-traces
@@ -380,7 +387,7 @@ jobs:
           # is internal/storage/parquets3). Excluded: testutil and below (test helpers),
           # vtstorage_adapter and selectapi (unchanged exclusions). Required: parquets3 must be measured.
           ../scripts/ci/check_coverage.sh -t 90 -x testutil -x 'testutil/*' -x vtstorage_adapter -x selectapi -r storage/parquets3 < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
-                     ../scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
+                     SHARD_WEIGHTS=../scripts/ci/shard_weights/traces-parquets3.json ../scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
 
       - name: Vet traces module
         working-directory: lakehouse-traces
@@ -411,9 +418,13 @@ jobs:
           - module: logs
             dir: .
             gomod: go.mod
+            shards: "2"
+            weights: ""
           - module: traces
             dir: lakehouse-traces
             gomod: lakehouse-traces/go.mod
+            shards: "3"
+            weights: scripts/ci/shard_weights/traces-parquets3-heavy.json
     name: test-parquets3-heavy (${{ matrix.module }})
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -432,17 +443,25 @@ jobs:
 
       - name: Heavy parquets3 tests (${{ matrix.module }})
         working-directory: ${{ matrix.dir }}
+        env:
+          MODULE: ${{ matrix.module }}
+          SHARDS: ${{ matrix.shards }}
+          WEIGHTS: ${{ matrix.weights }}
         run: |
           set -euo pipefail
           heavy=$("$GITHUB_WORKSPACE/scripts/ci/short_gated_tests.sh" internal/storage/parquets3)
           echo "running: $heavy"
-          # Two shards of the gated tests (sharded_go_test.sh: each shard has its own
+          # Shards of the gated tests (sharded_go_test.sh: each shard has its own
           # 600 s -timeout and headroom gate, and the shard guard checks every gated
           # test ran exactly once). The traces set took 571 s = 95% of one 600 s budget
-          # unsharded; the largest single test is ~25% of the set, so 2 shards leave
-          # the slower one at about half of it. Not -short: these are the tests it skips.
+          # unsharded, and 530 s = 88% in its slower half of 2 hash-placed shards: one
+          # test (TestFieldMetadataTracesCompactedCountersAreDeterministic) is ~40% of
+          # the set. The traces matrix entry therefore runs 3 shards placed by measured
+          # cost (SHARD_WEIGHTS, scripts/ci/shard_weights/), which puts that test alone.
+          # Not -short: these are the tests it skips.
+          if [ -n "$WEIGHTS" ]; then export SHARD_WEIGHTS="$GITHUB_WORKSPACE/$WEIGHTS"; fi
           SHARD_SHORT=0 SHARD_RUN_FILTER="$heavy" "$GITHUB_WORKSPACE/scripts/ci/sharded_go_test.sh" \
-            race ./internal/storage/parquets3/ 2 "${{ matrix.module }}: parquets3 heavy" 600 heavy
+            race ./internal/storage/parquets3/ "$SHARDS" "$MODULE: parquets3 heavy" 600 heavy
 
   # Storage-health gate for compaction. internal/compaction is exercised by
   # test-logs, but that job runs hundreds of packages under -race against a

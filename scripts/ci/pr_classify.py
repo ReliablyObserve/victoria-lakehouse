@@ -716,6 +716,7 @@ CI_PARITY_TOOLS = (
 CI_CONSUMERS: "tuple[tuple[str, tuple[str, ...]], ...]" = (
     ("scripts/ci/sharded_go_test.sh", ("ci.yaml:test-logs", "ci.yaml:test-traces", "ci.yaml:test-parquets3-heavy")),
     ("scripts/ci/shard_tests.py", ("ci.yaml:test-logs", "ci.yaml:test-traces", "ci.yaml:test-parquets3-heavy")),
+    ("scripts/ci/shard_weights/*", ("ci.yaml:test-traces", "ci.yaml:test-parquets3-heavy")),
     ("scripts/ci/short_gated_tests.sh", ("ci.yaml:test-parquets3-heavy",)),
     ("scripts/ci/gotest_report.py", ("ci.yaml:test-logs", "ci.yaml:test-traces", "ci.yaml:benchmarks-logs", "ci.yaml:benchmarks-traces")),
     ("scripts/bench/field_metadata/*", ("ci.yaml:field-metadata-perf",)),
