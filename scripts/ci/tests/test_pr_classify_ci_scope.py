@@ -149,6 +149,7 @@ class PathTable(unittest.TestCase):
         self.assertEqual(scope(["scripts/ci/parquet-readback/check.py"])["force"], "ci.yaml:parquet-readback")
         self.assertEqual(scope(["scripts/bench/compaction/ab.py"])["force"], "ci.yaml:storage-health-compaction")
         self.assertEqual(scope(["scripts/ci/short_gated_tests.sh"])["force"], "ci.yaml:test-parquets3-heavy")
+        self.assertEqual(scope(["scripts/ci/shard_weights/traces-parquets3.json"])["force"].count("ci.yaml:"), 2)
         self.assertEqual(scope(["scripts/ci/gotest_report.py"])["force"].count("ci.yaml:"), 4)
 
     def test_codeql_configuration_forces_the_go_analysis(self):

@@ -10,9 +10,18 @@ its own headroom measurement, at ~1/N of the work each.
 
 Assignment is a hash of the top-level test name (sha1 mod N): stable across
 runs and machines, independent of the other tests, so adding or removing a
-test never moves any other test. No duration table to keep in sync. The
-package has hundreds of similar-sized tests (the slowest is ~7% of the total),
-so hashing balances the shards well; measured sizes are in the PR.
+test never moves any other test. Hashing balances the COUNT of tests, not their
+time: with a long tail of slow tests (the slowest ten are ~30% of
+lakehouse-traces/internal/storage/parquets3 under -race) one shard drew 468 s
+and another 321 s from the same 500-test share. So an optional weights file
+(--weights, scripts/ci/shard_weights/*.json) lists the slow tests with a
+relative cost: those are placed greedily (heaviest first, onto the shard with
+the least load) on top of the hash-placed rest, which count at the file's
+default cost. A test missing from the file is simply hash-placed at the default
+cost (it still lands in exactly one shard); a stale or missing weight costs
+balance, never coverage, and the headroom gate in gotest_report.py shows it.
+Regenerate the file from fresh `go test -json` output with the `weights`
+subcommand.
 
 Subcommands:
   regex   --pkg DIR --shards N --index I [--go-flags "-race"] [--run-filter RE]
@@ -29,6 +38,10 @@ Subcommands:
 heavy CI job shards only the testing.Short()-gated tests): the partition and
 the verify guard are computed over the filtered list, so a filtered-in test
 that fails to run is still caught.
+  weights OUT [--min-seconds S] JSON...
+            write a weights file from `go test -json` output (the longest time
+            seen per top-level test; tests >= S seconds listed, the rest
+            averaged into "default"). Shard with it via --weights.
   cover-merge OUT PROFILE...
             merge per-shard coverprofiles (union of covered blocks) into OUT
             and print `coverage: X% of statements`, the figure `go test
@@ -51,14 +64,81 @@ def shard_of(name, n):
     return int(hashlib.sha1(name.encode()).hexdigest(), 16) % n
 
 
-def assign(names, n):
-    """Partition names into n lists by hash; each list sorted."""
+def assign(names, n, weights=None):
+    """Partition names into n lists; each list sorted.
+
+    Without weights: by hash of the name. With weights (default, {test: cost}):
+    tests not in the table are hash-placed at the default cost, then the
+    tests in the table are placed heaviest first onto the least-loaded shard
+    (ties: lowest shard index; equal weights: by name), so the result is a
+    pure function of (names, n, weights) on every machine."""
     if n < 1:
         raise ValueError("shards must be >= 1")
     shards = [[] for _ in range(n)]
+    if weights is None:
+        for name in sorted(set(names)):
+            shards[shard_of(name, n)].append(name)
+        return shards
+    default, table = weights
+    loads = [0.0] * n
+    listed = []
     for name in sorted(set(names)):
-        shards[shard_of(name, n)].append(name)
-    return shards
+        if name in table:
+            listed.append(name)
+        else:
+            i = shard_of(name, n)
+            shards[i].append(name)
+            loads[i] += default
+    for name in sorted(listed, key=lambda t: (-table[t], t)):
+        i = min(range(n), key=lambda k: (loads[k], k))
+        shards[i].append(name)
+        loads[i] += table[name]
+    return [sorted(sh) for sh in shards]
+
+
+def loads_of(shards, weights):
+    """Estimated cost of each shard under the weights (default for unlisted tests)."""
+    default, table = weights
+    return [sum(table.get(t, default) for t in sh) for sh in shards]
+
+
+def load_weights(path):
+    """(default, {test: cost}) from a weights file: {"default": x, "tests": {name: cost}}."""
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    default, table = doc.get("default"), doc.get("tests")
+    if not isinstance(default, (int, float)) or isinstance(default, bool) or default <= 0:
+        raise ValueError(f"{path}: default must be a positive number")
+    if not isinstance(table, dict) or not table:
+        raise ValueError(f"{path}: tests must be a non-empty object")
+    for name, w in table.items():
+        if not NAME.match(name):
+            raise ValueError(f"{path}: {name!r} is not a Test/Fuzz/Example name")
+        if not isinstance(w, (int, float)) or isinstance(w, bool) or w <= 0:
+            raise ValueError(f"{path}: weight of {name} must be a positive number")
+    return float(default), {k: float(v) for k, v in table.items()}
+
+
+def build_weights(json_files, min_seconds):
+    """(default, {test: seconds}) from `go test -json` files: the longest
+    elapsed time seen per top-level test over all files; tests of at least
+    min_seconds are listed, the rest are averaged into the default."""
+    elapsed = {}
+    for path in json_files:
+        with open(path) as f:
+            for line in f:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                t = ev.get("Test", "")
+                if t and "/" not in t and ev.get("Action") == "pass":
+                    elapsed[t] = max(elapsed.get(t, 0.0), float(ev.get("Elapsed", 0.0)))
+    table = {t: round(e, 1) for t, e in elapsed.items() if e >= min_seconds and round(e, 1) > 0}
+    rest = [e for t, e in elapsed.items() if t not in table]
+    if not table or not rest:
+        raise ValueError("no tests above the threshold, or none below it")
+    return round(max(sum(rest) / len(rest), 0.01), 2), dict(sorted(table.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
 def parse_list(output):
@@ -128,11 +208,11 @@ def ran_in(path):
     return out
 
 
-def verify(names, n, json_files):
+def verify(names, n, json_files, weights=None):
     """Return a list of problems (empty when every test ran in its own shard)."""
     if len(json_files) != n:
         return [f"expected {n} shard result files, got {len(json_files)}"]
-    expect = assign(names, n)
+    expect = assign(names, n, weights)
     problems = []
     got = [ran_in(p) for p in json_files]
     ran_by = {}
@@ -204,12 +284,18 @@ def main(argv=None):
     r.add_argument("--index", type=int, required=True)
     r.add_argument("--go-flags", default="", help="build-affecting flags of the real run, e.g. -race")
     r.add_argument("--run-filter", default="", help="only shard the listed tests matching this regexp")
+    r.add_argument("--weights", default="", help="weights file: balance the shards by cost, not count")
     v = sub.add_parser("verify")
     v.add_argument("--pkg", required=True)
     v.add_argument("--shards", type=int, required=True)
     v.add_argument("--go-flags", default="", help="build-affecting flags of the real run, e.g. -race")
     v.add_argument("--run-filter", default="", help="only verify the listed tests matching this regexp")
+    v.add_argument("--weights", default="", help="the weights file the shards ran with")
     v.add_argument("files", nargs="+")
+    w = sub.add_parser("weights")
+    w.add_argument("out")
+    w.add_argument("--min-seconds", type=float, default=1.0, help="list tests at least this slow (default 1.0)")
+    w.add_argument("files", nargs="+", help="`go test -json` output files")
     c = sub.add_parser("cover-merge")
     c.add_argument("out")
     c.add_argument("profiles", nargs="+")
@@ -218,22 +304,39 @@ def main(argv=None):
     if a.cmd == "regex":
         if not 0 <= a.index < a.shards:
             raise SystemExit("index out of range")
-        names = filter_tests(list_tests(a.pkg, shlex.split(a.go_flags)), a.run_filter)
-        shards = assign(names, a.shards)
+        listed = list_tests(a.pkg, shlex.split(a.go_flags))
+        names = filter_tests(listed, a.run_filter)
+        weights = load_weights(a.weights) if a.weights else None
+        if weights and not a.run_filter:
+            stale = sorted(set(weights[1]) - set(listed))
+            if stale:  # a renamed or deleted test: costs balance only, so warn, never fail
+                sys.stderr.write("::warning title=Shard weights::%d weights entries match no test (%s); regenerate the file "
+                                 "with shard_tests.py weights\n" % (len(stale), ", ".join(stale[:5])))
+        shards = assign(names, a.shards, weights)
         try:
             guard_partition(names, shards)
         except ValueError as e:
             raise SystemExit(f"shard guard: {e}")
         print(regex_for(shards[a.index]))
-        sys.stderr.write(f"shard {a.index + 1}/{a.shards}: {len(shards[a.index])} of {len(names)} tests\n")
+        est = ""
+        if weights:
+            loads = loads_of(shards, weights)
+            est = f", estimated load {loads[a.index]:.0f} of {sum(loads):.0f} (heaviest shard {max(loads):.0f})"
+        sys.stderr.write(f"shard {a.index + 1}/{a.shards}: {len(shards[a.index])} of {len(names)} tests{est}\n")
     elif a.cmd == "verify":
         names = filter_tests(list_tests(a.pkg, shlex.split(a.go_flags)), a.run_filter)
-        problems = verify(names, a.shards, a.files)
+        problems = verify(names, a.shards, a.files, load_weights(a.weights) if a.weights else None)
         if problems:
             for p in problems[:50]:
                 print(f"::error::shard guard: {p}")
             return 1
         print(f"shard guard: all {len(names)} tests ran exactly once, in their own shard")
+    elif a.cmd == "weights":
+        default, table = build_weights(a.files, a.min_seconds)
+        with open(a.out, "w", encoding="utf-8") as f:
+            json.dump({"default": default, "tests": table}, f, indent=1)
+            f.write("\n")
+        print(f"{len(table)} tests listed, default {default}s for the rest")
     else:
         mode, merged = merge_profiles(a.profiles)
         with open(a.out, "w") as f:

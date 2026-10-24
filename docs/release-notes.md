@@ -91,9 +91,29 @@ bullet; the update note is the short instruction to the operator.
 
 ## Existing releases
 
-Releases published before this change keep their old body. A backfill re-renders the notes from
-the version's `CHANGELOG.md` section and keeps the artifacts block of the existing body; it is run
-by the repository owner with `gh release edit`, one release at a time.
+Releases published before this change keep their old body, which starts at `## Release Artifacts`.
+`scripts/ci/release_notes_backfill.py` re-renders the notes of those releases and keeps the artifacts block of
+the existing body byte for byte. It is a dry run unless it gets `--apply` and `LH_BACKFILL_APPLY=yes`:
+
+```bash
+env -u GITHUB_TOKEN python3 scripts/ci/release_notes_backfill.py --out-dir /tmp/notes-backfill      # plan and report.md, edits nothing
+env -u GITHUB_TOKEN LH_BACKFILL_APPLY=yes python3 scripts/ci/release_notes_backfill.py \
+    --out-dir /tmp/notes-backfill --apply --max 10                                                  # edits, resumable
+```
+
+* The notes are rendered with `release_notes.py` from the repository at the release tag: `CHANGELOG.md` and
+  the `changelog.d/` fragments at the tag, minus what the previous release tag already had, which is what the
+  release job does. No tag has its own `## [X.Y.Z]` section (the release-metadata pull request writes it
+  after the tag), so the entries of a release are what `[Unreleased]` and the fragments hold at the tag and
+  did not hold at the previous tag. A section at the tag, if there is one, is used as it stands.
+* A release is left alone, and the report says why, when it is immutable or was published at or after the
+  cutoff (2026-10-23 06:00 UTC), has no `## Release Artifacts` marker, already starts with `Released at`,
+  has other text before the marker, or has no entry at its tag.
+* Risks are only reported: unbalanced backticks or fences, an unclosed HTML comment, a body above 60,000
+  bytes, `@mentions`, and `#N` references to numbers that are not issues or pull requests here.
+* Apply refuses an immutable release, re-reads the live body and stops if it is not the planned one, writes
+  the old body to `backup/TAG.md` first, verifies the body after the edit and logs each release in
+  `apply.log.jsonl`. Undo one release with `gh release edit TAG --notes-file backup/TAG.md`.
 
 ## How the release workflow is organised
 
