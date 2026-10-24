@@ -1146,11 +1146,11 @@ VictoriaTraces v0.12.0 extended the offset a span waits before becoming visible 
 
 `lh.feature.traces.query_deadline` · status: shipped · surfaces: api, flag
 
-**Jaeger and Tempo query deadline**: every Jaeger and Tempo request runs under VictoriaTraces' own `-search.maxQueryDuration` (30s, lowered by `timeout=`), so a stalled S3 read ends with upstream's answer instead of holding the query and its slots.
+**Jaeger and Tempo query deadline**: every Jaeger and Tempo request runs under VictoriaTraces' own `-search.maxQueryDuration` (30s, lowered by `timeout=`), so a stalled S3 read ends with a deadline error instead of holding the query and its slots.
 
-VictoriaTraces runs every Jaeger and Tempo request under -search.maxQueryDuration (default 30s), which a request may lower with its timeout argument. The traces binary carries the same deadline, taken from the same flag, so a stalled S3 read or consumer ends at the deadline with upstream's answer and gives back the file-budget and row-group decode slots it held, instead of holding them until the client goes away.
+VictoriaTraces runs every Jaeger and Tempo request under -search.maxQueryDuration (default 30s), which a request may lower with its timeout argument. The traces binary carries the same deadline, taken from the same flag, so a stalled S3 read or consumer ends at the deadline and gives back the file-budget and row-group decode slots it held, instead of holding them until the client goes away. The request fails with a 400 deadline error where hot VictoriaTraces answers an empty 200 (a recorded difference).
 
-- Verification: rows: `vt.select.jaeger_tempo_query_deadline` (pass, pending), `vt.flag.search_max_query_duration` (differ, pending) · tests: `lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_StalledReadEndsAtTheDeadline`, `lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_TimeoutArgument`, `lakehouse-traces/internal/storage/parquets3/query_deadline_http_test.go#TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots`
+- Verification: rows: `vt.select.jaeger_tempo_query_deadline` (differ, pending), `vt.flag.search_max_query_duration` (differ, pending) · tests: `lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_StalledReadEndsAtTheDeadline`, `lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_TimeoutArgument`, `lakehouse-traces/internal/storage/parquets3/query_deadline_http_test.go#TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots`
 - Docs: `docs/read-path.md`, `docs/configuration.md`
 
 ### ✅ Service graph from cold storage

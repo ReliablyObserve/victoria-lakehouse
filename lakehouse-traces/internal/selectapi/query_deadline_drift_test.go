@@ -74,3 +74,43 @@ func TestQueryContext_MatchesVendoredVTSelectRequestHandler(t *testing.T) {
 	// The flag: name, default and help are held by TestSearchMaxQueryDuration_MatchesVendoredVTSelect
 	// in the main package, where it is registered.
 }
+
+// The paths vtselect answers BEFORE it derives the deadline are exempt from it.
+// Derive that set from the vendored source and hold it to a table: if upstream
+// adds an exempt route (or moves Jaeger or Tempo in front of the deadline), the
+// copy in handler.go has to be re-checked.
+func TestExemptPathsMatchVendoredVTSelect(t *testing.T) {
+	up, err := os.ReadFile(vendoredVTSelect)
+	if err != nil {
+		t.Fatalf("vendored VictoriaTraces source missing (run make deps-vt): %v", err)
+	}
+	src := string(up)
+	start := strings.Index(src, "func selectHandler(")
+	end := strings.Index(src, "getMaxQueryDuration(r)\n")
+	if start < 0 || end < start {
+		t.Fatal("selectHandler or its getMaxQueryDuration call not found in the vendored source")
+	}
+	before := src[start:end]
+	lits := regexp.MustCompile(`(?:path == |strings\.HasPrefix\(path, )"(/[^"]*)"`).FindAllStringSubmatch(before, -1)
+	got := map[string]bool{}
+	for _, m := range lits {
+		got[m[1]] = true
+	}
+	want := []string{"/select/buildinfo", "/select/vmui", "/select/vmui/", "/select/vmui/static/", "/select/logsql/tail", "/select/vmalert/"}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("upstream no longer answers %s before the deadline", w)
+		}
+		delete(got, w)
+	}
+	for extra := range got {
+		t.Errorf("upstream answers %s before the deadline; re-check whether the traces routes need the same exemption", extra)
+	}
+	// Jaeger and Tempo are dispatched after the deadline is derived.
+	after := src[end:]
+	for _, w := range []string{`strings.HasPrefix(path, "/select/jaeger/")`, `strings.HasPrefix(path, "/select/tempo/")`} {
+		if !strings.Contains(after, w) || strings.Contains(before, w) {
+			t.Errorf("%s is not dispatched after the deadline is derived", w)
+		}
+	}
+}

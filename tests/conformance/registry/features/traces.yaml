@@ -359,10 +359,11 @@
     - docs/read-path.md
     - docs/configuration.md
   highlight: >-
-    **Jaeger and Tempo query deadline**: every Jaeger and Tempo request runs under VictoriaTraces' own `-search.maxQueryDuration` (30s, lowered by `timeout=`), so a stalled S3 read ends with upstream's answer instead of holding the query and its slots.
+    **Jaeger and Tempo query deadline**: every Jaeger and Tempo request runs under VictoriaTraces' own `-search.maxQueryDuration` (30s, lowered by `timeout=`), so a stalled S3 read ends with a deadline error instead of holding the query and its slots.
   description: >-
     VictoriaTraces runs every Jaeger and Tempo request under -search.maxQueryDuration (default
     30s), which a request may lower with its timeout argument. The traces binary carries the same
-    deadline, taken from the same flag, so a stalled S3 read or consumer ends at the deadline with
-    upstream's answer and gives back the file-budget and row-group decode slots it held, instead
-    of holding them until the client goes away.
+    deadline, taken from the same flag, so a stalled S3 read or consumer ends at the deadline and
+    gives back the file-budget and row-group decode slots it held, instead of holding them until
+    the client goes away. The request fails with a 400 deadline error where hot VictoriaTraces
+    answers an empty 200 (a recorded difference).

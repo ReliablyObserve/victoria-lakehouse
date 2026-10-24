@@ -238,19 +238,28 @@ func TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots(t *
 // A consumer that stalls while workers hold a row-group decode slot is released by
 // the deadline: RunQuery returns the deadline error, and the decode slots and the
 // file budget are free again. The slots are shown held while the consumer waits,
-// so the zero afterwards is a release, not an idle gauge.
+// so the zero afterwards is a release, not an idle gauge. The deadline is long
+// enough for the first block to reach the consumer even on a loaded -race runner,
+// and the test fails if the consumer was never entered.
 func TestJaegerTempoDeadline_StalledConsumerFreesDecodeSlots(t *testing.T) {
-	const timeout = 250 * time.Millisecond
+	const timeout = 2 * time.Second
 	fx := newRCFixture(t, 4, rcKeyFmt)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	var entered atomic.Int64
 	stopSampling := qdSampleMax()
 	began := time.Now()
-	_, err := fx.query(t, ctx, "*", func(*logstorage.DataBlock) { <-ctx.Done() })
+	_, err := fx.query(t, ctx, "*", func(*logstorage.DataBlock) {
+		entered.Add(1)
+		<-ctx.Done()
+	})
 	took := time.Since(began)
 	heldBudget, heldDecode := stopSampling()
 
+	if entered.Load() == 0 {
+		t.Fatalf("the consumer was never reached before the %s deadline (RunQuery = %v after %s): the stall under test did not happen", timeout, err, took)
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("RunQuery = %v, want the deadline error", err)
 	}
@@ -265,5 +274,70 @@ func TestJaegerTempoDeadline_StalledConsumerFreesDecodeSlots(t *testing.T) {
 	rows, err := fx.query(t, context.Background(), "*", nil)
 	if err != nil || rows != rcFiles*rcRowsPerFile {
 		t.Fatalf("a normal query after the stall: %d rows, %v", rows, err)
+	}
+}
+
+// A peer's buffer-bridge call that never answers is bounded by the request
+// deadline, not by the bridge's own (here 10x longer) timeout: the request ends at
+// the deadline and the call to the peer is cancelled, so no goroutine or
+// connection waits on the stalled peer after the answer. Reader pods read the
+// insert pods' unflushed rows through this bridge (multi-instance read path).
+func TestJaegerTempoDeadline_StalledPeerBridgeEndsAtTheDeadline(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	var entered, left atomic.Int64
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered.Add(1)
+		<-r.Context().Done()
+		left.Add(1)
+	}))
+	defer peer.Close()
+
+	fx := newRCFixture(t, 4, rcKeyFmt)
+	mux := qdMux(t, fx)
+	// warm the connections to S3 so that the goroutine baseline includes them
+	for _, rt := range qdRoutes(fx.base)[:2] {
+		if code, body, _ := qdGet(mux, rt, "", 10*time.Second); code != http.StatusOK {
+			t.Fatalf("warm-up: %d %.200q", code, body)
+		}
+	}
+	bridge := NewBufferBridge(&config.SelectConfig{BufferQueryEnabled: true, BufferQueryTimeout: 10 * timeout * 10}, config.ModeTraces)
+	bridge.SetEndpoints([]string{peer.URL})
+	fx.s.bufferBridge = bridge
+
+	goroutines := runtime.NumGoroutine()
+	for _, rt := range qdRoutes(fx.base) {
+		if rt.group != "jaeger-search" && rt.group != "tempo-search" && rt.group != "jaeger-trace-by-id" {
+			continue
+		}
+		t.Run(rt.group, func(t *testing.T) {
+			before := entered.Load()
+			code, body, took := qdGet(mux, rt, timeout.String(), 10*time.Second)
+			if entered.Load() == before {
+				t.Fatalf("the request never called the peer (%d %.200q): the test does not exercise the bridge", code, body)
+			}
+			if took > timeout+time.Second {
+				t.Fatalf("answered after %s with a %s deadline and a %s bridge timeout (%d %.200q)", took, timeout, 100*timeout, code, body)
+			}
+			if code == http.StatusOK && !strings.Contains(body, "deadline exceeded") && rt.group != "jaeger-trace-by-id" {
+				t.Fatalf("answered 200 %.200q while a peer never answered", body)
+			}
+			// the call to the peer was cancelled with the request
+			end := time.Now().Add(2 * time.Second)
+			for left.Load() < entered.Load() && time.Now().Before(end) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if left.Load() < entered.Load() {
+				t.Fatalf("%d calls to the peer entered, %d ended: the request left a call waiting on the stalled peer", entered.Load(), left.Load())
+			}
+		})
+	}
+	qdFree(t, fx)
+	end := time.Now().Add(3 * time.Second)
+	for runtime.NumGoroutine() > goroutines+2 && time.Now().Before(end) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > goroutines+2 {
+		buf := make([]byte, 1<<16)
+		t.Fatalf("goroutines: %d before, %d after the stalled peer calls\n%s", goroutines, got, buf[:runtime.Stack(buf, true)])
 	}
 }

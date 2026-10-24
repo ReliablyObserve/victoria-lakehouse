@@ -18,13 +18,11 @@ const DefaultMaxQueryDuration = 30 * time.Second
 
 // WithMaxQueryDuration sets the longest a Jaeger or Tempo request may run
 // (-search.maxQueryDuration). A request may lower it with its 'timeout' arg,
-// never raise it. d <= 0 keeps DefaultMaxQueryDuration.
+// never raise it. The value is used as given, as upstream uses its flag: 0 or a
+// negative value makes every request fail at once with the deadline error
+// (context.WithTimeout of a duration that has already passed).
 func WithMaxQueryDuration(d time.Duration) HandlerOption {
-	return func(h *Handler) {
-		if d > 0 {
-			h.maxQueryDuration = d
-		}
-	}
+	return func(h *Handler) { h.maxQueryDuration = d }
 }
 
 // upstream-copy: VictoriaTraces app/vtselect/main.go getMaxQueryDuration, with

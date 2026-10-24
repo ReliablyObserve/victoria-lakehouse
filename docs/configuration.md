@@ -863,7 +863,7 @@ binary reads; that list is informational and drives the "Not read." marks above.
 |---|---|---|---|
 | S3 single request | 30s | 3x exponential (200ms base) | Range read, HEAD, ListObjects |
 | Query execution | 60s | No retry | Client gets 504 if exceeded |
-| Jaeger / Tempo query (traces) | 30s | No retry | `-search.maxQueryDuration`, lowered by `timeout=`; upstream's answer when exceeded |
+| Jaeger / Tempo query (traces) | 30s | No retry | `-search.maxQueryDuration`, lowered by `timeout=`; a request that exceeds it fails with a 400 `context deadline exceeded` (hot VictoriaTraces answers 200 with an empty body; see [read-path.md](read-path.md#jaeger-and-tempo-query-deadline-traces)) |
 | Storage node discovery poll | 10s | Next refresh cycle (5m) | Background |
 | Peer cache request | 5s | Falls back to S3 | Must be < query timeout |
 | SQS long poll | 20s | Immediate re-poll | AWS max |

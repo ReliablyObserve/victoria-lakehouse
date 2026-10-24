@@ -448,7 +448,7 @@
   kind: flag
   origin: native
   expect: differ
-  differ_note: "Jaeger and Tempo requests run under the flag (default 30s, lowered by 'timeout') exactly as on VictoriaTraces, through a drift-tested copy of vtselect's logic (lakehouse-traces/search_max_query_duration.go, selectapi/query_deadline.go). The traces binary's LogsQL routes (/select/logsql/*, /select/tenant_ids) still run under query.timeout (default 1m), not the flag, so a LogsQL query between 30s and 1m that upstream would cut off is answered. Moving them is a default change that needs the owner."
+  differ_note: "Jaeger and Tempo requests run under the flag (default 30s, lowered by 'timeout') exactly as on VictoriaTraces, through a drift-tested copy of vtselect's logic (lakehouse-traces/search_max_query_duration.go, selectapi/query_deadline.go). The traces binary's LogsQL routes (/select/logsql/*, /select/tenant_ids) still run under query.timeout (default 1m), not the flag, so a LogsQL query between 30s and 1m that upstream would cut off is answered. The flag and the timeout argument are ignored there (timeout=soon is not refused). Moving them is a default change that needs the owner (#808)."
   targets: [hot, cold]
   upstream: { flag: search.maxQueryDuration }
   compare: { type: status }

@@ -35,6 +35,7 @@ type stallStore struct {
 	mockStore
 	mu        sync.Mutex
 	deadlines []time.Time
+	global    []bool
 	noLimit   int
 	calls     int
 	inflight  int
@@ -44,6 +45,7 @@ func (s *stallStore) stall(ctx context.Context) error {
 	s.mu.Lock()
 	s.calls++
 	s.inflight++
+	s.global = append(s.global, storage.IsGlobalRead(ctx))
 	if d, ok := ctx.Deadline(); ok {
 		s.deadlines = append(s.deadlines, d)
 	} else {
@@ -135,7 +137,7 @@ func serve(mux *http.ServeMux, path, rawQuery string, safety time.Duration) (*ht
 }
 
 // Every route ends a stalled read at the deadline: the store sees a context that
-// carries it, the answer is upstream's error for a deadline, and the worker is
+// carries it, the request fails with the deadline error, and the worker is
 // free afterwards.
 func TestJaegerTempoRoutes_StalledReadEndsAtTheDeadline(t *testing.T) {
 	const timeout = 300 * time.Millisecond
@@ -179,10 +181,11 @@ func TestJaegerTempoRoutes_StalledReadEndsAtTheDeadline(t *testing.T) {
 	}
 }
 
-// The deadline error is upstream's own answer: the same status and text as the
-// upstream handler gives a context that has hit its deadline, not a status of
-// the wrapper's making.
-func TestJaegerTempoRoutes_DeadlineAnswerIsUpstreams(t *testing.T) {
+// The wrapper adds nothing to the answer: the status and body are exactly those
+// the upstream handler gives a context that has hit its deadline when it is called
+// directly. This is NOT a claim about hot VictoriaTraces, whose storage returns nil
+// for an expired context and so answers an empty 200 (docs/read-path.md).
+func TestJaegerTempoRoutes_WrapperAddsNothingToTheHandlerAnswer(t *testing.T) {
 	const timeout = 200 * time.Millisecond
 	direct := func(path, rawQuery string) (int, string) {
 		st := &stallStore{}
@@ -358,5 +361,51 @@ func TestJaegerTempoRoutes_ClientCancelEndsTheRead(t *testing.T) {
 			t.Fatalf("%s: %d store reads still running", p, inflight)
 		}
 		cancel()
+	}
+}
+
+// The deadline context is derived from the request's scoped context: a request
+// that proved the global-read credential keeps its cross-tenant scope on the
+// Jaeger and the Tempo routes, and one that did not never gets it.
+func TestJaegerTempoRoutes_KeepTheGlobalReadScope(t *testing.T) {
+	cfg := testConfig(config.ModeTraces)
+	cfg.Tenant.GlobalReadHeader = "X-Lakehouse-Global-Read"
+	cfg.Tenant.GlobalReadValue = "s3cr3t"
+	for _, p := range []string{"/select/jaeger/api/services", "/api/services", "/select/tempo/api/v2/search/tags"} {
+		for _, withCred := range []bool{true, false} {
+			st := &stallStore{}
+			vtstorageadapter.Init(st)
+			mux := http.NewServeMux()
+			NewHandler(st, cfg).Register(mux)
+			req := httptest.NewRequest("GET", p+"?timeout=100ms", nil)
+			if withCred {
+				req.Header.Set("X-Lakehouse-Global-Read", "s3cr3t")
+			}
+			mux.ServeHTTP(httptest.NewRecorder(), req)
+			st.mu.Lock()
+			got := append([]bool(nil), st.global...)
+			st.mu.Unlock()
+			if len(got) == 0 {
+				t.Fatalf("%s: the store was not read", p)
+			}
+			for _, g := range got {
+				if g != withCred {
+					t.Fatalf("%s: credential=%v but the store's context has global read = %v", p, withCred, g)
+				}
+			}
+		}
+	}
+}
+
+// The flag value is used as upstream uses it: 0 makes every request fail at once
+// with the deadline error (context.WithTimeout of a duration that has passed).
+func TestJaegerTempoRoutes_ZeroFlagFailsEveryRequestAtOnce(t *testing.T) {
+	for _, p := range []string{"/select/jaeger/api/services", "/select/tempo/api/v2/search/tags"} {
+		st := &stallStore{}
+		mux := newDeadlineMux(t, st, WithMaxQueryDuration(0))
+		rec, took, _ := serve(mux, p, "", 5*time.Second)
+		if took > time.Second || rec.Code == http.StatusOK || !strings.Contains(rec.Body.String(), "deadline exceeded") {
+			t.Fatalf("%s with a 0 flag: %d %q after %s, want an immediate deadline error", p, rec.Code, rec.Body.String(), took)
+		}
 	}
 }
