@@ -2,6 +2,7 @@ package smartcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -315,6 +316,43 @@ func TestController_Singleflight_Dedup(t *testing.T) {
 
 	if s3.calls.Load() != 1 {
 		t.Errorf("S3 calls = %d, want 1 (singleflight dedup)", s3.calls.Load())
+	}
+}
+
+// A query that shares another query's download of an object must not fail with the
+// first query's deadline.
+func TestController_Singleflight_LeaderDeadlineIsNotInherited(t *testing.T) {
+	s3 := newMockS3()
+	s3.data["k"] = []byte("data")
+	s3.delay = 300 * time.Millisecond
+	ctrl := NewController(ControllerConfig{
+		L1:           newMockL1(),
+		L2:           newMockL2(),
+		PeerLookup:   &mockPeerLookup{selfAddr: "self:9428"},
+		PeerFetcher:  &mockPeerFetcher{},
+		S3Fetcher:    s3,
+		Metadata:     NewMetadataMap(),
+		MaxAge:       24 * time.Hour,
+		HotThreshold: 3,
+		HotWindow:    10 * time.Minute,
+		Signal:       "logs",
+	})
+	leaderCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	leaderErr := make(chan error, 1)
+	go func() {
+		_, err := ctrl.Get(leaderCtx, "k", 4)
+		leaderErr <- err
+	}()
+	for s3.calls.Load() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	data, err := ctrl.Get(context.Background(), "k", 4)
+	if err != nil || string(data) != "data" {
+		t.Fatalf("second Get: %q, %v: it must read the object on its own context", data, err)
+	}
+	if err := <-leaderErr; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first Get: %v, want its own deadline", err)
 	}
 }
 

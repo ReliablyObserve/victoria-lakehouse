@@ -185,9 +185,10 @@ func decodedWidthOfType(t format.Type) int64 {
 // decodedEstimate is the estimate of the decoded bytes of row group idx for the
 // projected columns (nil: every column but the storage-bookkeeping ones, as the
 // unprojected scan reads): per column the larger of its chunk's uncompressed size
-// and its value count times the longest of its min/max statistics and the text width of its type (a dictionary-encoded
-// column is small on disk and large decoded), summed. It never reads the
-// compressed size: compressible data decodes to several times it. A row group
+// and its value count times the longest of its min/max statistics and the text width of its type, summed. It never
+// reads the compressed size: compressible data decodes to several times it. It under-counts a dictionary-encoded
+// byte-array column whose min and max are short while its frequent values are long: the footer has no size for the
+// dictionary's entries (known gap, #807). A row group
 // without sizes falls back to the object's stored size times assumedDecodeExpansion
 // shared by its row groups.
 func decodedEstimate(md *format.FileMetaData, idx int, projected map[string]bool, storedSize int64) int64 {

@@ -140,3 +140,32 @@ func BenchmarkScaledRead_WarmPhrase(b *testing.B) {
 		scaledRun(b, s, fx, "padding")
 	}
 }
+
+// BenchmarkScaledRead_CeilingInRowGroups: the price of the ceiling as a multiple
+// of the estimated decoded size of one row group, with eight row-group decoders.
+// A row group is reserved whole, so a ceiling of one or two of them holds the
+// decoders back (docs/operations/sizing.md); the cost is measured, not assumed.
+func BenchmarkScaledRead_CeilingInRowGroups(b *testing.B) {
+	fx := newScaledFixture(b)
+	withScaledFileBudget(b, fx.objBytes)
+	fx.mock.mu.Lock()
+	data := fx.mock.files[fx.keys[0]]
+	fx.mock.mu.Unlock()
+	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		b.Fatal(err)
+	}
+	est := decodedEstimate(f.Metadata(), 0, nil, int64(len(data)))
+	b.Logf("one row group is estimated at %d B; %d row-group decoders", est, cap(rgDecodeSem))
+	for _, k := range []int64{1, 2, 4, 8} {
+		b.Run(fmt.Sprintf("warm_phrase/ceiling=%drg", k), func(b *testing.B) {
+			s := fx.storage(b)
+			s.cfg.Query.MaxLiveBytes = k * est
+			scaledRun(b, s, fx, "padding")
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				scaledRun(b, s, fx, "padding")
+			}
+		})
+	}
+}

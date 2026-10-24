@@ -203,6 +203,12 @@
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ContextEndReleasesWaiter
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
       - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ConcurrentWorkersAllFinish
+      - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ExactFitIsAdmitted
+      - internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_NeverTheCompressedSize
+      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RowGroupReservationIsReleasedWhenTheDecodeFails
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_ExactFitIsAdmitted
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_NeverTheCompressedSize
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RowGroupReservationIsReleasedWhenTheDecodeFails
       - internal/storage/parquets3/row_read_complete_test.go#TestAcquireRGDecode_StopsWaitingWhenContextEnds
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded
@@ -256,3 +262,68 @@
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RemovedSourceMidQuery_KnownGap772
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RemovedSourceMidQuery_KnownGap772
   notes: "The test pins today's behaviour (the rows of the deleted source are missing, no error) so that the gap stays visible; fixing #772 must turn it into 'every row arrives'. Issue: https://github.com/ReliablyObserve/victoria-lakehouse/issues/772"
+
+- id: lh.query.dictionary_column_estimate_gap
+  title: "The footer estimate behind query.max_live_bytes under-counts the decoded bytes of a dictionary-encoded byte-array column whose min and max statistics are short while its frequent values are long (known gap, #807): such a column can pass the ceiling"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: differ
+  differ_note: "Known gap, not approved as a difference. decodedEstimate takes, per column, the larger of the chunk's uncompressed size and values x the longest of its min/max statistics and the type width; for a dictionary column the first is the dictionary plus small indexes and the second two values, not the typical one. Constructed row group (1000 rows, exception.message / status.message: A, z and a ~590 B text for the rest): estimate 1283 B (logs) and 1280 B (traces), decoded 591,849 B and 591,846 B, 461x and 462x under; the independent review measured 39x and 18x on a milder shape. Plain columns are covered. The footer has no other size for the dictionary (parquet-go writes no unencoded_byte_array_data_bytes for dictionary pages); the options (dictionary page header read from bytes already fetched, writing the standard SizeStatistics field, trueing up after the first block) are in the issue. Tracked in #807."
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [chaos]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_DictionaryColumn_KnownGap807
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestDecodedEstimate_DictionaryColumn_KnownGap807
+  notes: "Issue: https://github.com/ReliablyObserve/victoria-lakehouse/issues/807. The test pins today's under-estimate so the gap stays visible; when fixed it must become estimate >= decoded and this row must become pass."
+
+- id: lh.query.live_bytes_large_row_group_throughput
+  title: "With query.max_live_bytes at its 512 MiB default, a query whose ceiling holds fewer than about four of its row groups (row groups estimated over about 128 MiB at the default, with 8 decoders) decodes fewer row groups at once and runs longer than before the ceiling counted decoded bytes (known, owner-visible difference)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: differ
+  differ_note: "A deliberate trade, not a defect: the gate reserves a row group whole, and a row group is admitted next to others only while the reserved bytes stay under the ceiling (one larger than the ceiling is admitted alone), so the process-wide row-group decoders (GOMAXPROCS/2, 2 to 8) cannot all run on row groups whose estimate times their count passes the ceiling. Before this ceiling the decoded bytes of a query were not bounded at all (the old budget counted blocks after decoding). Measured here (BenchmarkScaledRead_CeilingInRowGroups, scaled model, 8 decoders, 20 ms S3 latency, mock S3, n=8): the warm phrase read 155 ms at a ceiling of 1 or 2 row groups, 87-88 ms at 4 or 8 (+78 %, none from 4 up); the cold wildcard read flat from 1 to 16 row groups (583-600 ms). Sourced from the independent review (not re-run): +49 % cold wildcard at no S3 latency, +77 % warm phrase at 20 ms. Evaluated and not taken: admitting each worker's first row group regardless (removes the bound: workers x row group with no ceiling), and flooring the ceiling at 4x the largest row group seen (silently raises the per-query memory above the configured value, a changed default). Mitigation is the operator's: query.max_live_bytes >= 4 x the decoded size of a row group (docs/operations/sizing.md); waits are counted in lakehouse_query_memory_budget_exceeded_total and the first of a query is logged. Needs the owner's approval as a Direction item of #785."
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [chaos]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
+      - internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_LiveBytesBudget_WaitsNeverDrops
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestLiveBytesGate_OversizeBlockAdmittedWhenIdle
+  notes: "The throughput benchmark is BenchmarkScaledRead_ColdWildcard / _WarmPhrase (internal/storage/parquets3/row_read_scaled_bench_test.go, logs). This row documents the difference; it does not gate it."
+
+- id: lh.query.shared_download_per_caller_context
+  title: "Two queries that read the same object share one download, and the one that joins it is not failed by the first query's deadline or cancellation: it reads the object on its own context (before, a 502 cannot read <key>: context deadline exceeded for a read nothing was wrong with)"
+  surface: lh
+  kind: select
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /select/logsql/query, params: { query: "*", start: "{{seed.start}}", end: "{{seed.cold_end}}" } }
+  compare: { type: count }
+  layers: [chaos]
+  pending: true
+  refs:
+    doc: docs/read-path.md
+    tests:
+      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_SharedDownload_LeaderDeadlineDoesNotFailTheOtherQuery
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_SharedDownload_LeaderDeadlineDoesNotFailTheOtherQuery
+      - internal/cache/coalesce_test.go#TestGroup_DoCtx_WaiterStopsAtItsOwnContext
+      - internal/cache/coalesce_test.go#TestGroup_DoCtx_LeaderContextErrorIsNotInherited
+      - internal/cache/coalesce_test.go#TestGroup_DoCtx_OtherErrorsAreShared
+      - internal/smartcache/controller_test.go#TestController_Singleflight_LeaderDeadlineIsNotInherited
+  notes: "Found by the second-pass review of #785: with the 502 for an unreadable object, the first caller's context error, shared through cache.Group.Do and the smart cache's own flight, became a 502 for the second query. cache.Group.DoCtx lets a joining caller wait no longer than its own context and run the call itself when the call it joined ended with a context error while its own context is live; the smart cache uses the same group. The footer, bloom and bundle reads already ran detached from their first caller (s3reader dedup)."

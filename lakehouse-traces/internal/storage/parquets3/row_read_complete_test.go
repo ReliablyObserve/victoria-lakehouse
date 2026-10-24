@@ -36,6 +36,7 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
 )
 
@@ -858,9 +859,11 @@ func TestLiveBytesGate_WaitsForRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second) // bounds the goroutine if the test fails
+	defer cancel()
+	done := make(chan error, 1)
 	go func() {
-		r, err := g.reserve(context.Background(), 10, 100)
+		r, err := g.reserve(ctx, 10, 100)
 		if err == nil {
 			r()
 		}
@@ -888,12 +891,16 @@ func TestLiveBytesGate_ContextEndReleasesWaiter(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error)
+	defer cancel()
+	done := make(chan error, 1)
+	waiting := make(chan struct{})
 	go func() {
+		close(waiting)
 		_, err := g.reserve(ctx, 10, 100)
 		done <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-waiting
+	time.Sleep(20 * time.Millisecond) // the waiter is at the gate or about to be: either way the cancellation must end it
 	cancel()
 	select {
 	case err := <-done:
@@ -917,11 +924,14 @@ func TestLiveBytesGate_OversizeBlockAdmittedWhenIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an idle gate refused an oversize object: %v", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second) // bounds the goroutine if the test fails
+	defer cancel()
 	done := make(chan struct{})
 	go func() {
-		r, _ := g.reserve(context.Background(), 1, 10)
-		r()
-		close(done)
+		defer close(done)
+		if r, err := g.reserve(ctx, 1, 10); err == nil {
+			r()
+		}
 	}()
 	select {
 	case <-done:
@@ -1108,6 +1118,53 @@ func TestDecodedEstimate_CoversWhatIsDecoded(t *testing.T) {
 	}
 }
 
+// KNOWN GAP (#807): the footer alone does not bound the decoded size of a
+// dictionary-encoded byte-array column whose min and max statistics are short while
+// its frequent values are long (status.message: "A", "z" and an error text per
+// failed span): the chunk is the dictionary plus small indexes on disk, and
+// values x longest-statistic is the other term. The estimate is then far below what
+// the column decodes to, and the live-bytes ceiling under-counts it. Reading the
+// dictionary page would fix it, but only by a read the planner did not budget; this
+// pins today's under-estimate so it stays visible. When the estimate covers it, this
+// test must become that assertion (est >= decoded).
+func TestDecodedEstimate_DictionaryColumn_KnownGap807(t *testing.T) {
+	long := strings.Repeat("at com.example.Foo.bar(Foo.java:123)\n", 16)
+	rows := make([]schema.TraceRow, 1000)
+	now := rcBase()
+	for i := range rows {
+		msg := "M" + long
+		switch i {
+		case 0:
+			msg = "A"
+		case 1:
+			msg = "z"
+		case 2, 5, 8:
+			msg = "N" + long
+		}
+		rows[i] = schema.TraceRow{TimestampUnixNano: now.Add(time.Duration(i) * time.Millisecond).UnixNano(), Body: "b", TraceID: fmt.Sprintf("%032x", i), SpanID: fmt.Sprintf("%016x", i), ServiceName: "svc", StatusMessage: msg}
+	}
+	res, err := writeTracesParquet(rows, len(rows), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := parquet.OpenFile(bytes.NewReader(res.Data), int64(len(res.Data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fx := newRCFixtureN(t, 1, 1, rcKeyFmt)
+	var got int64
+	err = fx.s.readOneRowGroup(context.Background(), f, f.RowGroups()[0], fx.start, fx.end, map[string]bool{"status.message": true}, nil,
+		func(_ uint, db *logstorage.DataBlock) { got += dataBlockApproxBytes(db) }, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	est := decodedEstimate(f.Metadata(), 0, map[string]bool{"status.message": true}, int64(len(res.Data)))
+	t.Logf("MEASURED dictionary column: estimate=%d B, decoded=%d B (%.1fx under)", est, got, float64(got)/float64(est))
+	if est >= got {
+		t.Fatalf("the estimate %d B now covers the %d B this dictionary column decodes to: the gap #807 is closed, turn this test into the assertion and drop the gap row", est, got)
+	}
+}
+
 // reserveRowGroup reserves what THIS row group's footer says, not a guess from the
 // object's stored size: at least the uncompressed sizes of its columns, and not the
 // stored-size fallback.
@@ -1184,6 +1241,70 @@ func TestDecodedEstimate_Estimator(t *testing.T) {
 	}
 }
 
+// A reservation that exactly fills the ceiling is admitted: only bytes PAST the
+// ceiling wait.
+func TestLiveBytesGate_ExactFitIsAdmitted(t *testing.T) {
+	var g liveBytesGate
+	if !g.tryReserve(60, 100) {
+		t.Fatal("an idle gate refused 60 of 100")
+	}
+	if !g.tryReserve(40, 100) {
+		t.Fatal("a reservation that exactly fills the ceiling (60 + 40 of 100) was refused")
+	}
+	if g.tryReserve(1, 100) {
+		t.Fatal("a byte past the ceiling was admitted next to other reservations")
+	}
+	if g.live.Load() != 100 || g.peak.Load() != 100 {
+		t.Fatalf("live %d peak %d, want 100 and 100", g.live.Load(), g.peak.Load())
+	}
+}
+
+// The estimate of a row group is not made from the compressed size: on a zstd
+// object whose columns compress many times over, it still covers the uncompressed
+// size of the columns, which is what is decoded.
+func TestDecodedEstimate_NeverTheCompressedSize(t *testing.T) {
+	fx := newRCFixtureShape(t, 1, 1, rcKeyFmt, false)
+	f, err := parquet.OpenFile(bytes.NewReader(fx.datas[0]), int64(len(fx.datas[0])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for idx, rg := range f.Metadata().RowGroups {
+		var uncompressed, compressed int64
+		for _, c := range rg.Columns {
+			if !schema.IsInternalColumn(c.MetaData.PathInSchema[0]) {
+				uncompressed += c.MetaData.TotalUncompressedSize
+				compressed += c.MetaData.TotalCompressedSize
+			}
+		}
+		if compressed*4 > uncompressed {
+			t.Fatalf("row group %d: %d B compressed of %d B uncompressed: the fixture does not compress, the test cannot tell the two sizes apart", idx, compressed, uncompressed)
+		}
+		est := decodedEstimate(f.Metadata(), idx, nil, int64(len(fx.datas[0])))
+		if est < uncompressed {
+			t.Fatalf("row group %d: estimate %d B is below the %d B uncompressed (%d B compressed)", idx, est, uncompressed, compressed)
+		}
+	}
+}
+
+// The reservation of a row group whose decode fails is released: the failed read
+// leaves nothing reserved on the query's gate.
+func TestRowRead_RowGroupReservationIsReleasedWhenTheDecodeFails(t *testing.T) {
+	fx := newRCFixtureN(t, 1, 1, rcKeyFmt)
+	fx.fs.mock.putFile(fx.keys[0], corruptPages(t, fx.datas[0], 1)) // row group 0 reads, row group 1 fails
+	var gate *liveBytesGate
+	liveGateHook = func(g *liveBytesGate) { gate = g }
+	t.Cleanup(func() { liveGateHook = nil })
+	if _, err := fx.query(t, context.Background(), "*", nil); err == nil {
+		t.Fatal("a damaged object was read without error")
+	}
+	if gate == nil || gate.peak.Load() == 0 {
+		t.Fatal("the read reserved nothing: the test does not exercise the reservation")
+	}
+	if got := gate.live.Load(); got != 0 {
+		t.Fatalf("%d B still reserved after the read failed: the reservation of the row group that failed leaked", got)
+	}
+}
+
 // KNOWN GAP (#793): a query whose consumer is stalled can still hold the
 // process-wide file-budget and row-group-decoder slots another query needs: its
 // workers hold them across a blocking writeBlock, whatever the ceiling. This pins
@@ -1237,5 +1358,78 @@ func TestRowRead_StalledConsumer_StarvesOtherQueries_KnownGap793(t *testing.T) {
 	close(stall)
 	if err := <-aDone; err != nil {
 		t.Fatalf("query A: %v", err)
+	}
+}
+
+// Two queries share one download of an object. The query that started it stops at
+// its own deadline; the other, which has none, must read the object on its own
+// context and answer completely, not fail with the first query's deadline (a 502
+// "cannot read ...: context deadline exceeded" for a read nothing was wrong with).
+func TestRowRead_SharedDownload_LeaderDeadlineDoesNotFailTheOtherQuery(t *testing.T) {
+	// The download goes through the smart cache on a select pod and through the
+	// storage's own group on a node without one: both are held to it.
+	for _, name := range []string{"storage_group", "smart_cache"} {
+		t.Run(name, func(t *testing.T) { sharedDownloadLeaderDeadline(t, name == "smart_cache") })
+	}
+}
+
+func sharedDownloadLeaderDeadline(t *testing.T, withSmartCache bool) {
+	fx := newRCFixtureN(t, 1, 1, rcKeyFmt)
+	if withSmartCache {
+		fx.s.smartCache = smartcache.NewController(smartcache.ControllerConfig{
+			L1:           &l1Adapter{lru: fx.s.memCache},
+			L2:           &l2Adapter{},
+			PeerLookup:   &localOnlyLookup{},
+			S3Fetcher:    &s3Adapter{pool: fx.s.pool},
+			Metadata:     smartcache.NewMetadataMap(),
+			MaxAge:       time.Hour,
+			HotThreshold: 3,
+			HotWindow:    time.Minute,
+			Signal:       "traces",
+		})
+	}
+	var wholeGets atomic.Int32
+	started := make(chan struct{})
+	fx.fs.setFault(fx.keys[0], func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.Header.Get("Range") == "" && wholeGets.Add(1) == 1 {
+			close(started)
+			<-r.Context().Done() // the first download is the one that never finishes
+			return
+		}
+		fx.fs.mock.handler(w, r)
+	})
+
+	leaderCtx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := fx.query(t, leaderCtx, "*", nil)
+		leaderDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first query never started its download")
+	}
+
+	type result struct {
+		rows int
+		err  error
+	}
+	res := make(chan result, 1)
+	go func() {
+		rows, err := fx.query(t, context.Background(), "*", nil)
+		res <- result{rows, err}
+	}()
+	select {
+	case r := <-res:
+		if r.err != nil || r.rows != rcRowsPerFile {
+			t.Fatalf("the query without a deadline: %d rows of %d, err %v: it must not inherit the other query's deadline", r.rows, rcRowsPerFile, r.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the query without a deadline did not finish")
+	}
+	if err := <-leaderDone; err == nil {
+		t.Fatal("the query with the deadline answered although its download never finished")
 	}
 }

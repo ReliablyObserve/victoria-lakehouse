@@ -170,12 +170,12 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	filter := rowFilterOf(ctx, q)
 
 	// Per-query memory ceiling (query.max_live_bytes): a file worker reserves the
-	// estimated decoded size of an object against it BEFORE it takes a process-wide
-	// slot or opens the object (queryFile, liveBytesGate), and waits for room when
-	// the objects already reserved fill it. The writeBlock below stays synchronous
-	// (wbMu): the consumer's backpressure is what keeps the reservations in use.
-	// The budget never cancels the query and never drops a block: a read stopped by
-	// it would answer 200 with rows missing.
+	// estimated decoded size of a ROW GROUP against it before it decodes it
+	// (queryFile, liveBytesGate), from the footer it has already read, and waits for
+	// room when the row groups already reserved fill it. The writeBlock below stays
+	// synchronous (wbMu): the consumer's backpressure is what keeps the reservations
+	// in use. The budget never cancels the query and never drops a block: a read
+	// stopped by it would answer 200 with rows missing.
 	maxLiveBytes := s.cfg.Query.MaxLiveBytes
 	if maxLiveBytes <= 0 {
 		maxLiveBytes = defaultMaxLiveBytes
