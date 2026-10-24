@@ -400,7 +400,7 @@
     {"name":"lakehouse.query.file-workers.request","type":"int","default":"0","usage":"Query file-workers request (always-reserved baseline)","keys":["query.file_workers_request"],"effect":"set"},
     {"name":"lakehouse.query.file-workers.scaling","type":"string","default":"","usage":"Query file-workers scaling policy: fixed|linear|expbackoff","keys":["query.file_workers_scaling"],"effect":"set"},
     {"name":"lakehouse.query.max-files-per-query","type":"int","default":"0","usage":"Max S3 files per query before rejection (default: 0 = unlimited)","keys":["query.max_files_per_query"],"effect":"set"},
-    {"name":"lakehouse.query.max-live-bytes","type":"int","default":"0","usage":"Per-query ceiling on in-flight DataBlock bytes; above it a file worker waits for the consumer (default: 512MiB)","keys":["query.max_live_bytes"],"effect":"set"},
+    {"name":"lakehouse.query.max-live-bytes","type":"int","default":"0","usage":"Per-query ceiling on the estimated decoded bytes in flight; a file worker reserves a row group's footer-derived estimate before decoding it and waits above the ceiling (default: 512MiB)","keys":["query.max_live_bytes"],"effect":"set"},
     {"name":"lakehouse.query.max-rows.limit","type":"int","default":"0","usage":"Query max-rows limit (hard ceiling)","keys":["query.max_rows_limit"],"effect":"set"},
     {"name":"lakehouse.query.max-rows.request","type":"int","default":"0","usage":"Query max-rows request (operator-visible baseline)","keys":["query.max_rows_request"],"effect":"set"},
     {"name":"lakehouse.query.max-rows.scaling","type":"string","default":"","usage":"Query max-rows scaling policy: fixed|linear|expbackoff","keys":["query.max_rows_scaling"],"effect":"set"},

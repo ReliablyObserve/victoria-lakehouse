@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"testing"
@@ -115,7 +116,7 @@ func TestMemLeak_Group_DoCycles(t *testing.T) {
 
 	// Warm up
 	for i := 0; i < 500; i++ {
-		_, _, _ = g.Do(fmt.Sprintf("k%d", i), func() ([]byte, error) {
+		_, _, _ = g.DoCtx(context.Background(), fmt.Sprintf("k%d", i), func(context.Context) ([]byte, error) {
 			return make([]byte, 32), nil
 		})
 	}
@@ -127,7 +128,7 @@ func TestMemLeak_Group_DoCycles(t *testing.T) {
 
 	const iterations = 50000
 	for i := 0; i < iterations; i++ {
-		_, _, _ = g.Do(fmt.Sprintf("k%d", i), func() ([]byte, error) {
+		_, _, _ = g.DoCtx(context.Background(), fmt.Sprintf("k%d", i), func(context.Context) ([]byte, error) {
 			return make([]byte, 32), nil
 		})
 	}

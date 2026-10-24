@@ -396,7 +396,7 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		}
 	}
 
-	data, err, shared := s.sfGroup.Do(key, func() ([]byte, error) {
+	data, err, shared := s.sfGroup.DoCtx(ctx, key, func(ctx context.Context) ([]byte, error) {
 		select {
 		case s.dlSem <- struct{}{}:
 			defer func() { <-s.dlSem }()

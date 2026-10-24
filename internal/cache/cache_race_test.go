@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"runtime"
@@ -65,7 +66,7 @@ func TestGroup_Race_MaxGoroutines(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			key := fmt.Sprintf("key-%d", id%keys)
-			val, err, shared := g.Do(key, func() ([]byte, error) {
+			val, err, shared := g.DoCtx(context.Background(), key, func(context.Context) ([]byte, error) {
 				totalCalls.Add(1)
 				return []byte("result"), nil
 			})

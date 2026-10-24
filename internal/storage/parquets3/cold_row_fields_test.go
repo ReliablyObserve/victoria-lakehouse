@@ -135,7 +135,7 @@ func scanRowGroups(t *testing.T, s *Storage, f *parquet.File, startNs, endNs int
 	t.Helper()
 	var blocks []*logstorage.DataBlock
 	for _, rg := range f.RowGroups() {
-		if err := s.readOneRowGroup(f, rg, startNs, endNs, projected, nil,
+		if err := s.readOneRowGroup(context.Background(), f, rg, startNs, endNs, projected, nil,
 			func(_ uint, db *logstorage.DataBlock) { blocks = append(blocks, db) }, nil); err != nil {
 			t.Fatalf("readOneRowGroup: %v", err)
 		}

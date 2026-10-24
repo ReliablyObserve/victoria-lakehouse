@@ -305,7 +305,7 @@ func TestAcquireRGDecode_BoundsConcurrency(t *testing.T) {
 	start := make(chan struct{})
 	for i := 0; i < goroutines; i++ {
 		go func() {
-			release := acquireRGDecode()
+			release, _ := acquireRGDecode(context.Background())
 			defer release()
 			cur := inFlight.Add(1)
 			for {

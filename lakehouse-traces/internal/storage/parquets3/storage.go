@@ -338,7 +338,7 @@ func (s *Storage) getFileData(ctx context.Context, key string, size int64) ([]by
 		}
 	}
 
-	data, err, shared := s.sfGroup.Do(key, func() ([]byte, error) {
+	data, err, shared := s.sfGroup.DoCtx(ctx, key, func(ctx context.Context) ([]byte, error) {
 		s3Start := time.Now()
 		metrics.S3RequestsTotal.Inc("GET")
 		d, dlErr := s.pool.Download(ctx, key)

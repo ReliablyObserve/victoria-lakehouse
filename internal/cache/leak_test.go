@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -18,7 +19,7 @@ func TestGroup_NoGoroutineLeak_DoCycles(t *testing.T) {
 	before := runtime.NumGoroutine()
 
 	for i := 0; i < 5000; i++ {
-		_, _, _ = g.Do(fmt.Sprintf("key-%d", i), func() ([]byte, error) {
+		_, _, _ = g.DoCtx(context.Background(), fmt.Sprintf("key-%d", i), func(context.Context) ([]byte, error) {
 			return make([]byte, 64), nil
 		})
 	}
@@ -44,7 +45,7 @@ func TestGroup_NoGoroutineLeak_ConcurrentDo(t *testing.T) {
 			wg.Add(1)
 			go func(k string) {
 				defer wg.Done()
-				_, _, _ = g.Do(k, func() ([]byte, error) {
+				_, _, _ = g.DoCtx(context.Background(), k, func(context.Context) ([]byte, error) {
 					return make([]byte, 128), nil
 				})
 			}(key)
