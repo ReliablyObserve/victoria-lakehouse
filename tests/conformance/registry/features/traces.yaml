@@ -344,3 +344,26 @@
     checked in CI. The cold tier decodes them back into the VictoriaTraces fields for trace-by-ID, filters,
     `field_values` and the select-pod buffer bridge, and reads the two columns only for queries that name an
     event or link field.
+
+- id: lh.feature.traces.query_deadline
+  title: Jaeger and Tempo query deadline
+  status: shipped
+  area: traces
+  surfaces: [api, flag]
+  rows: [vt.select.jaeger_tempo_query_deadline, vt.flag.search_max_query_duration]
+  tests:
+    - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_StalledReadEndsAtTheDeadline
+    - lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_TimeoutArgument
+    - lakehouse-traces/internal/storage/parquets3/query_deadline_http_test.go#TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots
+  docs:
+    - docs/read-path.md
+    - docs/configuration.md
+  highlight: >-
+    **Jaeger and Tempo query deadline**: every Jaeger and Tempo request runs under VictoriaTraces' own `-search.maxQueryDuration` (30s, lowered by `timeout=`), so a stalled S3 read ends with a deadline error instead of holding the query and its slots.
+  description: >-
+    VictoriaTraces runs every Jaeger and Tempo request under -search.maxQueryDuration (default
+    30s), which a request may lower with its timeout argument. The traces binary carries the same
+    deadline, taken from the same flag, so a stalled S3 read or consumer ends at the deadline and
+    gives back the file-budget and row-group decode slots it held, instead of holding them until
+    the client goes away. The request fails with a 400 deadline error where hot VictoriaTraces
+    answers an empty 200 (a recorded difference).

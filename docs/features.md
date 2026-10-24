@@ -14,14 +14,14 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 7 | 0 | 0 | 1 | 8 |
 | Deletion | 10 | 0 | 0 | 1 | 11 |
-| Traces | 11 | 0 | 0 | 3 | 14 |
+| Traces | 12 | 0 | 0 | 3 | 15 |
 | Tenancy | 18 | 0 | 0 | 1 | 19 |
 | UI | 7 | 0 | 0 | 0 | 7 |
 | Observability | 5 | 0 | 0 | 0 | 5 |
 | Ops | 14 | 0 | 2 | 0 | 16 |
 | Deploy | 8 | 0 | 0 | 0 | 8 |
 | Security | 6 | 0 | 0 | 0 | 6 |
-| **Total** | **154** | **1** | **3** | **9** | **167** |
+| **Total** | **155** | **1** | **3** | **9** | **168** |
 
 ## Coverage gaps
 
@@ -1107,7 +1107,7 @@ A delete is the definition object plus, when a hide delete is undone, an undo ob
 - Docs: `docs/deletion-strategy.md`, `docs/architecture/roles.md`, `docs/operations.md#tombstone-management`, `docs/durability.md#31-deletes-and-rewrites`
 - Changelog: `0.132.1`
 
-## Traces (14)
+## Traces (15)
 
 ### 📝 Pre-aggregated trace dependencies
 
@@ -1141,6 +1141,17 @@ VictoriaTraces v0.12.0 extended the offset a span waits before becoming visible 
 
 - Verification: rows: `vt.select.logsql_query.latency_offset` (pass, pending), `vt.select.logsql_query.latency_offset_disabled` (pass, pending), `vt.select.logsql_hits.latency_offset` (pass, pending), `vt.select.logsql_stats_query.latency_offset` (pass, pending), `vt.select.logsql_field_values.latency_offset` (pass, pending), `vt.select.logsql_query.latency_offset_rate` (pass, pending), `vt.select.logsql_query.latency_offset_time_offset` (pass, pending), `vt.select.logsql_query.latency_offset_ignore_global_time_filter` (pass, pending), `vt.select.logsql_query.latency_offset_subqueries` (pass, pending), `vt.select.logsql_query.time_offset_time_column` (differ, pending), `vt.select.logsql_query.in_subquery_without_pipes` (pass, pending), `vt.select.logsql_query_time_range.ignores_latency_offset_arg` (pass, pending), `vt.select.tenant_ids.no_latency_offset` (pass, pending), `vt.flag.search_latency_offset` (pass, pending) · tests: `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_HidesRowsYoungerThanTheOffset`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_BoundaryIsInclusiveAtTheNanosecond`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndTimeIsNowMinusFlag`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_EndIsExactlyNowMinusOffset`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_ComposesWithCallerArguments`, `lakehouse-traces/internal/selectapi/latency_offset_test.go#TestLatencyOffset_PerAPI`, `lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestLogsQLServedEqualsUpstreamOnTheSameData`, `lakehouse-traces/internal/selectapi/logsql_equivalence_test.go#TestRateThroughTheServedHandler`, `lakehouse-traces/internal/vtstorage_adapter/hidden_fields_test.go#TestHiddenFieldsAreRemoved`, `lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_UserLogsQLWithTraceIDIdxIsNotHijacked`, `lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go#TestAdapter_VTIssuedLookupKeepsFastPath`, `lakehouse-traces/adapter_storage_test.go#TestAdapterStorage_TelemetryKeepsSpanAndLookup`, `lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go#TestRealStore_ResolvedInSubqueryWithManyValues`, `lakehouse-traces/logsql_routes_test.go#TestLogsQLRouteTableMatchesVendoredVT`, `lakehouse-traces/logsql_routes_test.go#TestLatencyOffsetFlagDefault`, `lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_HidesYoungRowsLikeHotVT`, `lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go#TestColdLatencyOffset_BridgeAsksForEffectiveRange`, `tests/parity/traces_latency_offset_test.go#TestParity_Traces_LogsQLLatencyOffset`
 - Docs: `docs/read-path.md`
+
+### ✅ Jaeger and Tempo query deadline
+
+`lh.feature.traces.query_deadline` · status: shipped · surfaces: api, flag
+
+**Jaeger and Tempo query deadline**: every Jaeger and Tempo request runs under VictoriaTraces' own `-search.maxQueryDuration` (30s, lowered by `timeout=`), so a stalled S3 read ends with a deadline error instead of holding the query and its slots.
+
+VictoriaTraces runs every Jaeger and Tempo request under -search.maxQueryDuration (default 30s), which a request may lower with its timeout argument. The traces binary carries the same deadline, taken from the same flag, so a stalled S3 read or consumer ends at the deadline and gives back the file-budget and row-group decode slots it held, instead of holding them until the client goes away. The request fails with a 400 deadline error where hot VictoriaTraces answers an empty 200 (a recorded difference).
+
+- Verification: rows: `vt.select.jaeger_tempo_query_deadline` (differ, pending), `vt.flag.search_max_query_duration` (differ, pending) · tests: `lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_StalledReadEndsAtTheDeadline`, `lakehouse-traces/internal/selectapi/query_deadline_test.go#TestJaegerTempoRoutes_TimeoutArgument`, `lakehouse-traces/internal/storage/parquets3/query_deadline_http_test.go#TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots`
+- Docs: `docs/read-path.md`, `docs/configuration.md`
 
 ### ✅ Service graph from cold storage
 
