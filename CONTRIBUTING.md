@@ -135,8 +135,9 @@ A PR that adds a Lakehouse feature or extends an existing one is not mergeable u
 2. **Verification** — registry rows for every new endpoint, flag or behavior (native VL/VT rows first when the
    feature touches upstream surfaces), regression tests that exercise the feature, and benchmarks when it
    affects the read or write path (validated responses, compared against the recorded baseline).
-3. **Generated docs** — run `make conformance-gen`; `docs/features.md`, `UPSTREAM_COVERAGE.md` and the README
-   highlights block are generated from the registry and must be committed current.
+3. **Generated docs** — run `make conformance-gen`; `docs/features.md`, `UPSTREAM_COVERAGE.md`,
+   `docs/proof-coverage.md` (with its `.json` twin) and the README highlights block are generated from the
+   registry and must be committed current.
 4. **CHANGELOG** — a fragment, `changelog.d/<PR-or-slug>.added.md`, whose bullet has a bold lead-in that maps to
    the feature (the catalog gate matches `### Added` lead-ins, and an `added` fragment is one; an extension of an
    existing feature may use `changed`, and still updates the catalog when it adds a route, handler, flag or
@@ -145,7 +146,8 @@ A PR that adds a Lakehouse feature or extends an existing one is not mergeable u
 CI enforces this through the required `conformance-inventory` check: it fails a PR that adds a CHANGELOG
 `### Added` bullet (or an `added` fragment), a route or handler, a `lakehouse.*` flag, or an `lh.*` registry row without changing
 `tests/conformance/registry/features/`, and any PR whose generated files (`docs/features.md`,
-`UPSTREAM_COVERAGE.md`, the README highlights block, the upstream inventory) are stale.
+`UPSTREAM_COVERAGE.md`, `docs/proof-coverage.md` and `.json`, the README highlights block, the upstream
+inventory) are stale.
 
 ### CI Checks
 
