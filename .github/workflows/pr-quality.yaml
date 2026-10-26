@@ -1,0 +1,264 @@
+name: PR Quality
+
+# The quality report of a pull request, computed as artifacts. INFORMATIONAL: this job is not a required check and never gets a token
+# that can write; it runs the tools on the PR's tree and uploads their data.
+#
+# Two artifacts:
+#   lh-proof-comment   manifest.json + pr-quality.md: the contract of the commenter (.github/workflows/pr-proof-comment.yaml, a workflow_run job
+#                      that runs the BASE branch's code, treats this artifact as untrusted data, sanitises the body and posts the sticky comment
+#                      `<!-- lh-pr-quality -->`). Uploaded on every run, also when the job failed (verdict `incomplete`) or has nothing to report
+#                      (verdict `skipped`), so a stale verdict never stays on the pull request.
+#   pr-quality-data    quality.json: the data behind the body (schema scripts/bench/ab/schemas/pr-quality.schema.json), for a later trend.
+#
+# Cost: the job measures only what the PR changes (the Go packages with changed files, capped at 12 per module): `go test -cover` of those
+# packages on the merge base and on the PR, and golangci-lint --new-from-rev on them. It does not re-run the CI test jobs; the coverage figure
+# is the one `go test -cover` prints, which scripts/ci/check_coverage.sh reads in the CI test jobs, with the same exclusions (a test pins
+# them to ci.yaml). A PR that changes no Go package pays for the checkout and the static counts only. The job is not gated by the CI scope:
+# the scope can only skip a job, and a skipped job leaves the previous head's comment on the pull request.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+# A new push to a pull request cancels the run still going for its previous head.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  VL_VERSION_LOGS: v1.53.0
+  VL_COMMIT_TRACES: c945d2949e98
+  VT_VERSION: v0.12.0
+  GOWORK: "off"
+  # The same pinned linter as ci.yaml.
+  GOLANGCI_LINT_VERSION: v2.14.0
+
+jobs:
+  report:
+    name: pr-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read # the flaky-test watch and the parity results read the workflow runs of the head commit
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the report's dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes -r scripts/ci/requirements.txt -r scripts/proof/requirements.txt
+
+      # The report tooling has no other CI job: a broken renderer or schema fails here, before it produces a misleading artifact.
+      - name: Unit tests of the report tooling
+        run: python -m pytest scripts/bench/ab/tests/test_quality.py scripts/bench/ab/tests/test_quality_inputs.py scripts/bench/ab/tests/test_quality_bundle.py scripts/bench/ab/tests/test_quality_workflow.py -q
+
+      - name: Work out what the PR changes
+        id: plan
+        run: |
+          set -euo pipefail
+          export Q="$RUNNER_TEMP/q"
+          echo "Q=$Q" >> "$GITHUB_ENV"
+          mkdir -p "$Q"
+          mb=$(git merge-base "$BASE_SHA" HEAD)
+          echo "merge_base=$mb" >> "$GITHUB_OUTPUT"
+          base="$RUNNER_TEMP/base"
+          git worktree add --detach "$base" "$mb"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          for m in root lakehouse-traces; do
+            python3 scripts/bench/ab/quality.py packages --base-ref "$mb" --module "$m" --json > "$Q/changed-$m.json"
+            for g in short full; do
+              python3 scripts/bench/ab/quality.py packages --base-ref "$mb" --module "$m" --group "$g" --exists-in "$PWD" > "$Q/pkgs-$m-$g-pr.txt"
+              python3 scripts/bench/ab/quality.py packages --base-ref "$mb" --module "$m" --group "$g" --exists-in "$base" > "$Q/pkgs-$m-$g-base.txt"
+            done
+          done
+          python3 - <<'PY'
+          import json, os
+          q = os.environ["Q"]
+          changed = {}
+          for m in ("root", "lakehouse-traces"):
+              with open(f"{q}/changed-{m}.json") as f:
+                  changed[m] = json.load(f)
+          with open(f"{q}/changed.json", "w") as f:
+              json.dump(changed, f)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("go=" + ("true" if any(v["measured"] for v in changed.values()) else "false") + "\n")
+          PY
+
+      - if: ${{ steps.plan.outputs.go == 'true' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # The same deps cache as ci.yaml (key and paths), so a PR that does not touch patches/ or the Makefile finds the one main saved.
+      - name: VictoriaLogs and VictoriaTraces sources
+        id: deps
+        if: ${{ steps.plan.outputs.go == 'true' }}
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaLogs
+            lakehouse-traces/deps/VictoriaTraces
+          key: vl-deps-${{ env.VL_VERSION_LOGS }}-${{ env.VL_COMMIT_TRACES }}-${{ env.VT_VERSION }}-${{ hashFiles('patches/**', 'Makefile') }}
+
+      - name: Prepare the sources when the cache missed
+        if: ${{ steps.plan.outputs.go == 'true' && steps.deps.outputs.cache-hit != 'true' }}
+        run: make deps-logs deps-traces deps-vt
+
+      - name: Sources for the merge base
+        if: ${{ steps.plan.outputs.go == 'true' }}
+        env:
+          MB: ${{ steps.plan.outputs.merge_base }}
+          BASE: ${{ steps.plan.outputs.base }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet "$MB" HEAD -- patches Makefile; then
+            # the same sources: hard links, no copy
+            for d in deps/VictoriaLogs lakehouse-traces/deps/VictoriaLogs lakehouse-traces/deps/VictoriaTraces; do
+              mkdir -p "$BASE/$(dirname "$d")"
+              cp -al "$d" "$BASE/$d" 2>/dev/null || cp -a "$d" "$BASE/$d"
+            done
+          else
+            (cd "$BASE" && make deps-logs deps-traces deps-vt)
+          fi
+
+      # Coverage and test time of the changed packages, on the merge base and on the PR: `go test -cover`, -short except for the packages
+      # whose CI coverage run is not (scripts/bench/ab/quality_inputs.py NOT_SHORT). Test failures do not fail this step: the CI test jobs
+      # are the gate, and the report lists them next to the coverage.
+      - name: Coverage and test time of the changed packages
+        if: ${{ steps.plan.outputs.go == 'true' }}
+        env:
+          BASE: ${{ steps.plan.outputs.base }}
+        run: |
+          set +e
+          measure() { # tree side
+            for m in root lakehouse-traces; do
+              dir=$1; [ "$m" = lakehouse-traces ] && dir=$1/lakehouse-traces
+              : > "$Q/$2-$m.json"
+              for g in short full; do
+                flags=(); [ "$g" = short ] && flags=(-short)
+                mapfile -t pk < <(sed -n 's#^\(.\+\)$#./\1#p' "$Q/pkgs-$m-$g-$2.txt")
+                [ "${#pk[@]}" -gt 0 ] || continue
+                (cd "$dir" && go test "${flags[@]}" -cover -count=1 -timeout=10m -json "${pk[@]}") >> "$Q/$2-$m.json" 2>> "$Q/$2-$m.err"
+              done
+            done
+          }
+          measure "$BASE" base
+          measure "$PWD" pr
+          exit 0
+
+      - if: ${{ steps.plan.outputs.go == 'true' }}
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-only: true
+
+      # What the PR adds: golangci-lint --new-from-rev=<merge base> on the changed packages (the CI lint jobs run the whole module).
+      # A lint run that did not complete (exit status other than 0 or 1) leaves no report, and the section says "not collected".
+      - name: New lint findings
+        if: ${{ steps.plan.outputs.go == 'true' }}
+        env:
+          MB: ${{ steps.plan.outputs.merge_base }}
+        run: |
+          set +e
+          for m in root lakehouse-traces; do
+            dir=.; [ "$m" = lakehouse-traces ] && dir=lakehouse-traces
+            mapfile -t pk < <(cat "$Q/pkgs-$m-short-pr.txt" "$Q/pkgs-$m-full-pr.txt" | sed -n 's#^\(.\+\)$#./\1#p')
+            [ "${#pk[@]}" -gt 0 ] || continue
+            (cd "$dir" && golangci-lint run --new-from-rev="$MB" --output.json.path="$Q/lint-$m.json" "${pk[@]}")
+            rc=$?
+            if [ "$rc" -gt 1 ]; then echo "::warning title=Lint::golangci-lint ($m) exited $rc; the lint section is not collected"; rm -f "$Q/lint-$m.json"; fi
+          done
+          exit 0
+
+      # The parity suite takes about 20 minutes: when its run for this head has finished (a re-run of this job, a push that left it done),
+      # its pass/fail counts are used; otherwise the report shows the allowlist of the tree only and says so.
+      - name: Parity results of this head, when finished
+        run: |
+          set +e
+          id=$(gh run list --workflow parity.yaml --commit "$HEAD_SHA" --status completed --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -n "$id" ]; then gh run download "$id" --name parity-results --dir "$Q/parity"; fi
+          exit 0
+
+      - name: Flaky-test watch
+        run: python3 scripts/bench/ab/quality.py flaky --repo "$GITHUB_REPOSITORY" --sha "$HEAD_SHA" --out "$Q/flaky.json"
+
+      - name: Snapshots and the artifacts
+        id: bundle
+        env:
+          MB: ${{ steps.plan.outputs.merge_base }}
+          BASE: ${{ steps.plan.outputs.base }}
+          GO: ${{ steps.plan.outputs.go }}
+        run: |
+          set -uo pipefail
+          snap() { # tree side [extra args...]
+            tree=$1; side=$2; shift 2
+            args=(--tree "$tree" --out "$Q/$side.json")
+            for m in root lakehouse-traces; do
+              [ -s "$Q/$side-$m.json" ] && args+=(--gotest "$m=$Q/$side-$m.json")
+              [ -s "$Q/lint-$m.json" ] && [ "$side" = pr ] && args+=(--lint "$m=$Q/lint-$m.json")
+            done
+            if [ "$GO" = true ]; then
+              args+=(--module-path "root=$(go list -m)" --module-path "lakehouse-traces=$(cd lakehouse-traces && go list -m)")
+            fi
+            python3 scripts/bench/ab/quality.py collect "${args[@]}" "$@"
+          }
+          snap "$BASE" base
+          extra=(); [ -s "$Q/parity/parity-results.json" ] && extra=(--parity-results "$Q/parity/parity-results.json")
+          snap "$PWD" pr "${extra[@]}"
+          python3 scripts/bench/ab/quality.py bundle --base "$Q/base.json" --pr "$Q/pr.json" --out-dir lh-proof-comment --data-dir pr-quality-data \
+            --pr-number "$PR_NUMBER" --head-sha "$HEAD_SHA" --changed "$Q/changed.json" --flaky "$Q/flaky.json"
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          [ -f lh-proof-comment/pr-quality.md ] && cat lh-proof-comment/pr-quality.md >> "$GITHUB_STEP_SUMMARY"
+          [ "$rc" -le 1 ]
+
+      # A step that failed before the artifact was written: say so, so the previous head's verdict does not stay on the pull request.
+      - name: Incomplete notice
+        if: ${{ failure() && hashFiles('lh-proof-comment/manifest.json') == '' }}
+        run: |
+          python3 scripts/bench/ab/quality.py placeholder --out-dir lh-proof-comment --pr-number "$PR_NUMBER" --head-sha "$HEAD_SHA" --verdict incomplete \
+            --reason "the quality job failed before it finished; the figures of an earlier run do not apply to this head." --repo "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID"
+
+      # The commenter's artifact: exactly manifest.json and pr-quality.md (docs/ci-proof-comment.md of the commenter).
+      - name: Upload the comment artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lh-proof-comment
+          path: lh-proof-comment/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload the data artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pr-quality-data
+          path: pr-quality-data/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Informational, but not hidden: a gate of the report turns this job red (it is not a required check).
+      - name: Verdict
+        if: ${{ steps.bundle.outputs.rc == '1' }}
+        run: echo "::error title=PR quality::a quality gate failed; see the job summary"; exit 1
+
+      - name: Remove the merge-base worktree
+        if: ${{ always() }}
+        env:
+          BASE: ${{ steps.plan.outputs.base }}
+        run: '[ -z "$BASE" ] || git worktree remove "$BASE" || true'

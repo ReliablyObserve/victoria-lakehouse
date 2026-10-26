@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/inventory"
+	"github.com/ReliablyObserve/victoria-lakehouse/tests/conformance/report"
 )
 
 // TestReadExisting_Missing proves a missing file is reported as "no bytes,
@@ -56,7 +59,7 @@ func TestReadExisting_OtherErrorSurfaces(t *testing.T) {
 }
 
 // TestBuildPlan_RealRepo derives every generated document from the real
-// repository: the four documents must be planned, the feature gate must be
+// repository: every generated document must be planned, the feature gate must be
 // clean, and a second derivation must produce identical bytes (byte-stability
 // is what makes `-check` a reliable gate rather than a source of churn).
 func TestBuildPlan_RealRepo(t *testing.T) {
@@ -87,7 +90,7 @@ func TestBuildPlan_RealRepo(t *testing.T) {
 			t.Errorf("%s: the planned bytes must be exact", f.path)
 		}
 	}
-	for _, want := range []string{"inventory.generated.yaml", "UPSTREAM_COVERAGE.md", "features.md", "README.md"} {
+	for _, want := range []string{"inventory.generated.yaml", "UPSTREAM_COVERAGE.md", "features.md", "README.md", "proof-coverage.md", "proof-coverage.json"} {
 		if !slices.Contains(names, want) {
 			t.Errorf("plan is missing %s (have %v)", want, names)
 		}
@@ -198,3 +201,64 @@ func TestCheckFiles(t *testing.T) {
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, os.ErrClosed }
+
+// TestBuildPlan_ProofCoverage proves the proof coverage report is part of the
+// plan (so `-write` writes it and `-check` fails when it is stale), that its
+// JSON twin parses and carries the same verdict as the Markdown, and that the
+// shared-code scan found the real repository's pins and patches.
+func TestBuildPlan_ProofCoverage(t *testing.T) {
+	root, err := inventory.RepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := buildPlan(root)
+	if err != nil {
+		if os.Getenv("CONFORMANCE_REQUIRE_DEPS") == "1" {
+			t.Fatal(err)
+		}
+		t.Skipf("cannot build the plan (run make deps-logs deps-traces deps-vt): %v", err)
+	}
+	var md, js []byte
+	for _, f := range p.files {
+		switch filepath.ToSlash(strings.TrimPrefix(f.path, root+string(filepath.Separator))) {
+		case report.ProofCoverageMD:
+			md = f.want
+		case report.ProofCoverageJSON:
+			js = f.want
+		}
+	}
+	if len(md) == 0 || len(js) == 0 {
+		t.Fatalf("the plan must write %s and %s", report.ProofCoverageMD, report.ProofCoverageJSON)
+	}
+	var doc struct {
+		SchemaVersion int `json:"schema_version"`
+		Verdict       struct {
+			UpstreamItems       int `json:"upstream_items"`
+			RowsTotal           int `json:"rows_total"`
+			ShippedFeatures     int `json:"shipped_features"`
+			SharedCodeItems     int `json:"shared_code_items"`
+			PendingUnclassified int `json:"rows_pending_unclassified"`
+		} `json:"verdict"`
+	}
+	if err := json.Unmarshal(js, &doc); err != nil {
+		t.Fatalf("the JSON twin must parse: %v", err)
+	}
+	v := doc.Verdict
+	if doc.SchemaVersion == 0 || v.UpstreamItems == 0 || v.RowsTotal == 0 || v.ShippedFeatures == 0 || v.SharedCodeItems == 0 {
+		t.Errorf("the verdict must be computed from the real registry, inventory, catalog and tree: %+v", v)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("| Registry rows / pending rows | %d / ", v.RowsTotal),
+		fmt.Sprintf("| Shipped features | %d |", v.ShippedFeatures),
+		fmt.Sprintf("| Shared upstream code items (pins, patches, imported packages) | %d |", v.SharedCodeItems),
+	} {
+		if !strings.Contains(string(md), want) {
+			t.Errorf("the Markdown and JSON verdicts disagree: Markdown lacks %q", want)
+		}
+	}
+	// This file names no patch and no pin, which would make it a "guard" of
+	// them in the report it checks.
+	if !strings.Contains(string(md), "### Pins (Makefile)") || !strings.Contains(string(md), "| `patches/vl-logs/") {
+		t.Error("the shared-code scan must list the real pins and patches")
+	}
+}

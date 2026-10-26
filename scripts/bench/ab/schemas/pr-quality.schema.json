@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pr-quality.schema.json",
+  "title": "quality.json of the pr-quality artifact (schema_version 1)",
+  "description": "The data behind the lh-pr-quality sticky comment: a snapshot of the merge base and of the PR head, the packages that were measured, the flaky-test watch and the verdict. Every string comes from the PR (test names, file paths, lint text) and is untrusted: a consumer validates this document, then renders it with its own trusted code and escapes every string (quality_bundle.md_safe / md_code). A figure that was not collected is null or an empty object, never zero.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "base", "pr", "changed", "flaky", "verdict"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "base": {"$ref": "#/$defs/snapshot"},
+    "pr": {"$ref": "#/$defs/snapshot"},
+    "changed": {
+      "description": "Per module: the Go packages measured for coverage and test time, and the ones left out because of the cap.",
+      "type": "object",
+      "maxProperties": 4,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["measured", "left_out"],
+        "properties": {
+          "measured": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 200}},
+          "left_out": {"type": "array", "maxItems": 500, "items": {"type": "string", "maxLength": 200}}
+        }
+      }
+    },
+    "flaky": {
+      "description": "Jobs that failed in one attempt and passed in a later attempt of the same workflow run; null when the watch could not run.",
+      "anyOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runs_seen", "reran_runs", "items"],
+          "properties": {
+            "runs_seen": {"type": "integer", "minimum": 0},
+            "reran_runs": {"type": "integer", "minimum": 0},
+            "items": {
+              "type": "array",
+              "maxItems": 30,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["workflow", "job", "failed_attempt", "passed_attempt", "tests"],
+                "properties": {
+                  "workflow": {"type": "string", "maxLength": 200},
+                  "job": {"type": "string", "maxLength": 200},
+                  "failed_attempt": {"type": "integer", "minimum": 1},
+                  "passed_attempt": {"type": "integer", "minimum": 2},
+                  "tests": {"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 300}}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["failed", "exit", "gates"],
+      "properties": {
+        "failed": {"type": "boolean"},
+        "exit": {"enum": [0, 1]},
+        "gates": {"type": "array", "maxItems": 50, "items": {"type": "string", "maxLength": 400}}
+      }
+    },
+    "notes": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 400}}
+  },
+  "$defs": {
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["go", "registry", "coverage", "timing", "tests_failed", "parity", "lint"],
+      "properties": {
+        "go": {
+          "description": "Static count of func Test* / func Fuzz* per module.",
+          "type": "object",
+          "maxProperties": 4,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tests", "fuzz", "test_files", "fuzz_targets"],
+            "properties": {
+              "tests": {"type": "integer", "minimum": 0},
+              "fuzz": {"type": "integer", "minimum": 0},
+              "test_files": {"type": "integer", "minimum": 0},
+              "fuzz_targets": {"type": "array", "maxItems": 2000, "items": {"type": "string", "maxLength": 300}}
+            }
+          }
+        },
+        "registry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rows", "by_expect", "features", "feature_status", "pending_rows", "known_differences"],
+          "properties": {
+            "rows": {"type": "integer", "minimum": 0},
+            "by_expect": {"type": "object", "maxProperties": 20, "additionalProperties": {"type": "integer", "minimum": 0}},
+            "features": {"type": "integer", "minimum": 0},
+            "feature_status": {"type": "object", "maxProperties": 20, "additionalProperties": {"type": "integer", "minimum": 0}},
+            "pending_rows": {"type": "integer", "minimum": 0},
+            "known_differences": {
+              "description": "Rows that record a difference (differ, unsupported, absent) and how many cite a ReliablyObserve issue.",
+              "type": "object",
+              "maxProperties": 20,
+              "additionalProperties": {"type": "integer", "minimum": 0}
+            }
+          }
+        },
+        "coverage": {
+          "description": "module -> package directory (relative to the module) -> statement coverage in percent, for the packages measured. Empty when not collected.",
+          "type": "object",
+          "maxProperties": 4,
+          "additionalProperties": {"type": "object", "maxProperties": 100, "additionalProperties": {"type": "number", "minimum": 0, "maximum": 100}}
+        },
+        "timing": {
+          "description": "module -> package directory -> seconds and status of the coverage run (no -race: a lower bound of the CI time).",
+          "type": "object",
+          "maxProperties": 4,
+          "additionalProperties": {
+            "type": "object",
+            "maxProperties": 100,
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["seconds", "status"],
+              "properties": {"seconds": {"type": "number", "minimum": 0}, "status": {"enum": ["pass", "fail", "skip"]}}
+            }
+          }
+        },
+        "tests_failed": {
+          "description": "module -> failed tests of the coverage run (the CI test jobs are the gate; listed because the coverage of such a package is not trustworthy).",
+          "type": "object",
+          "maxProperties": 4,
+          "additionalProperties": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 300}}
+        },
+        "parity": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source", "counts", "by_signal", "known_failures", "known", "unexpected", "aborted", "min_pass"],
+              "properties": {
+                "source": {"enum": ["run", "static"]},
+                "counts": {"type": "object", "maxProperties": 10, "additionalProperties": {"type": "integer", "minimum": 0}},
+                "by_signal": {"type": "object", "maxProperties": 10, "additionalProperties": {"type": "object", "maxProperties": 10, "additionalProperties": {"type": "integer", "minimum": 0}}},
+                "known_failures": {"type": "integer", "minimum": 0},
+                "known": {
+                  "type": "array",
+                  "maxItems": 60,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["test", "reason", "issues"],
+                    "properties": {
+                      "test": {"type": "string", "maxLength": 300},
+                      "reason": {"type": "string", "maxLength": 300},
+                      "issues": {"type": "array", "maxItems": 10, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+#[0-9]+$"}}
+                    }
+                  }
+                },
+                "unexpected": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 400}},
+                "aborted": {"type": "integer", "minimum": 0},
+                "min_pass": {"anyOf": [{"type": "null"}, {"type": "integer", "minimum": 0}]}
+              }
+            }
+          ]
+        },
+        "lint": {
+          "description": "golangci-lint findings new relative to the merge base, per module; null when not collected.",
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "maxProperties": 4,
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["new", "findings"],
+                "properties": {
+                  "new": {"type": "integer", "minimum": 0},
+                  "findings": {
+                    "type": "array",
+                    "maxItems": 40,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["file", "line", "linter", "text"],
+                      "properties": {
+                        "file": {"type": "string", "maxLength": 300},
+                        "line": {"type": "integer", "minimum": 0},
+                        "linter": {"type": "string", "maxLength": 60},
+                        "text": {"type": "string", "maxLength": 200}
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

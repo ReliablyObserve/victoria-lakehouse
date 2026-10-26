@@ -1,7 +1,8 @@
 // confgen regenerates the documents derived from the vendored upstream
 // sources, the conformance registry and the feature catalog:
 // tests/conformance/inventory.generated.yaml, UPSTREAM_COVERAGE.md,
-// docs/features.md, and README.md's generated "Key Features" block.
+// docs/features.md, README.md's generated "Key Features" block, and the proof
+// coverage report docs/proof-coverage.md with its JSON twin.
 //
 //	confgen -write   # regenerate every file
 //	confgen -check   # exit 1 when any file is out of date, or when the
@@ -114,6 +115,16 @@ func buildPlan(root string) (*plan, error) {
 		return nil, fmt.Errorf("README.md feature block: %w", err)
 	}
 
+	shared, err := report.ScanSharedCode(root)
+	if err != nil {
+		return nil, fmt.Errorf("scan shared upstream code: %w", err)
+	}
+	proof := report.ComputeProofCoverage(report.ProofInputs{Inventory: inv, Registry: reg, Features: features, Shared: shared})
+	wantProofJSON, err := proof.JSON()
+	if err != nil {
+		return nil, fmt.Errorf("proof coverage json: %w", err)
+	}
+
 	fd := conformance.CheckFeatures(features, reg, changelog)
 	featuresDoc := report.RenderFeatures(features, reg, changelog, report.FeaturesDocDir)
 	return &plan{
@@ -122,6 +133,8 @@ func buildPlan(root string) (*plan, error) {
 			{path: filepath.Join(root, "UPSTREAM_COVERAGE.md"), want: []byte(report.RenderCoverage(inv, reg))},
 			{path: filepath.Join(root, report.FeaturesDocDir, "features.md"), want: []byte(featuresDoc.String()), accepts: featuresDoc.Accepts},
 			{path: readmePath, want: []byte(wantReadme)},
+			{path: filepath.Join(root, filepath.FromSlash(report.ProofCoverageMD)), want: []byte(proof.Markdown())},
+			{path: filepath.Join(root, filepath.FromSlash(report.ProofCoverageJSON)), want: wantProofJSON},
 		},
 		featureCount:       len(features.Features),
 		featureFailures:    fd.HardFailures(),
