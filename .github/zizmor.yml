@@ -33,10 +33,14 @@ rules:
 
   # Intentional triggers. `badges.yaml` follows the CI run on main and only reads the
   # checked-out main branch; `registry-gate-base.yaml` checks the pull request out as
-  # data and never runs its code (see the header comment of that file).
+  # data and never runs its code (see the header comment of that file);
+  # `pr-proof-comment.yaml` runs base-branch code only, never checks out pull request
+  # code, reads the producers' artifact as validated data and splits its token scopes
+  # per job (trust model in the header of that file and in docs/ci-proof-comment.md).
   dangerous-triggers:
     ignore:
       - badges.yaml:3
+      - pr-proof-comment.yaml:23
       - registry-gate-base.yaml:20
 
   # Image build cache of the external-reader matrix; no release artifact is built from it.
