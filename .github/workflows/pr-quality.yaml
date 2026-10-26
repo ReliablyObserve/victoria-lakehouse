@@ -96,7 +96,7 @@ jobs:
         id: plan
         run: |
           set -euo pipefail
-          Q="$RUNNER_TEMP/q"
+          export Q="$RUNNER_TEMP/q"
           echo "Q=$Q" >> "$GITHUB_ENV"
           mkdir -p "$Q"
           mb=$(git merge-base "$BASE_SHA" HEAD)
