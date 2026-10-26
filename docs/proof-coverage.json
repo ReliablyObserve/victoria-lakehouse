@@ -1,0 +1,4894 @@
+{
+  "schema_version": 1,
+  "verdict": {
+    "upstream_items": 437,
+    "upstream_items_with_row": 291,
+    "upstream_items_no_row": 146,
+    "upstream_items_verified": 37,
+    "upstream_items_declared_only": 187,
+    "upstream_items_differentially_linked": 67,
+    "ingest_protocol_cells": 35,
+    "ingest_protocol_cells_verified": 26,
+    "upstream_pass_rows": 387,
+    "upstream_pass_rows_differential": 108,
+    "upstream_pass_rows_other_test": 33,
+    "upstream_pass_rows_no_test": 246,
+    "rows_total": 1368,
+    "rows_pending": 1278,
+    "rows_pending_waiting_for_runner": 494,
+    "rows_pending_executed_elsewhere": 784,
+    "rows_pending_unclassified": 0,
+    "shipped_features": 155,
+    "shipped_features_no_rows": 110,
+    "shipped_features_no_perf_scenario": 148,
+    "shipped_features_unproven": 107,
+    "shared_code_items": 41,
+    "shared_code_unguarded": 3
+  },
+  "upstream_by_kind": [
+    {
+      "kind": "route",
+      "signal": "all",
+      "items": 140,
+      "with_row": 140,
+      "verified": 35,
+      "pending": 61,
+      "differs": 21,
+      "absent_or_unsupported": 23,
+      "no_row": 0,
+      "differentially_linked": 63
+    },
+    {
+      "kind": "route",
+      "signal": "vl",
+      "items": 78,
+      "with_row": 78,
+      "verified": 34,
+      "pending": 27,
+      "differs": 6,
+      "absent_or_unsupported": 11,
+      "no_row": 0,
+      "differentially_linked": 44
+    },
+    {
+      "kind": "route",
+      "signal": "vt",
+      "items": 62,
+      "with_row": 62,
+      "verified": 1,
+      "pending": 34,
+      "differs": 15,
+      "absent_or_unsupported": 12,
+      "no_row": 0,
+      "differentially_linked": 19
+    },
+    {
+      "kind": "pipe",
+      "signal": "all",
+      "items": 50,
+      "with_row": 50,
+      "verified": 0,
+      "pending": 42,
+      "differs": 5,
+      "absent_or_unsupported": 3,
+      "no_row": 0,
+      "differentially_linked": 1
+    },
+    {
+      "kind": "pipe",
+      "signal": "vl",
+      "items": 50,
+      "with_row": 50,
+      "verified": 0,
+      "pending": 42,
+      "differs": 5,
+      "absent_or_unsupported": 3,
+      "no_row": 0,
+      "differentially_linked": 1
+    },
+    {
+      "kind": "filter",
+      "signal": "all",
+      "items": 33,
+      "with_row": 33,
+      "verified": 0,
+      "pending": 33,
+      "differs": 0,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 0
+    },
+    {
+      "kind": "filter",
+      "signal": "vl",
+      "items": 33,
+      "with_row": 33,
+      "verified": 0,
+      "pending": 33,
+      "differs": 0,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 0
+    },
+    {
+      "kind": "stats",
+      "signal": "all",
+      "items": 24,
+      "with_row": 24,
+      "verified": 0,
+      "pending": 22,
+      "differs": 2,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 0
+    },
+    {
+      "kind": "stats",
+      "signal": "vl",
+      "items": 24,
+      "with_row": 24,
+      "verified": 0,
+      "pending": 22,
+      "differs": 2,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 0
+    },
+    {
+      "kind": "traceql",
+      "signal": "all",
+      "items": 9,
+      "with_row": 9,
+      "verified": 0,
+      "pending": 9,
+      "differs": 0,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 0
+    },
+    {
+      "kind": "traceql",
+      "signal": "vt",
+      "items": 9,
+      "with_row": 9,
+      "verified": 0,
+      "pending": 9,
+      "differs": 0,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 0
+    },
+    {
+      "kind": "flag",
+      "signal": "all",
+      "items": 181,
+      "with_row": 35,
+      "verified": 2,
+      "pending": 20,
+      "differs": 12,
+      "absent_or_unsupported": 1,
+      "no_row": 146,
+      "differentially_linked": 3
+    },
+    {
+      "kind": "flag",
+      "signal": "vl",
+      "items": 108,
+      "with_row": 19,
+      "verified": 2,
+      "pending": 13,
+      "differs": 4,
+      "absent_or_unsupported": 0,
+      "no_row": 89,
+      "differentially_linked": 2
+    },
+    {
+      "kind": "flag",
+      "signal": "vt",
+      "items": 73,
+      "with_row": 16,
+      "verified": 0,
+      "pending": 7,
+      "differs": 8,
+      "absent_or_unsupported": 1,
+      "no_row": 57,
+      "differentially_linked": 1
+    },
+    {
+      "kind": "ingest",
+      "signal": "all",
+      "items": 35,
+      "with_row": 35,
+      "verified": 26,
+      "pending": 0,
+      "differs": 9,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 35
+    },
+    {
+      "kind": "ingest",
+      "signal": "vl",
+      "items": 26,
+      "with_row": 26,
+      "verified": 24,
+      "pending": 0,
+      "differs": 2,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 26
+    },
+    {
+      "kind": "ingest",
+      "signal": "vt",
+      "items": 9,
+      "with_row": 9,
+      "verified": 2,
+      "pending": 0,
+      "differs": 7,
+      "absent_or_unsupported": 0,
+      "no_row": 0,
+      "differentially_linked": 9
+    }
+  ],
+  "upstream_pass_rows": [
+    {
+      "signal": "all",
+      "rows": 387,
+      "target_hot": 322,
+      "differential": 108,
+      "other_test": 33,
+      "no_test": 246
+    },
+    {
+      "signal": "vl",
+      "rows": 266,
+      "target_hot": 230,
+      "differential": 84,
+      "other_test": 22,
+      "no_test": 160
+    },
+    {
+      "signal": "vt",
+      "rows": 121,
+      "target_hot": 92,
+      "differential": 24,
+      "other_test": 11,
+      "no_test": 86
+    }
+  ],
+  "upstream_pass_rows_without_test": [
+    {
+      "id": "vl.delete.active_tasks.status",
+      "signal": "vl",
+      "kind": "admin",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.delete.run_task.non_post.differ",
+      "signal": "vl",
+      "kind": "admin",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.delete.run_task.status",
+      "signal": "vl",
+      "kind": "admin",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.delete.stop_task.status",
+      "signal": "vl",
+      "kind": "admin",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.and.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.any_case_phrase.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.any_case_prefix.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.contains_all.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.contains_any.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.contains_common_case.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.day_range.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.eq_field.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.equals_common_case.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.exact.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.exact_prefix.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.in.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.in.subquery",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.ipv4_range.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.ipv6_range.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.json_array_contains_any.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.le_field.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.le_field.lt",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.len_range.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.noop.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.not.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.or.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.pattern_match.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.pattern_match.full",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.pattern_match.prefix",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.pattern_match.suffix",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.phrase.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.prefix.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.range.retrieval",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.regexp.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.sequence.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.stream.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.stream_id.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.string_range.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.substring.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.time.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.value_type.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.filter.week_range.basic",
+      "signal": "vl",
+      "kind": "filter",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.default_msg_value",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.delete_auth_key",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.future_retention",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.insert_max_fields_per_line",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.insert_max_line_size_bytes",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.internaldelete_enable",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.nativeinsert_max_request_size",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.search_log_slow_query_duration",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.search_max_concurrent_requests",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.search_max_query_duration",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.search_max_query_len",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.flag.search_max_query_time_range",
+      "signal": "vl",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.insert.elasticsearch.count",
+      "signal": "vl",
+      "kind": "insert",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.insert.otel_dispatch.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.insert.services_collector.status",
+      "signal": "vl",
+      "kind": "insert",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.delete.non_post.differ",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.delete_active_tasks.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.delete_run_task.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.delete_stop_task.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select.non_post.differ",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_field_names.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_field_values.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_query.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_stream_field_names.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_stream_field_values.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_stream_ids.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_streams.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.internal.select_tenant_ids.status",
+      "signal": "vl",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.collapse_nums.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.copy.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.decolorize.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.delete.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.drop_empty_fields.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.extract.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.extract_regexp.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.facets.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.field_names.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.field_values.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.fields.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.filter.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.first.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.format.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.generate_sequence.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.hash.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.join.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.json_array_len.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.last.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.len.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.limit.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.limit.zero_edge",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.math.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.offset.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.offset.large_edge",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.pack_json.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.pack_logfmt.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.rename.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.replace.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.replace_regexp.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.running_stats.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.set_stream_fields.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.sort.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.sort.multi_field",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.split.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.stats.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.stream_context.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.time_add.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.top.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.top.multi_field",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.total_stats.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.union.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.uniq.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.unpack_json.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.unpack_logfmt.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.unpack_syslog.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.unpack_words.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.pipe.unroll.basic",
+      "signal": "vl",
+      "kind": "pipe",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.facets.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.field_values.nolimit",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.hits.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.query.bad_query",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.query.wildcard",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.query_time_range.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.stats_query.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.stats_query_range.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.stream_field_values.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.stream_ids.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.streams.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.tail.native",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.tenant_ids.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vl.select.vmui.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.select.vmui_slash.basic",
+      "signal": "vl",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.avg.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.count.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.count_empty.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.count_uniq.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.count_uniq_hash.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.field_max.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.field_min.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.filtered.by_field",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.filtered.default_field_time",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.histogram.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.if_bloom_column",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.json_values.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.max.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.median.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.min.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.not_bloom_column",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.or_bloom_column",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.quantile.by_service",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.rate.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.rate_sum.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.row_max.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.row_min.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.stddev.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.sum.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.sum_len.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.uniq_values.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vl.stats.values.basic",
+      "signal": "vl",
+      "kind": "stats",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.delete.active_tasks.status",
+      "signal": "vt",
+      "kind": "admin",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.delete.run_task.non_post",
+      "signal": "vt",
+      "kind": "admin",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.delete.run_task.status",
+      "signal": "vt",
+      "kind": "admin",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.delete.stop_task.status",
+      "signal": "vt",
+      "kind": "admin",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.flag.internaldelete_enable",
+      "signal": "vt",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.flag.nativeinsert_max_request_size",
+      "signal": "vt",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.flag.otlp_grpc_listen_addr",
+      "signal": "vt",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.flag.search_allow_partial_response",
+      "signal": "vt",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.flag.search_latency_offset",
+      "signal": "vt",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.flag.search_trace_max_duration_window",
+      "signal": "vt",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.flag.search_trace_search_step",
+      "signal": "vt",
+      "kind": "flag",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.delete.non_post",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.delete_active_tasks.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.delete_run_task.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.delete_stop_task.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.insert.count",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select.non_post",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_field_names.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_field_values.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_query.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_stream_field_names.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_stream_field_values.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_stream_ids.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_streams.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.internal.select_tenant_ids.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.dependencies.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.operations.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.services.bare_shim",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.services.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.traces_by_id.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.traces_search.bare_shim",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.traces_search.by_service",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.traces_search.by_service_and_tag",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.jaeger.traces_search.min_duration",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.jaeger_dispatch.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_facets.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_field_values.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_field_values.latency_offset",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_hits.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_hits.latency_offset",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.filtered_stats_by_field",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.if_bloom_column",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.in_subquery_without_pipes",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.latency_offset",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.latency_offset_disabled",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.latency_offset_ignore_global_time_filter",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.latency_offset_rate",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.latency_offset_subqueries",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.latency_offset_time_offset",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.not_bloom_column",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.or_bloom_column",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query.wildcard",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query_time_range.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_query_time_range.ignores_latency_offset_arg",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_stats_query.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_stats_query.filtered_time",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_stats_query.latency_offset",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_stats_query_range.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_stream_field_values.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_stream_ids.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.logsql_streams.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.tempo_dispatch.status",
+      "signal": "vt",
+      "kind": "internal",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.tenant_ids.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.select.tenant_ids.no_latency_offset",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": false,
+      "pending": true
+    },
+    {
+      "id": "vt.select.vmui.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.select.vmui_slash.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.echo.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.metrics_query_range.route",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.search.duration_filter",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.search.empty_query",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.search.service_name",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.search.span_scope",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.search.start_time_string",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.traces_v2.by_id",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.v2_search_tag_values.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.tempo.v2_search_tags.basic",
+      "signal": "vt",
+      "kind": "select",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.avg_over_time.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.compare.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.count_over_time.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.histogram_over_time.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.max_over_time.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.min_over_time.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.quantile_over_time.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.rate.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.rate.by_service",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    },
+    {
+      "id": "vt.traceql.sum_over_time.basic",
+      "signal": "vt",
+      "kind": "traceql",
+      "target_hot": true,
+      "pending": true
+    }
+  ],
+  "registry": {
+    "rows": 1368,
+    "by_surface": {
+      "lh": 133,
+      "vl": 684,
+      "vt": 551
+    },
+    "by_expect": {
+      "absent": 3,
+      "differ": 62,
+      "pass": 1277,
+      "unsupported": 26
+    },
+    "by_origin": {
+      "lh-addition": 109,
+      "lh-shim": 28,
+      "native": 1231
+    },
+    "perf_cells": 768,
+    "non_perf_rows": 600,
+    "pending_rows": 1278,
+    "pending_perf_cells": 768
+  },
+  "features": {
+    "total": 167,
+    "by_status": {
+      "in-progress": 3,
+      "planned": 9,
+      "shipped": 155
+    },
+    "shipped": 155,
+    "shipped_no_rows": 110,
+    "shipped_no_tests": 1,
+    "shipped_no_perf_scenario": 148,
+    "shipped_citing_a_hot_row": 10,
+    "shipped_by_proof_class": {
+      "lh-extension": 39,
+      "perf-proven": 3,
+      "unproven": 107,
+      "upstream-exact": 6
+    },
+    "shipped_features": [
+      {
+        "id": "lh.feature.ingest.adaptive_file_sizing",
+        "area": "ingest",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 31,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ingest.atomic_s3_writes",
+        "area": "ingest",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ingest.buffer_query_bridge",
+        "area": "ingest",
+        "rows": 4,
+        "rows_pending": 4,
+        "rows_targeting_hot": 0,
+        "tests": 6,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.ingest.crash_safe_durability",
+        "area": "ingest",
+        "rows": 16,
+        "rows_pending": 16,
+        "rows_targeting_hot": 0,
+        "tests": 13,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.ingest.label_extraction",
+        "area": "ingest",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ingest.logstore_buffer",
+        "area": "ingest",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 6,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ingest.optin_listeners",
+        "area": "ingest",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ingest.vl_insert_protocols",
+        "area": "ingest",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.dedicated_columns",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.field_size_stats",
+        "area": "storage",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.storage.lifecycle_tiering",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.manifest",
+        "area": "storage",
+        "rows": 4,
+        "rows_pending": 4,
+        "rows_targeting_hot": 0,
+        "tests": 6,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.storage.manifest_fastpath",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [
+          "count_total"
+        ],
+        "perf_cells": 0,
+        "perf_scenario": true,
+        "proof_class": "perf-proven"
+      },
+      {
+        "id": "lh.feature.storage.manifest_push",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.metadata_persistence",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 6,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.open_parquet_format",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.plan_then_fetch",
+        "area": "storage",
+        "rows": 1,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 10,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.storage.pmeta",
+        "area": "storage",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 0,
+        "tests": 29,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.storage.pmeta_read_flips",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.pmeta_retire_sidecars",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.pmeta_self_heal",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.read_ahead_waste_feedback",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_clickhouse",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_datafusion",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_duckdb",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_pandas",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_parquet_tools",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_polars",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_pyarrow",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_spark",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.reader_trino",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.retention",
+        "area": "storage",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.storage.row_group_geometry",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.s3_read_path_tier1",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 6,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.schema_autodiscovery",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.schema_registry",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.sqs_sns",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 1,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.wildcard_range_read",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.storage.zero_get_open",
+        "area": "storage",
+        "rows": 1,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 63,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.storage.zstd_compression",
+        "area": "storage",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.query.absent_typed_fields",
+        "area": "query",
+        "rows": 5,
+        "rows_pending": 5,
+        "rows_targeting_hot": 5,
+        "tests": 20,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "upstream-exact"
+      },
+      {
+        "id": "lh.feature.query.bloom_index",
+        "area": "query",
+        "rows": 6,
+        "rows_pending": 6,
+        "rows_targeting_hot": 5,
+        "tests": 22,
+        "bench": [
+          "trace_by_id",
+          "trace_lookup"
+        ],
+        "perf_cells": 0,
+        "perf_scenario": true,
+        "proof_class": "upstream-exact"
+      },
+      {
+        "id": "lh.feature.query.buffer_visible_after_restart",
+        "area": "query",
+        "rows": 4,
+        "rows_pending": 4,
+        "rows_targeting_hot": 0,
+        "tests": 9,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.query.column_projection",
+        "area": "query",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 2,
+        "tests": 6,
+        "bench": [
+          "scan"
+        ],
+        "perf_cells": 0,
+        "perf_scenario": true,
+        "proof_class": "upstream-exact"
+      },
+      {
+        "id": "lh.feature.query.count_pushdown",
+        "area": "query",
+        "rows": 3,
+        "rows_pending": 3,
+        "rows_targeting_hot": 3,
+        "tests": 6,
+        "bench": [
+          "count_by_service",
+          "count_total",
+          "high_card"
+        ],
+        "perf_cells": 0,
+        "perf_scenario": true,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.query.field_values_map_attributes",
+        "area": "query",
+        "rows": 16,
+        "rows_pending": 16,
+        "rows_targeting_hot": 16,
+        "tests": 50,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "upstream-exact"
+      },
+      {
+        "id": "lh.feature.query.gap_redistribution",
+        "area": "query",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.query.hot_boundary_autodiscovery",
+        "area": "query",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 7,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.query.live_tail_unsupported",
+        "area": "query",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 0,
+        "tests": 0,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.query.logsql_filter_eval",
+        "area": "query",
+        "rows": 4,
+        "rows_pending": 4,
+        "rows_targeting_hot": 4,
+        "tests": 14,
+        "bench": [
+          "fulltext",
+          "level_filter",
+          "multi_filter",
+          "negation"
+        ],
+        "perf_cells": 0,
+        "perf_scenario": true,
+        "proof_class": "upstream-exact"
+      },
+      {
+        "id": "lh.feature.query.loki_drilldown",
+        "area": "query",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.query.max_rows",
+        "area": "query",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.query.memory_budget",
+        "area": "query",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 15,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.query.parallel_file_workers",
+        "area": "query",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.query.resource_bounds",
+        "area": "query",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.query.select_overlay",
+        "area": "query",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 1,
+        "tests": 10,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.query.translated_metadata",
+        "area": "query",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.active_query_pinning",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.connected_data_eviction",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.cross_signal_prefetch",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.file_ordering",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.hint_batching",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.metrics",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.peer_cache",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.prefetch_engine",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.sizing_calculator",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.smart_controller",
+        "area": "cache",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.cache.snapshot_persistence",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.cache.write_through",
+        "area": "cache",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.compaction.attribute_repromotion",
+        "area": "compaction",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 6,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.compaction.bloom_retention",
+        "area": "compaction",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.compaction.election_free",
+        "area": "compaction",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.compaction.hints_manual_trigger",
+        "area": "compaction",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.compaction.level_based",
+        "area": "compaction",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 11,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.compaction.lifecycle_freeze",
+        "area": "compaction",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 14,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.compaction.row_group_by_level",
+        "area": "compaction",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deletion.compliance",
+        "area": "deletion",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deletion.endpoints",
+        "area": "deletion",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 0,
+        "tests": 10,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deletion.estimate",
+        "area": "deletion",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deletion.modes",
+        "area": "deletion",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deletion.tenant_scoped",
+        "area": "deletion",
+        "rows": 3,
+        "rows_pending": 3,
+        "rows_targeting_hot": 0,
+        "tests": 30,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deletion.tombstones",
+        "area": "deletion",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 0,
+        "tests": 11,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deletion.undelete",
+        "area": "deletion",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deletion.upstream_api",
+        "area": "deletion",
+        "rows": 14,
+        "rows_pending": 14,
+        "rows_targeting_hot": 7,
+        "tests": 28,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deletion.verify",
+        "area": "deletion",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deletion.write_once_tombstones",
+        "area": "deletion",
+        "rows": 15,
+        "rows_pending": 3,
+        "rows_targeting_hot": 0,
+        "tests": 151,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.traces.jaeger_api",
+        "area": "traces",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.traces.logsql_latency_offset",
+        "area": "traces",
+        "rows": 14,
+        "rows_pending": 14,
+        "rows_targeting_hot": 13,
+        "tests": 18,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.traces.service_graph",
+        "area": "traces",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.traces.span_events_links",
+        "area": "traces",
+        "rows": 16,
+        "rows_pending": 16,
+        "rows_targeting_hot": 10,
+        "tests": 21,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "upstream-exact"
+      },
+      {
+        "id": "lh.feature.traces.storage_adapter",
+        "area": "traces",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.traces.tempo_api",
+        "area": "traces",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.traces.tempo_search_shim",
+        "area": "traces",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.traces.trace_by_id_fastpath",
+        "area": "traces",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [
+          "trace_by_id"
+        ],
+        "perf_cells": 0,
+        "perf_scenario": true,
+        "proof_class": "perf-proven"
+      },
+      {
+        "id": "lh.feature.traces.trace_index",
+        "area": "traces",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 32,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.traces.vt_internal_rows",
+        "area": "traces",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 6,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.traces.vtui",
+        "area": "traces",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.aliases",
+        "area": "tenancy",
+        "rows": 6,
+        "rows_pending": 6,
+        "rows_targeting_hot": 0,
+        "tests": 16,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.tenancy.bucket_migration",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.bucket_template",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.cardinality_limits",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.cost_estimation",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.fleet_sync",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.global_read",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 8,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.header_routing",
+        "area": "tenancy",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 16,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.tenancy.ingest_rate_limits",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.lifecycle_overrides",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.per_tenant_buckets",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 7,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.pmeta_isolation",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.policy_overrides",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.s3_prefix_isolation",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.stats_api",
+        "area": "tenancy",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.tenancy.stats_breakdown",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.stats_registry",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.tenancy.storage_class_awareness",
+        "area": "tenancy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ui.cardinality_explorer",
+        "area": "ui",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.ui.explorer",
+        "area": "ui",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.ui.fleet_instances",
+        "area": "ui",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ui.storage_breakdown",
+        "area": "ui",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ui.storage_details",
+        "area": "ui",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ui.storage_overview",
+        "area": "ui",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ui.vmui_tab",
+        "area": "ui",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.observability.alerts",
+        "area": "observability",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 1,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.observability.dashboards",
+        "area": "observability",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 1,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.observability.metrics",
+        "area": "observability",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.observability.parity_endpoint",
+        "area": "observability",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.observability.telemetry",
+        "area": "observability",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.benchmark_harness",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [
+          "count_by_service",
+          "count_total",
+          "scan",
+          "trace_by_id"
+        ],
+        "perf_cells": 0,
+        "perf_scenario": true,
+        "proof_class": "perf-proven"
+      },
+      {
+        "id": "lh.feature.ops.config_drift_gate",
+        "area": "ops",
+        "rows": 1,
+        "rows_pending": 1,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.ops.config_profiles",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.conformance_registry",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 110,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.datagen",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 1,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.feature_catalog",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 9,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.hot_cold_parity_suite",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 10,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.lifecycle_endpoints",
+        "area": "ops",
+        "rows": 3,
+        "rows_pending": 3,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.ops.loadtest",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.parquet_readback_gate",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.profile_hierarchy",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.scaling_safety",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.startup_warmup",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 7,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.ops.verification_matrix",
+        "area": "ops",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deploy.az_aware",
+        "area": "deploy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deploy.compose",
+        "area": "deploy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 2,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deploy.discovery",
+        "area": "deploy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deploy.helm",
+        "area": "deploy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deploy.release_image_patches",
+        "area": "deploy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deploy.ring_self_resolution",
+        "area": "deploy",
+        "rows": 4,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 46,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.deploy.role_separation",
+        "area": "deploy",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.deploy.select_never_writes",
+        "area": "deploy",
+        "rows": 2,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 18,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.security.ci_pipeline",
+        "area": "security",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 1,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.security.container_hardening",
+        "area": "security",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 4,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.security.cross_signal_auth",
+        "area": "security",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 5,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      },
+      {
+        "id": "lh.feature.security.internal_auth",
+        "area": "security",
+        "rows": 8,
+        "rows_pending": 8,
+        "rows_targeting_hot": 0,
+        "tests": 9,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.security.peer_auth",
+        "area": "security",
+        "rows": 6,
+        "rows_pending": 6,
+        "rows_targeting_hot": 0,
+        "tests": 75,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.security.ssrf_guard",
+        "area": "security",
+        "rows": 0,
+        "rows_pending": 0,
+        "rows_targeting_hot": 0,
+        "tests": 3,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "unproven"
+      }
+    ]
+  },
+  "shared_code": {
+    "items": 41,
+    "guarded": 38,
+    "unguarded": 3,
+    "go_mod_upstream_modules": [
+      {
+        "file": "go.mod",
+        "module": "github.com/VictoriaMetrics/VictoriaLogs",
+        "version": "v1.53.0",
+        "replace": "./deps/VictoriaLogs"
+      },
+      {
+        "file": "go.mod",
+        "module": "github.com/VictoriaMetrics/VictoriaMetrics",
+        "version": "v1.152.1-0.20260924162003-018bc7808882"
+      },
+      {
+        "file": "lakehouse-traces/go.mod",
+        "module": "github.com/VictoriaMetrics/VictoriaLogs",
+        "version": "v1.121.1-0.20260716015338-c945d2949e98",
+        "replace": "./deps/VictoriaLogs"
+      },
+      {
+        "file": "lakehouse-traces/go.mod",
+        "module": "github.com/VictoriaMetrics/VictoriaMetrics",
+        "version": "v1.152.1-0.20260924162003-018bc7808882"
+      },
+      {
+        "file": "lakehouse-traces/go.mod",
+        "module": "github.com/VictoriaMetrics/VictoriaTraces",
+        "version": "v0.12.0",
+        "replace": "./deps/VictoriaTraces"
+      }
+    ],
+    "pins": [
+      {
+        "kind": "pin",
+        "name": "VL_COMMIT_TRACES",
+        "detail": "c945d2949e98",
+        "guards": [
+          "scripts/ci/check_patches_equal.sh",
+          "scripts/ci/check_registry_touch.sh",
+          "scripts/ci/pr_classify.py",
+          "scripts/ci/release_product_check.py",
+          "scripts/ci/upstream_sync_probe.sh",
+          "tests/conformance/inventory/inventory_test.go",
+          "tests/conformance/pins_test.go",
+          "tests/conformance/upstreamcopies_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "pin",
+        "name": "VL_VERSION_LOGS",
+        "detail": "v1.53.0",
+        "guards": [
+          "scripts/ci/check_patches_equal.sh",
+          "scripts/ci/check_registry_touch.sh",
+          "scripts/ci/pr_classify.py",
+          "scripts/ci/release_product_check.py",
+          "scripts/ci/upstream_sync_probe.sh",
+          "tests/conformance/inventory/inventory_test.go",
+          "tests/conformance/pins_test.go",
+          "tests/conformance/registry/rows_test.go",
+          "tests/conformance/upstreamcopies_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "pin",
+        "name": "VT_VERSION",
+        "detail": "v0.12.0",
+        "guards": [
+          "scripts/ci/check_registry_touch.sh",
+          "scripts/ci/pr_classify.py",
+          "scripts/ci/release_product_check.py",
+          "scripts/ci/upstream_sync_probe.sh",
+          "tests/conformance/inventory/inventory_test.go",
+          "tests/conformance/pins_test.go",
+          "tests/conformance/upstreamcopies_test.go"
+        ],
+        "guarded": true
+      }
+    ],
+    "patches": [
+      {
+        "kind": "src",
+        "name": "patches/vl-logs/external.go.src",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "dir_guards": [
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/cmd/confgen/main_test.go",
+          "tests/conformance/pins_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "src",
+        "name": "patches/vl-logs/external_query.go.src",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "dir_guards": [
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/cmd/confgen/main_test.go",
+          "tests/conformance/pins_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-logs/vl-const-timestamps-parse.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "tests/conformance/pins_test.go"
+        ],
+        "dir_guards": [
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/cmd/confgen/main_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-logs/vl-export-severity.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "internal/vlstorage/severity_fallback_test.go"
+        ],
+        "dir_guards": [
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/cmd/confgen/main_test.go",
+          "tests/conformance/pins_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-logs/vl-export-streamtags-get.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "internal/vlstorage/severity_fallback_test.go"
+        ],
+        "dir_guards": [
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/cmd/confgen/main_test.go",
+          "tests/conformance/pins_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-logs/vlstorage-dispatch.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/cmd/confgen/main_test.go"
+        ],
+        "dir_guards": [
+          "tests/conformance/pins_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "src",
+        "name": "patches/vl-traces/external.go.src",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "src",
+        "name": "patches/vl-traces/external_query.go.src",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vl-allow-duplicate-stream-tags.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vl-const-timestamps-parse.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "tests/conformance/pins_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vl-export-severity.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "internal/vlstorage/severity_fallback_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vl-export-streamtags-get.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "internal/vlstorage/severity_fallback_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vl-math-keep-quoted-constants.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vl-partition-close-order.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vl-traces/vlstorage-dispatch.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "scripts/ci/check_patches_equal.sh",
+          "tests/conformance/cmd/confgen/main_test.go"
+        ],
+        "dir_guards": [
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
+          "tests/conformance/pins_test.go",
+          "tests/parity/servicegraph_parity_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "src",
+        "name": "patches/vt-traces/external.go.src",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "dir_guards": [
+          "tests/conformance/flagdedup_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "src",
+        "name": "patches/vt-traces/flag_dedup.go.src",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "tests/conformance/flagdedup_test.go",
+          "tests/conformance/sharedscalar_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vt-traces/vtinsert-flag-dedup.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "lakehouse-traces/ingest_flags_test.go",
+          "tests/conformance/flagdedup_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vt-traces/vtstorage-dispatch.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "dir_guards": [
+          "tests/conformance/flagdedup_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "kind": "patch",
+        "name": "patches/vt-traces/vtstorage-flag-dedup.patch",
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "tests/conformance/flagdedup_test.go"
+        ],
+        "guarded": true
+      }
+    ],
+    "imported_packages": [
+      {
+        "package": "VictoriaLogs/app/vlinsert",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 0,
+        "guard_files": 1,
+        "guards": [
+          "cmd/lakehouse-logs/maintenance_gate_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/app/vlinsert/insertutil",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 0,
+        "guard_files": 2,
+        "guards": [
+          "internal/storage/parquets3/acked_rows_support_test.go",
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/app/vlinsert/opentelemetry",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 0,
+        "guard_files": 1,
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/app/vlselect",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 0,
+        "guard_files": 3,
+        "guards": [
+          "cmd/lakehouse-logs/public_delete_post_only_test.go",
+          "internal/storage/parquets3/row_read_http_test.go",
+          "internal/vlstorage/internal_delete_gate_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/app/vlselect/internalselect",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 2,
+        "guard_files": 6,
+        "guards": [
+          "cmd/lakehouse-logs/maintenance_gate_test.go",
+          "cmd/lakehouse-logs/public_delete_post_only_test.go",
+          "internal/vlstorage/internal_delete_gate_test.go",
+          "lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go",
+          "lakehouse-traces/maintenance_gate_test.go",
+          "lakehouse-traces/public_delete_post_only_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/app/vlselect/logsql",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 0,
+        "guard_files": 1,
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/app/vlstorage",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 2,
+        "guard_files": 14,
+        "guards": [
+          "internal/storage/parquets3/cold_filtered_stats_test.go",
+          "internal/storage/parquets3/cold_hits_hint_test.go",
+          "internal/storage/parquets3/cold_projection_review_test.go",
+          "internal/storage/parquets3/cold_read_bench_test.go",
+          "internal/storage/parquets3/cold_read_getcount_test.go",
+          "internal/storage/parquets3/cold_review_adv_test.go",
+          "internal/storage/parquets3/cold_runquery_bench_test.go",
+          "internal/storage/parquets3/row_read_http_test.go",
+          "internal/storage/parquets3/subquery_rows_real_store_test.go",
+          "internal/storage/parquets3/tombstone_gating_bench_test.go",
+          "internal/storage/parquets3/tombstone_gating_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_read_bench_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tombstone_gating_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/lib/logstorage",
+        "src_files_logs_module": 45,
+        "src_files_traces_module": 33,
+        "guard_files": 320,
+        "guards": [
+          "cmd/lakehouse-logs/maintenance_gate_test.go",
+          "cmd/lakehouse-logs/public_delete_mount_test.go",
+          "cmd/lakehouse-logs/public_delete_post_only_test.go",
+          "cmd/lakehouse-logs/ring_multiinstance_test.go",
+          "cmd/lakehouse-logs/shutdown_snapshot_test.go",
+          "cmd/lakehouse-logs/tombstone_multiinstance_test.go",
+          "internal/delete/coverage_test.go",
+          "internal/delete/proof_test.go",
+          "internal/delete/tasks_test.go",
+          "internal/hiddenfields/hiddenfields_test.go",
+          "internal/membuffer/rows_in_window_test.go",
+          "internal/membuffer/segments_hold_test.go",
+          "internal/membuffer/segments_reap_crash_test.go",
+          "internal/membuffer/segments_test.go",
+          "internal/membuffer/store_hardening_test.go",
+          "internal/membuffer/store_test.go",
+          "internal/selectapi/handler_test.go",
+          "internal/selectapi/jaeger_fallback_test.go",
+          "internal/selectapi/tenant_autoregister_test.go",
+          "internal/selectapi/time_range_params_test.go",
+          "internal/storage/column_order_test.go",
+          "internal/storage/epoch_test.go",
+          "internal/storage/field_names_block_memory_test.go",
+          "internal/storage/field_names_counter_property_test.go",
+          "internal/storage/field_names_counter_test.go",
+          "internal/storage/field_names_observe_test.go",
+          "internal/storage/parquets3/acked_rows_cardinality_test.go",
+          "internal/storage/parquets3/acked_rows_pre1970_test.go",
+          "internal/storage/parquets3/acked_rows_support_test.go",
+          "internal/storage/parquets3/block_column_order_test.go",
+          "internal/storage/parquets3/bloom_rangeread_regression_test.go",
+          "internal/storage/parquets3/buffer_bridge_auth_test.go",
+          "internal/storage/parquets3/buffer_bridge_rollout_test.go",
+          "internal/storage/parquets3/buffer_flusher_lifecycle_test.go",
+          "internal/storage/parquets3/buffer_flusher_segments_test.go",
+          "internal/storage/parquets3/buffer_flusher_test.go",
+          "internal/storage/parquets3/buffer_flusher_trace_id_hex_test.go",
+          "internal/storage/parquets3/buffer_restart_hold_test.go",
+          "internal/storage/parquets3/buffer_restart_test.go",
+          "internal/storage/parquets3/buffer_view_bench_test.go",
+          "internal/storage/parquets3/buffer_view_compat_test.go",
+          "internal/storage/parquets3/buffer_view_test.go",
+          "internal/storage/parquets3/buffered_rows_test.go",
+          "internal/storage/parquets3/cold_column_order_engine_test.go",
+          "internal/storage/parquets3/cold_filtered_stats_test.go",
+          "internal/storage/parquets3/cold_hits_hint_test.go",
+          "internal/storage/parquets3/cold_projection_review_test.go",
+          "internal/storage/parquets3/cold_read_bench_test.go",
+          "internal/storage/parquets3/cold_read_getcount_test.go",
+          "internal/storage/parquets3/cold_review_adv_test.go",
+          "internal/storage/parquets3/cold_row_fields_test.go",
+          "internal/storage/parquets3/cold_runquery_bench_test.go",
+          "internal/storage/parquets3/cold_tie_order_test.go",
+          "internal/storage/parquets3/column_order_property_test.go",
+          "internal/storage/parquets3/count_pushdown_test.go",
+          "internal/storage/parquets3/coverage_integration_test.go",
+          "internal/storage/parquets3/coverage_s3_paths_test.go",
+          "internal/storage/parquets3/dedicated_e2e_test.go",
+          "internal/storage/parquets3/drain_cancel_test.go",
+          "internal/storage/parquets3/drain_collect_once_test.go",
+          "internal/storage/parquets3/drain_crowded_test.go",
+          "internal/storage/parquets3/drain_healthy_property_test.go",
+          "internal/storage/parquets3/drain_invariant_test.go",
+          "internal/storage/parquets3/drain_memory_test.go",
+          "internal/storage/parquets3/drain_plan_bench_test.go",
+          "internal/storage/parquets3/drain_plan_recorded_test.go",
+          "internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go",
+          "internal/storage/parquets3/drain_stalled_gauge_test.go",
+          "internal/storage/parquets3/drop_trace_shaped_rows_test.go",
+          "internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "internal/storage/parquets3/epoch_regression_test.go",
+          "internal/storage/parquets3/field_names_buffer_layers_test.go",
+          "internal/storage/parquets3/field_names_exact_test.go",
+          "internal/storage/parquets3/field_names_pruning_control_test.go",
+          "internal/storage/parquets3/field_value_counter_test.go",
+          "internal/storage/parquets3/field_values_bench_test.go",
+          "internal/storage/parquets3/field_values_buffer_test.go",
+          "internal/storage/parquets3/field_values_collect_test.go",
+          "internal/storage/parquets3/field_values_map_bench_test.go",
+          "internal/storage/parquets3/field_values_sampled_index_test.go",
+          "internal/storage/parquets3/fields_tombstones_span_test.go",
+          "internal/storage/parquets3/fields_tombstones_test.go",
+          "internal/storage/parquets3/filter_alloc_test.go",
+          "internal/storage/parquets3/filter_ast_test.go",
+          "internal/storage/parquets3/filter_test.go",
+          "internal/storage/parquets3/filtered_count_pushdown_test.go",
+          "internal/storage/parquets3/footer_cache_retention_test.go",
+          "internal/storage/parquets3/free_text_filter_test.go",
+          "internal/storage/parquets3/inferred_bounds_test.go",
+          "internal/storage/parquets3/local_buffer_readmerge_test.go",
+          "internal/storage/parquets3/manifest_fastpath_exactness_test.go",
+          "internal/storage/parquets3/manifest_fastpath_test.go",
+          "internal/storage/parquets3/phrase_exact_test.go",
+          "internal/storage/parquets3/phrase_pruning_test.go",
+          "internal/storage/parquets3/pmeta_integration_test.go",
+          "internal/storage/parquets3/projected_fetch_test.go",
+          "internal/storage/parquets3/projection_fuzz_test.go",
+          "internal/storage/parquets3/projection_test.go",
+          "internal/storage/parquets3/pure_buffer_pipes_test.go",
+          "internal/storage/parquets3/pure_buffer_test.go",
+          "internal/storage/parquets3/pure_buffer_tombstone_test.go",
+          "internal/storage/parquets3/query_bench_test.go",
+          "internal/storage/parquets3/query_limits_test.go",
+          "internal/storage/parquets3/query_memory_budget_test.go",
+          "internal/storage/parquets3/retention_cut_test.go",
+          "internal/storage/parquets3/row_read_complete_test.go",
+          "internal/storage/parquets3/rowgroup_bloom_metric_test.go",
+          "internal/storage/parquets3/runtime_acquire_wiring_test.go",
+          "internal/storage/parquets3/severity_absent_test.go",
+          "internal/storage/parquets3/storage_coverage_test.go",
+          "internal/storage/parquets3/storage_fields_compacted_overlap_test.go",
+          "internal/storage/parquets3/storage_fields_test.go",
+          "internal/storage/parquets3/storage_query_test.go",
+          "internal/storage/parquets3/storage_test.go",
+          "internal/storage/parquets3/subquery_rows_real_store_test.go",
+          "internal/storage/parquets3/sumavg_block_shape_test.go",
+          "internal/storage/parquets3/suppress_helper_test.go",
+          "internal/storage/parquets3/synthetic_block_stream_test.go",
+          "internal/storage/parquets3/tenant_scope_labelindex_test.go",
+          "internal/storage/parquets3/tenant_scope_test.go",
+          "internal/storage/parquets3/time_only_filter_test.go",
+          "internal/storage/parquets3/token_bloom_context_test.go",
+          "internal/storage/parquets3/token_bloom_soundness_test.go",
+          "internal/storage/parquets3/token_bloom_test.go",
+          "internal/storage/parquets3/token_bloom_unicode_test.go",
+          "internal/storage/parquets3/tombstone_gate_test.go",
+          "internal/storage/parquets3/tombstone_gating_bench_test.go",
+          "internal/storage/parquets3/tombstone_gating_test.go",
+          "internal/storage/parquets3/tombstone_proof_bench_test.go",
+          "internal/storage/parquets3/tombstone_proof_test.go",
+          "internal/storage/parquets3/tombstone_scope_test.go",
+          "internal/storage/parquets3/vl_1_53_logsql_fixes_test.go",
+          "internal/storage/tenant_stream_map_bench_test.go",
+          "internal/storage/tenant_stream_map_fuzz_test.go",
+          "internal/storage/tenant_stream_map_test.go",
+          "internal/telemetry/traced_storage_tenant_test.go",
+          "internal/telemetry/traced_storage_test.go",
+          "internal/telemetry/traced_writer_test.go",
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "internal/vlstorage/buffer_export_fuzz_test.go",
+          "internal/vlstorage/buffer_export_test.go",
+          "internal/vlstorage/buffer_rows_test.go",
+          "internal/vlstorage/insert_adapter_test.go",
+          "internal/vlstorage/insert_admission_bench_test.go",
+          "internal/vlstorage/insert_admission_cross_tenant_test.go",
+          "internal/vlstorage/insert_admission_mixed_bench_test.go",
+          "internal/vlstorage/insert_admission_test.go",
+          "internal/vlstorage/insert_before_epoch_test.go",
+          "internal/vlstorage/insert_test.go",
+          "internal/vlstorage/insert_verify_test.go",
+          "internal/vlstorage/memleak_test.go",
+          "internal/vlstorage/severity_fallback_test.go",
+          "internal/vlstorage/stream_id_test.go",
+          "internal/vlstorage/subqueries_test.go",
+          "internal/vlstorage/tenant_ids_test.go",
+          "internal/vlstorage/values_filter_limit_test.go",
+          "internal/vlstorage/vlstorage_test.go",
+          "lakehouse-traces/adapter_storage_test.go",
+          "lakehouse-traces/discovery_vtstorage_test.go",
+          "lakehouse-traces/ingest_flags_test.go",
+          "lakehouse-traces/internal/membuffer/rows_in_window_test.go",
+          "lakehouse-traces/internal/membuffer/segments_hold_test.go",
+          "lakehouse-traces/internal/membuffer/segments_reap_crash_test.go",
+          "lakehouse-traces/internal/membuffer/segments_test.go",
+          "lakehouse-traces/internal/membuffer/store_hardening_test.go",
+          "lakehouse-traces/internal/membuffer/store_test.go",
+          "lakehouse-traces/internal/selectapi/handler_bench_test.go",
+          "lakehouse-traces/internal/selectapi/handler_test.go",
+          "lakehouse-traces/internal/selectapi/latency_offset_test.go",
+          "lakehouse-traces/internal/selectapi/logsql_equivalence_test.go",
+          "lakehouse-traces/internal/selectapi/tempo_search_test.go",
+          "lakehouse-traces/internal/selectapi/tenant_autoregister_test.go",
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go",
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go",
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_support_test.go",
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go",
+          "lakehouse-traces/internal/storage/parquets3/block_column_order_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_bridge_rollout_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_lifecycle_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_trace_id_hex_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_restart_hold_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_view_bench_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_view_compat_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_view_retired_gap_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffer_view_test.go",
+          "lakehouse-traces/internal/storage/parquets3/buffered_rows_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_column_order_engine_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_filtered_stats_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_hot_parity_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_projection_review_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_read_bench_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_review_more_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_tie_order_test.go",
+          "lakehouse-traces/internal/storage/parquets3/column_order_property_test.go",
+          "lakehouse-traces/internal/storage/parquets3/coverage_integration_test.go",
+          "lakehouse-traces/internal/storage/parquets3/coverage_query_final_test.go",
+          "lakehouse-traces/internal/storage/parquets3/coverage_s3_paths_test.go",
+          "lakehouse-traces/internal/storage/parquets3/dedicated_e2e_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_cancel_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_healthy_property_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_memory_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_plan_bench_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go",
+          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_names_buffer_layers_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_names_peer_aliases_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_names_pruning_control_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_value_counter_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_values_bench_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_values_buffer_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_values_collect_test.go",
+          "lakehouse-traces/internal/storage/parquets3/field_values_sampled_index_test.go",
+          "lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go",
+          "lakehouse-traces/internal/storage/parquets3/fields_tombstones_test.go",
+          "lakehouse-traces/internal/storage/parquets3/filter_ast_test.go",
+          "lakehouse-traces/internal/storage/parquets3/filter_parity_test.go",
+          "lakehouse-traces/internal/storage/parquets3/filter_test.go",
+          "lakehouse-traces/internal/storage/parquets3/flush_events_links_e2e_test.go",
+          "lakehouse-traces/internal/storage/parquets3/footer_cache_retention_test.go",
+          "lakehouse-traces/internal/storage/parquets3/full_read_footer_cache_test.go",
+          "lakehouse-traces/internal/storage/parquets3/inferred_bounds_test.go",
+          "lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go",
+          "lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go",
+          "lakehouse-traces/internal/storage/parquets3/local_buffer_readmerge_test.go",
+          "lakehouse-traces/internal/storage/parquets3/manifest_fastpath_exactness_test.go",
+          "lakehouse-traces/internal/storage/parquets3/manifest_fastpath_test.go",
+          "lakehouse-traces/internal/storage/parquets3/phrase_exact_test.go",
+          "lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go",
+          "lakehouse-traces/internal/storage/parquets3/pmeta_integration_test.go",
+          "lakehouse-traces/internal/storage/parquets3/projected_fetch_test.go",
+          "lakehouse-traces/internal/storage/parquets3/projection_fuzz_test.go",
+          "lakehouse-traces/internal/storage/parquets3/projection_test.go",
+          "lakehouse-traces/internal/storage/parquets3/pure_buffer_pipes_test.go",
+          "lakehouse-traces/internal/storage/parquets3/pure_buffer_test.go",
+          "lakehouse-traces/internal/storage/parquets3/pure_buffer_tombstone_test.go",
+          "lakehouse-traces/internal/storage/parquets3/query_coverage_boost_test.go",
+          "lakehouse-traces/internal/storage/parquets3/query_limits_test.go",
+          "lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go",
+          "lakehouse-traces/internal/storage/parquets3/query_paths_coverage_test.go",
+          "lakehouse-traces/internal/storage/parquets3/retention_cut_test.go",
+          "lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go",
+          "lakehouse-traces/internal/storage/parquets3/row_read_trace_index_test.go",
+          "lakehouse-traces/internal/storage/parquets3/storage_coverage_test.go",
+          "lakehouse-traces/internal/storage/parquets3/storage_fields_test.go",
+          "lakehouse-traces/internal/storage/parquets3/storage_test.go",
+          "lakehouse-traces/internal/storage/parquets3/stream_field_values_layers_test.go",
+          "lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go",
+          "lakehouse-traces/internal/storage/parquets3/sumavg_block_shape_test.go",
+          "lakehouse-traces/internal/storage/parquets3/suppress_helper_test.go",
+          "lakehouse-traces/internal/storage/parquets3/synthetic_block_stream_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tenant_scope_labelindex_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go",
+          "lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go",
+          "lakehouse-traces/internal/storage/parquets3/token_bloom_context_test.go",
+          "lakehouse-traces/internal/storage/parquets3/token_bloom_soundness_test.go",
+          "lakehouse-traces/internal/storage/parquets3/token_bloom_test.go",
+          "lakehouse-traces/internal/storage/parquets3/token_bloom_unicode_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tombstone_gating_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tombstone_proof_test.go",
+          "lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go",
+          "lakehouse-traces/internal/storage/parquets3/trace_message_test.go",
+          "lakehouse-traces/internal/vlstorage/buffer_export_test.go",
+          "lakehouse-traces/internal/vlstorage/buffer_rows_test.go",
+          "lakehouse-traces/internal/vlstorage/events_links_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_adapter_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_admission_bench_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_admission_cross_tenant_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_admission_mixed_bench_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_admission_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_before_epoch_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_fuzz_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_index_rows_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_memleak_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_race_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_verify_test.go",
+          "lakehouse-traces/internal/vlstorage/memleak_test.go",
+          "lakehouse-traces/internal/vlstorage/stream_id_test.go",
+          "lakehouse-traces/internal/vlstorage/tenant_ids_test.go",
+          "lakehouse-traces/internal/vlstorage/trace_message_test.go",
+          "lakehouse-traces/internal/vlstorage/traced_lookup_test.go",
+          "lakehouse-traces/internal/vlstorage/traced_storage_test.go",
+          "lakehouse-traces/internal/vlstorage/values_filter_limit_test.go",
+          "lakehouse-traces/internal/vlstorage/vlstorage_coverage_test.go",
+          "lakehouse-traces/internal/vlstorage/vlstorage_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/adapter_coverage_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/adapter_memleak_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/adapter_race_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/adapter_stress_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/adapter_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/hidden_fields_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fuzz_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/values_filter_limit_test.go",
+          "lakehouse-traces/maintenance_gate_test.go",
+          "lakehouse-traces/public_delete_post_only_test.go",
+          "lakehouse-traces/public_delete_test.go",
+          "lakehouse-traces/ring_multiinstance_test.go",
+          "lakehouse-traces/shutdown_snapshot_test.go",
+          "lakehouse-traces/tombstone_multiinstance_test.go",
+          "tests/conformance/logsql_literals_test.go",
+          "tests/conformance/registry/rows_test.go",
+          "tests/ingestmatrix/matrix_test.go",
+          "tests/ingestmatrix/native_controls_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaLogs/lib/prefixfilter",
+        "src_files_logs_module": 1,
+        "src_files_traces_module": 0,
+        "guard_files": 0,
+        "guards": null,
+        "guarded": false
+      },
+      {
+        "package": "VictoriaTraces/app/victoria-traces/servicegraph",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 1,
+        "guard_files": 0,
+        "guards": null,
+        "guarded": false
+      },
+      {
+        "package": "VictoriaTraces/app/vtinsert",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 1,
+        "guard_files": 1,
+        "guards": [
+          "lakehouse-traces/maintenance_gate_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaTraces/app/vtinsert/insertutil",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 1,
+        "guard_files": 4,
+        "guards": [
+          "lakehouse-traces/ingest_flags_test.go",
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go",
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_support_test.go",
+          "lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaTraces/app/vtselect/logsql",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 1,
+        "guard_files": 0,
+        "guards": null,
+        "guarded": false
+      },
+      {
+        "package": "VictoriaTraces/app/vtselect/traces/jaeger",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 1,
+        "guard_files": 2,
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "lakehouse-traces/tombstone_multiinstance_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaTraces/app/vtselect/traces/tempo",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 1,
+        "guard_files": 1,
+        "guards": [
+          "internal/upstreamreuse/upstreamreuse_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaTraces/app/vtstorage",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 1,
+        "guard_files": 11,
+        "guards": [
+          "lakehouse-traces/discovery_vtstorage_test.go",
+          "lakehouse-traces/internal/selectapi/logsql_equivalence_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_filtered_stats_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_projection_review_test.go",
+          "lakehouse-traces/internal/storage/parquets3/cold_review_more_test.go",
+          "lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go",
+          "lakehouse-traces/internal/storage/parquets3/row_read_http_test.go",
+          "lakehouse-traces/internal/storage/parquets3/row_read_trace_index_test.go",
+          "lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/adapter_coverage_test.go",
+          "lakehouse-traces/tombstone_multiinstance_test.go"
+        ],
+        "guarded": true
+      },
+      {
+        "package": "VictoriaTraces/lib/protoparser/opentelemetry/pb",
+        "src_files_logs_module": 0,
+        "src_files_traces_module": 3,
+        "guard_files": 13,
+        "guards": [
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go",
+          "lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go",
+          "lakehouse-traces/internal/storage/parquets3/drain_healthy_property_test.go",
+          "lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go",
+          "lakehouse-traces/internal/storage/parquets3/row_read_trace_index_test.go",
+          "lakehouse-traces/internal/vlstorage/events_links_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_fuzz_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_index_rows_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_parity_test.go",
+          "lakehouse-traces/internal/vlstorage/insert_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fuzz_test.go",
+          "lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go"
+        ],
+        "guarded": true
+      }
+    ],
+    "unguarded_items": [
+      "package VictoriaLogs/lib/prefixfilter",
+      "package VictoriaTraces/app/victoria-traces/servicegraph",
+      "package VictoriaTraces/app/vtselect/logsql"
+    ],
+    "victoriametrics_lib_packages_imported": 10
+  },
+  "pending_by_reason": [
+    {
+      "reason": "perf-cell",
+      "rows": 768,
+      "executed_elsewhere": true,
+      "description": "layer `perf`: a measurement cell run by a perf CI job (its `refs.doc` names the harness), not by the registry runner",
+      "refs_doc": [
+        "docs/perf/field-metadata-cells.md"
+      ]
+    },
+    {
+      "reason": "durability-cell",
+      "rows": 16,
+      "executed_elsewhere": true,
+      "description": "kind `durability`: backed by the cited Go tests, no HTTP request",
+      "refs_doc": [
+        "docs/durability.md",
+        "docs/parity-and-gaps.md"
+      ]
+    },
+    {
+      "reason": "chaos-or-ui-harness",
+      "rows": 19,
+      "executed_elsewhere": false,
+      "description": "layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner",
+      "refs_doc": [
+        "docs/deletion-strategy.md",
+        "docs/durability.md",
+        "docs/read-path.md"
+      ]
+    },
+    {
+      "reason": "flag-row",
+      "rows": 35,
+      "executed_elsewhere": false,
+      "description": "kind `flag`: no HTTP request; the flag drift checks and cited tests apply",
+      "refs_doc": [
+        "docs/configuration.md",
+        "docs/deletion-strategy.md",
+        "docs/security.md"
+      ]
+    },
+    {
+      "reason": "http-runner-test-linked",
+      "rows": 147,
+      "executed_elsewhere": false,
+      "description": "has an HTTP request; waits for the registry HTTP runner, a cited Go test covers part of it",
+      "refs_doc": [
+        "docs/deletion-strategy.md",
+        "docs/multi-tenancy.md",
+        "docs/observability.md",
+        "docs/operations.md",
+        "docs/parity-and-gaps.md",
+        "docs/read-path.md",
+        "docs/security.md"
+      ]
+    },
+    {
+      "reason": "http-runner-nothing-linked",
+      "rows": 293,
+      "executed_elsewhere": false,
+      "description": "has an HTTP request; waits for the registry HTTP runner and links no test",
+      "refs_doc": [
+        "docs/parity-and-gaps.md"
+      ]
+    }
+  ],
+  "not_inventoried": [
+    "metric names and labels (only the lakehouse_* names are registered; no vl_*/vt_*/vm_* comparison)",
+    "error bodies and status codes (rows exist, no inventory of the upstream set)",
+    "Jaeger and Tempo response schemas beyond the rows",
+    "look-alike re-implementations under internal/ (no scan; tracked in an open issue)"
+  ]
+}
