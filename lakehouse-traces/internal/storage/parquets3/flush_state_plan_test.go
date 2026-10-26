@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,42 +99,115 @@ func TestNewBufferFlusher_StateOfTheReleaseBeforeStopsStartup(t *testing.T) {
 	}
 }
 
-// The decoder takes any bytes: it never panics, and a state it accepts is one
-// the flusher can use (a draining segment has its maxRows) and writes back as it
-// is.
+// flushStateDecoderRun is one case of the decoder property (run by
+// TestReadFlushState_RandomStates and, for the fuzz engine's seeds, by
+// FuzzBufferRestart): a state made of random field values, sometimes with its bytes
+// damaged, is decoded. The decoder never panics; an undamaged state is accepted
+// exactly when it has the version and the shape rules (a draining segment has its
+// maxRows and plan scheme, and nothing else has them); a state it accepts is one
+// the flusher can use and writes back as it is.
+func flushStateDecoderRun(t *testing.T, seed int64) {
+	t.Helper()
+	rng := rand.New(rand.NewSource(seed))
+	pick := func(vs ...int64) int64 { return vs[rng.Intn(len(vs))] }
+	st := map[string]any{"version": pick(flushStateVersion, flushStateVersion, flushStateVersion, flushStateVersion-1, flushStateVersion+1)}
+	if rng.Intn(2) == 0 {
+		st["committed_through_seq"] = uint64(rng.Intn(100))
+	}
+	draining := uint64(pick(0, 0, 1, 7, 1<<62))
+	maxRows := pick(0, 0, 1, 5, 262144, -1, -1<<62)
+	plan := pick(0, 0, 1, 1, 2, -1)
+	if rng.Intn(2) == 0 {
+		st["draining_seq"] = draining
+	}
+	if rng.Intn(2) == 0 {
+		st["draining_max_rows"] = maxRows
+	}
+	if rng.Intn(2) == 0 {
+		st["draining_plan"] = plan
+	}
+	if rng.Intn(5) == 0 {
+		st["draining_seq"], st["draining_max_rows"], st["draining_plan"] = draining, int64(5), int64(1)
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	damaged := false
+	switch rng.Intn(6) {
+	case 0:
+		b, damaged = b[:rng.Intn(len(b))], true
+	case 1:
+		b[rng.Intn(len(b))] ^= byte(1 + rng.Intn(255))
+		damaged = true
+	}
+	p := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(p, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readFlushState(p)
+	if !damaged {
+		var want flushState
+		_ = json.Unmarshal(b, &want)
+		wantOK := want.Version == flushStateVersion && want.DrainingMaxRows >= 0 && want.DrainingPlan >= 0 &&
+			(want.DrainingSeq != 0) == (want.DrainingMaxRows != 0) && (want.DrainingSeq != 0) == (want.DrainingPlan != 0)
+		if (err == nil) != wantOK {
+			t.Fatalf("%s: err %v, want accepted=%v", b, err, wantOK)
+		}
+	}
+	if err != nil {
+		return
+	}
+	checkAcceptedFlushState(t, p, got)
+}
+
+// checkAcceptedFlushState: a state the decoder accepted is one the flusher can use
+// and writes back as it is.
+func checkAcceptedFlushState(t *testing.T, p string, got flushState) {
+	t.Helper()
+	if got.Version != flushStateVersion {
+		t.Fatalf("accepted version %d", got.Version)
+	}
+	if (got.DrainingSeq != 0) != (got.DrainingMaxRows != 0) || (got.DrainingSeq != 0) != (got.DrainingPlan != 0) || got.DrainingMaxRows < 0 || got.DrainingPlan < 0 {
+		t.Fatalf("accepted draining_seq %d with draining_max_rows %d, draining_plan %d", got.DrainingSeq, got.DrainingMaxRows, got.DrainingPlan)
+	}
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := readFlushState(p)
+	if err != nil || fmt.Sprint(again) != fmt.Sprint(got) {
+		t.Fatalf("round trip: %v %+v != %+v", err, again, got)
+	}
+}
+
+// FuzzReadFlushState takes any bytes: the decoder never panics, and a state it
+// accepts is one the flusher can use. (flushStateDecoderRun, which FuzzBufferRestart
+// calls, is the same property over states made of random field values.)
 func FuzzReadFlushState(f *testing.F) {
 	f.Add([]byte(fmt.Sprintf(`{"version":%d,"committed_through_seq":1,"draining_seq":2,"draining_max_rows":5,"draining_plan":1}`, flushStateVersion)))
 	f.Add([]byte(fmt.Sprintf(`{"version":%d,"draining_seq":2}`, flushStateVersion)))
 	f.Add([]byte(`{"version":5,"draining_seq":2}`))
 	f.Add([]byte(`{`))
-	f.Add([]byte(`{"version":6,"draining_max_rows":-1,"draining_seq":18446744073709551615}`))
+	f.Add([]byte(`{"version":5,"draining_max_rows":-1,"draining_seq":18446744073709551615}`))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		p := filepath.Join(t.TempDir(), "state")
 		if err := os.WriteFile(p, b, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		st, err := readFlushState(p)
-		if err != nil {
-			return
-		}
-		if st.Version != flushStateVersion {
-			t.Fatalf("accepted version %d", st.Version)
-		}
-		if (st.DrainingSeq != 0) != (st.DrainingMaxRows != 0) || (st.DrainingSeq != 0) != (st.DrainingPlan != 0) || st.DrainingMaxRows < 0 || st.DrainingPlan < 0 {
-			t.Fatalf("accepted draining_seq %d with draining_max_rows %d, draining_plan %d", st.DrainingSeq, st.DrainingMaxRows, st.DrainingPlan)
-		}
-		out, err := json.Marshal(st)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(p, out, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		again, err := readFlushState(p)
-		if err != nil || fmt.Sprint(again) != fmt.Sprint(st) {
-			t.Fatalf("round trip: %v %+v != %+v", err, again, st)
+		if st, err := readFlushState(p); err == nil {
+			checkAcceptedFlushState(t, p, st)
 		}
 	})
+}
+
+func TestReadFlushState_RandomStates(t *testing.T) {
+	for seed := int64(0); seed < 400; seed++ {
+		flushStateDecoderRun(t, seed)
+	}
 }
 
 // A drain started under a plan scheme this release does not know (the bucket

@@ -446,6 +446,8 @@
       - internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_StateOfTheReleaseBeforeStopsStartup
       - internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_UnknownPlanSchemeStopsStartup
       - internal/storage/parquets3/flush_state_plan_test.go#FuzzReadFlushState
+      - internal/storage/parquets3/flush_state_plan_test.go#TestReadFlushState_RandomStates
+      - internal/storage/parquets3/buffer_restart_test.go#FuzzBufferRestart
       - internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_PinsTheBucketScheme
       - internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_GoldenPlan
       - internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_NotRejudgedByAFreshCardinalityLimiter
@@ -482,6 +484,8 @@
       - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_StateOfTheReleaseBeforeStopsStartup
       - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestNewBufferFlusher_UnknownPlanSchemeStopsStartup
       - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#FuzzReadFlushState
+      - lakehouse-traces/internal/storage/parquets3/flush_state_plan_test.go#TestReadFlushState_RandomStates
+      - lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go#FuzzBufferRestart
       - lakehouse-traces/internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_PinsTheBucketScheme
       - lakehouse-traces/internal/storage/parquets3/plan_scheme_test.go#TestPlanScheme_GoldenPlan
       - lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go#TestAckedRows_NotRejudgedByAFreshCardinalityLimiter
