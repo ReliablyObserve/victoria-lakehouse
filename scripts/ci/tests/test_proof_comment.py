@@ -463,7 +463,7 @@ class Sanitize(unittest.TestCase):
         good = f"[run](https://github.com/{REPO}/actions/runs/123)"
         self.assertEqual(self.s(good), good)
         self.assertEqual(self.s(f"[i](https://github.com/{REPO}/issues/5)", refs=[5]), f"[i](https://github.com/{REPO}/issues/5)")
-        for url in ("https://evil.example/x", "http://github.com/" + REPO + "/issues/1", f"https://github.com/other/repo/issues/1",
+        for url in ("https://evil.example/x", "http://github.com/" + REPO + "/issues/1", "https://github.com/other/repo/issues/1",
                     f"https://github.com/{REPO}.evil.example/issues/1", f"https://github.com/{REPO}/issues/1)![x](https://evil.example/t.gif",
                     "javascript:alert(1)", f"https://github.com/{REPO}/actions/runs/1/../../x"):
             with self.subTest(url=url):
@@ -1140,7 +1140,6 @@ class Review(unittest.TestCase):
         for body in ("<details><summary>x", "<sub>text", "```\ncode", "<details><sub>a<summary>b"):
             out = pc.render_comment("perf-smoke", body, repo=REPO, pr=7, head_sha=SHA, run_id=3, images_published=True,
                                     verdict="pass", conclusion="success")
-            head, foot = out.split("Posted by the PR proof commenter", 1)[0], out
             before_footer = out.split("<sub>Head `", 1)[0]
             self.assertEqual(before_footer.count("<details>"), before_footer.count("</details>"), body)
             self.assertEqual(before_footer.count("<sub>"), before_footer.count("</sub>"), body)
