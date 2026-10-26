@@ -2,8 +2,9 @@ package smartcache
 
 import (
 	"context"
-	"sync"
 	"time"
+
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 )
 
 type L1Cache interface {
@@ -77,14 +78,7 @@ type Controller struct {
 	partitionMode string
 	diskLimit     int64
 
-	sfMu       sync.Mutex
-	sfInFlight map[string]*sfCall
-}
-
-type sfCall struct {
-	wg  sync.WaitGroup
-	val []byte
-	err error
+	downloads *cache.Group
 }
 
 func NewController(cfg ControllerConfig) *Controller {
@@ -109,7 +103,7 @@ func NewController(cfg ControllerConfig) *Controller {
 		signal:        cfg.Signal,
 		partitionMode: pm,
 		diskLimit:     cfg.DiskLimit,
-		sfInFlight:    make(map[string]*sfCall),
+		downloads:     cache.NewGroup(),
 	}
 }
 
@@ -199,28 +193,15 @@ func (c *Controller) Get(ctx context.Context, key string, size int64) ([]byte, e
 	return data, nil
 }
 
+// DownloadWaiters is the number of callers that have joined the download in flight
+// for key (0 when none is in flight).
+func (c *Controller) DownloadWaiters(key string) int { return c.downloads.Waiters(key) }
+
 func (c *Controller) singleflightDownload(ctx context.Context, key string, size int64) ([]byte, error) {
-	c.sfMu.Lock()
-	if call, ok := c.sfInFlight[key]; ok {
-		// Another goroutine is already downloading this key — wait for it
-		c.sfMu.Unlock()
-		call.wg.Wait()
-		return call.val, call.err
-	}
-	// First goroutine for this key — we lead the download
-	call := &sfCall{}
-	call.wg.Add(1)
-	c.sfInFlight[key] = call
-	c.sfMu.Unlock()
-
-	call.val, call.err = c.s3Fetcher.Download(ctx, key)
-	call.wg.Done()
-
-	c.sfMu.Lock()
-	delete(c.sfInFlight, key)
-	c.sfMu.Unlock()
-
-	return call.val, call.err
+	data, err, _ := c.downloads.DoCtx(ctx, key, func(ctx context.Context) ([]byte, error) {
+		return c.s3Fetcher.Download(ctx, key)
+	})
+	return data, err
 }
 
 // Pin marks a cache entry as pinned by a given query ID with the configured grace period.

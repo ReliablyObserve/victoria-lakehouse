@@ -70,7 +70,7 @@ Per pod, steady state:
                                       lakehouse_catalog_resident_bytes
   + Smart cache (L1)               ≈ cfg.cache.memory_mb MiB
   + Buffer restore (segment parts)    ≈ 100 MiB peak during startup
-  + Per-query memory (max_live_bytes)  default 512 MiB × query.max_concurrent (default 32)
+  + Per-query decoded row groups (max_live_bytes)  default 512 MiB (estimated) × query.max_concurrent (default 32)
   + Background goroutine pools     ≈ 100-200 MiB
   + Go runtime overhead            ≈ 300 MiB
   ────────────────────────────────────────────────
@@ -294,9 +294,40 @@ query:
 ## What does NOT scale (gotchas)
 
 - **`query.max_concurrent` × `query.max_live_bytes`** is the
-  worst-case memory burst from queries. The defaults (32 × 512 MiB
-  = 16 GiB) apply regardless of cluster size; on a small pod lower
-  `max_concurrent`, or it will OOM-kill before the disk fills.
+  worst-case memory burst from queries, in the unit of the ceiling: an
+  ESTIMATE of the decoded bytes of the row groups a query decodes at once.
+  Per row group and projected column the estimate is the larger of the
+  footer's uncompressed size and the value count times the longest min/max
+  statistic (or the text width of a number), so it covers a compressible
+  column that is small on disk and large decoded and a dictionary-encoded
+  column whose min and max are as long as its values; it is not the real
+  heap (parquet-go buffers and the strings' headers are not in it), and one
+  row group larger than the ceiling is read alone. **It under-counts a
+  dictionary-encoded text column whose min and max statistics are short
+  while its frequent values are long** (exception or status messages: the
+  footer has no size for the dictionary's entries; up to ~460x on a
+  constructed row group, [#807](https://github.com/ReliablyObserve/victoria-lakehouse/issues/807)),
+  so on data with such columns leave headroom under the container limit. The
+  defaults (32 × 512 MiB = 16 GiB) apply regardless of cluster size; on a
+  small pod lower `max_concurrent`, or it will OOM-kill before the disk
+  fills. The process-wide `fileBudgetSem` (256 MiB) and the row-group
+  decoder limit bound the rest.
+
+- **A `query.max_live_bytes` of fewer than about four row groups slows a
+  query.** A row group is reserved whole, so with a ceiling that holds one or
+  two of them the row-group decoders (`GOMAXPROCS/2`, between 2 and 8) wait for
+  each other. Measured on the scaled model (`BenchmarkScaledRead_CeilingInRowGroups`,
+  8 decoders, 20 ms of S3 latency, mock S3): the warm phrase read takes 155 ms
+  at a ceiling of 1 or 2 row groups and 87-88 ms at 4 or 8 (+78 %, none from 4
+  up); the cold wildcard read is flat, S3 latency and the file budget
+  dominating it. The independent review of the change measured +49 % on a cold
+  wildcard read with no S3 latency (sourced, not re-run). At the 512 MiB
+  default the knee is a row group estimated over about 128 MiB (a 16 MiB stored
+  row group of log text decodes to 64-160 MiB, assumed). The waits are counted
+  in `lakehouse_query_memory_budget_exceeded_total` and the first of each query
+  is logged. For full speed set `query.max_live_bytes` to at least four times
+  the decoded size of a row group; the price is that much more memory per
+  query, so lower `query.max_concurrent` by the same factor.
 
 - **Every manifest refresh is a full enumeration.** First-ever boot
   and every periodic refresh list every key under the tenant
