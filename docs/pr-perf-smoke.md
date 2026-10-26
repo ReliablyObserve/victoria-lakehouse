@@ -219,7 +219,9 @@ What it measures, base (the merge base) vs PR, for both modules:
 | Flaky-test watch | jobs that failed in one attempt and passed in a later attempt of the same workflow run of this head, with the failed test names read from the failed attempt's log | none (a finding, not noise); fills in only after a re-run |
 | Test time | package time of the coverage run against the 600 s `-timeout` the CI test jobs hold (without `-race`, so a lower bound) | none |
 
-Only the changed packages are measured: the job does not re-run the CI test jobs, so it costs minutes, not the 35 of `test-logs`. A
+Only the changed packages are measured: the job does not re-run the CI test jobs, so it costs minutes, not the 35 of `test-logs`.
+Measured on `ubuntu-latest`: 1.4 minutes of job time for a PR that changes two small packages, 9.6 minutes for one that changes
+`internal/storage/parquets3` in both modules (the coverage runs of the merge base and the PR are 8 of those). A
 figure that was not collected is shown as "not collected", never as zero. The report puts the verdict first, lists only the rows that
 changed, regressed or fall below the floor, and collapses the rest into a count.
 
