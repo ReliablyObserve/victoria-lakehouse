@@ -258,7 +258,7 @@ class ReadZip(unittest.TestCase):
 
     def test_a_corrupt_entry_is_a_clean_rejection_not_a_traceback(self):
         data = bytearray(make_zip({"perf-smoke.md": b"hello world " * 200}))
-        i = data.find(b"hello") if False else data.find(b"perf-smoke.md") + len(b"perf-smoke.md") + 4
+        i = data.find(b"perf-smoke.md") + len(b"perf-smoke.md") + 4
         data[i] ^= 0xFF  # damage the compressed stream
         with self.assertRaises(pc.Reject):
             pc.read_zip(bytes(data))
@@ -732,7 +732,7 @@ class Validate(unittest.TestCase):
     def test_malformed_event_values_are_rejected_before_any_api_call(self):
         class NoApi:
             def __getattr__(self, name):
-                raise AssertionError("API used")
+                raise AttributeError(f"the API must not be used before the event values are checked: {name}")
         for k, v in (("WR_RUN_ID", "1;rm -rf"), ("WR_HEAD_SHA", "x"), ("WR_HEAD_REPO", "a b"), ("WR_PRS", "{}"), ("WR_PRS", '["7"]')):
             with self.subTest(k=k):
                 env = dict(env_for(valid_api()), **{k: v})
