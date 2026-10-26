@@ -43,5 +43,3 @@ func TestAckedRowsBufferRead_FindsEveryRowOfEveryBlock(t *testing.T) {
 		}
 	}
 }
-
-// pr-quality evidence run (temporary, reverted in the next commit)
