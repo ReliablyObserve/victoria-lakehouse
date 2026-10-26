@@ -55,7 +55,7 @@ func CheckProofRefs(reg *Registry, set *FeatureSet, repoRoot string) []string {
 			case r.Kind == KindVisual && r.Visual != nil:
 				load()
 				checkVisual(r, pages, pagesErr, add)
-			case r.Kind == KindAPISchema:
+			case r.Contract != "":
 				checkContract(r, repoRoot, add)
 			case r.Kind == KindSharedCode && r.SharedCode != nil:
 				checkSharedCode(r, repoRoot, add)

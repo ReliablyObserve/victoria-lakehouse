@@ -67,9 +67,9 @@ func proofExt_ExampleRowsLoad(t *testing.T) {
 	for _, r := range reg.Rows {
 		count[r.Kind]++
 	}
-	// 3 perf rows (kind select with the scenario fields), 3 visual, 3 api-schema, 4 shared-code
+	// 3 perf rows (kind select with the scenario fields), 3 visual, 3 contract rows (kind admin, with the other admin example), 4 shared-code
 	// (one per type), and 3 rows that carry data_layers, tenant_forms and tier.
-	if count[KindVisual] != 3 || count[KindAPISchema] != 3 || count[KindSharedCode] != 4 {
+	if count[KindVisual] != 3 || count[KindAdmin] != 4 || count[KindSharedCode] != 4 {
 		t.Fatalf("kinds in the examples = %v", count)
 	}
 	scen := 0
@@ -206,19 +206,18 @@ func proofExt_RowRejects(t *testing.T) {
 		{"visual block on another kind", "lh.api.info.contract", func(r *Row) { r.Visual = &Visual{Page: "p"} }, "visual block only allowed for kind=visual"},
 		{"ui comparator on a non-ui kind still rejected", "lh.api.info.contract", func(r *Row) { r.Compare = &Compare{Type: "ui"} }, "incompatible with kind"},
 
-		// api-schema
-		{"contract missing", "lh.api.info.contract", func(r *Row) { r.Contract = "" }, "contract required for kind=api-schema"},
+		// contract on a schema-compare row
 		{"contract wrong directory", "lh.api.info.contract", func(r *Row) { r.Contract = "docs/info.json" }, "must be tests/conformance/contracts/<row id>.json"},
 		{"contract named after another row", "lh.api.info.contract", func(r *Row) { r.Contract = "tests/conformance/contracts/lh.api.other.contract.json" }, "must be named after the row id"},
 		{"contract path escape", "lh.api.info.contract", func(r *Row) { r.Contract = "tests/conformance/contracts/../../x.json" }, "contract"},
-		{"contract on another kind", "lh.stats.layers.daily_example", func(r *Row) { r.Contract = "tests/conformance/contracts/x.json" }, "contract only allowed for kind=api-schema"},
-		{"api-schema of an upstream API", "lh.api.info.contract", func(r *Row) { r.Request.Path = "/select/logsql/query" }, "must be a Lakehouse-only API"},
-		{"api-schema not on the lh surface", "lh.api.info.contract", func(r *Row) {
+		{"contract of an upstream API", "lh.api.info.contract", func(r *Row) { r.Request.Path = "/select/logsql/query" }, "request.path under /lakehouse/"},
+		{"contract on a row without request", "lh.api.info.contract", func(r *Row) { r.Request = nil }, "request.path under /lakehouse/"},
+		{"contract not on the lh surface", "lh.api.info.contract", func(r *Row) {
 			r.Surface = SurfaceVL
 			r.ID = "vl.api.info.contract"
 			r.Contract = "tests/conformance/contracts/vl.api.info.contract.json"
 		}, "surface must be lh"},
-		{"api-schema compare must be schema", "lh.api.info.contract", func(r *Row) { r.Compare.Type = "exact-json" }, "compare.type must be schema"},
+		{"contract needs the schema comparator", "lh.api.info.contract", func(r *Row) { r.Compare.Type = "exact-json" }, "contract needs compare.type schema"},
 
 		// shared-code
 		{"shared-code without block", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode = nil }, "shared_code block required"},

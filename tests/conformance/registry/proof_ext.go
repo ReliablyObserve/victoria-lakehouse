@@ -21,9 +21,6 @@ const (
 	// KindVisual is a Grafana, VMUI, VTUI or Jaeger UI page proven by the
 	// Playwright capture (tests/playwright/proof): a row names the page.
 	KindVisual Kind = "visual"
-	// KindAPISchema is a Lakehouse-only API (/lakehouse/api/v1/*,
-	// /lakehouse/info) whose JSON contract is a committed file.
-	KindAPISchema Kind = "api-schema"
 	// KindSharedCode is code that Lakehouse shares with, imports from or
 	// patches into VictoriaLogs/VictoriaTraces. It is backed by guard tests
 	// (refs.tests), like a durability cell, not by an HTTP request.
@@ -167,10 +164,8 @@ func (r *Row) validateProofExtensions(add func(string, ...any)) {
 	r.validatePerfScenario(add)
 
 	// contract: the committed JSON contract of a Lakehouse-only API.
-	if r.Kind == KindAPISchema {
-		r.validateAPISchema(add)
-	} else if r.Contract != "" {
-		add("contract only allowed for kind=api-schema")
+	if r.Contract != "" {
+		r.validateContract(add)
 	}
 
 	if r.Kind == KindVisual {
@@ -252,20 +247,20 @@ func (r *Row) validatePerfScenario(add func(string, ...any)) {
 	}
 }
 
-func (r *Row) validateAPISchema(add func(string, ...any)) {
+// validateContract checks the optional `contract` of a schema-compare row: the
+// committed JSON contract of a Lakehouse-only API (/lakehouse/api/v1/*, /lakehouse/info).
+func (r *Row) validateContract(add func(string, ...any)) {
 	if r.Surface != SurfaceLH || r.Origin != OriginLHAddition {
-		add("api-schema covers a Lakehouse-only API: surface must be lh and origin lh-addition")
+		add("contract covers a Lakehouse-only API: surface must be lh and origin lh-addition")
 	}
-	if r.Request != nil && !strings.HasPrefix(r.Request.Path, "/lakehouse/") {
-		add("api-schema request.path %q must be a Lakehouse-only API (/lakehouse/...)", r.Request.Path)
+	if r.Request == nil || !strings.HasPrefix(r.Request.Path, "/lakehouse/") {
+		add("contract needs a Lakehouse-only API request (request.path under /lakehouse/)")
 	}
-	if r.Compare != nil && r.Compare.Type != "schema" {
-		add("api-schema compare.type must be schema, got %q", r.Compare.Type)
+	if r.Compare == nil || r.Compare.Type != "schema" {
+		add("contract needs compare.type schema")
 	}
 	m := contractRe.FindStringSubmatch(r.Contract)
 	switch {
-	case r.Contract == "":
-		add("contract required for kind=api-schema (tests/conformance/contracts/<row id>.json)")
 	case m == nil:
 		add("contract %q must be tests/conformance/contracts/<row id>.json", r.Contract)
 	case m[1] != r.ID:

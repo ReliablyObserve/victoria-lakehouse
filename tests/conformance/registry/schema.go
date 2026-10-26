@@ -35,7 +35,7 @@ const (
 	// write mode, one signal, with the guarantee that holds and the Go tests that
 	// prove it. It is backed by tests, not by an HTTP request and compare.
 	KindDurability Kind = "durability"
-	// KindVisual, KindAPISchema and KindSharedCode are declared in proof_ext.go.
+	// KindVisual and KindSharedCode are declared in proof_ext.go.
 
 	OriginNative     Origin = "native"
 	OriginLHShim     Origin = "lh-shim"
@@ -265,7 +265,7 @@ type Row struct {
 	DataLayers  []string    `yaml:"data_layers,omitempty"`  // buffer, cold, compacted, after-restart
 	TenantForms []string    `yaml:"tenant_forms,omitempty"` // numeric, alias
 	Tier        string      `yaml:"tier,omitempty"`         // core, focused, daily
-	Contract    string      `yaml:"contract,omitempty"`     // kind=api-schema: tests/conformance/contracts/<row id>.json
+	Contract    string      `yaml:"contract,omitempty"`     // schema-compare rows: tests/conformance/contracts/<row id>.json
 	Visual      *Visual     `yaml:"visual,omitempty"`       // kind=visual
 	SharedCode  *SharedCode `yaml:"shared_code,omitempty"`  // kind=shared-code
 }
@@ -309,7 +309,7 @@ func (r *Row) Validate() error {
 
 	// Kind validation
 	switch r.Kind {
-	case KindSelect, KindInsert, KindPipe, KindFilter, KindStats, KindTraceQL, KindFlag, KindUI, KindAdmin, KindInternal, KindDurability, KindVisual, KindAPISchema, KindSharedCode:
+	case KindSelect, KindInsert, KindPipe, KindFilter, KindStats, KindTraceQL, KindFlag, KindUI, KindAdmin, KindInternal, KindDurability, KindVisual, KindSharedCode:
 	default:
 		add("kind %q invalid", r.Kind)
 	}
