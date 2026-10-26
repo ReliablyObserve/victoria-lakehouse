@@ -774,12 +774,15 @@ type QueryConfig struct {
 	// MaxFilesPerQuery rejects a query that matches more S3 files than this; 0
 	// means unlimited, leaving the memory budget as the safety net.
 	MaxFilesPerQuery int `yaml:"max_files_per_query"`
-	// MaxLiveBytes is a per-query ceiling on the bytes of in-flight
-	// DataBlocks currently held by RunQuery before writeBlock has consumed
-	// them. When reached, a file worker waits for the consumer to drain them,
-	// so a slow consumer cannot make the process OOM; the query is never
-	// cancelled and never answers with rows missing. 0 means use the
-	// default (defaultMaxLiveBytes in storage/parquets3).
+	// MaxLiveBytes is a per-query ceiling on the estimated DECODED bytes in
+	// flight. Before it decodes a row group a file worker reserves an estimate
+	// of the row group's decoded size, taken from the footer it has already
+	// read (per projected column the larger of the uncompressed size and the
+	// values times the longest min/max statistic or type width), and waits while
+	// the reserved bytes would pass the ceiling; one row group larger than the
+	// ceiling is admitted alone. The query is never cancelled and never answers
+	// with rows missing. 0 means use the default (defaultMaxLiveBytes in
+	// storage/parquets3).
 	MaxLiveBytes int64 `yaml:"max_live_bytes"`
 	// SlowThreshold logs queries that run longer than this.
 	SlowThreshold time.Duration `yaml:"slow_threshold"`

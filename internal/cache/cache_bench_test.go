@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"testing"
 )
@@ -57,7 +58,7 @@ func BenchmarkGroup_Do_NoContention(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, _ = g.Do(fmt.Sprintf("key-%d", i), func() ([]byte, error) {
+		_, _, _ = g.DoCtx(context.Background(), fmt.Sprintf("key-%d", i), func(context.Context) ([]byte, error) {
 			return data, nil
 		})
 	}

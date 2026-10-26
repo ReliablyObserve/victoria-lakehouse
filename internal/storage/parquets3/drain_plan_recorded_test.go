@@ -346,8 +346,17 @@ func TestDrainPlan_TwoWritersEachRestartedWithAnotherMaxRows(t *testing.T) {
 		t.Fatal("nothing sealed")
 	}
 	e.seal()
+	// Writer 2 has its own BatchWriter and manifest over the shared object store:
+	// what it finds by HEAD after the restart is what writer 1's process left.
+	newWriter2 := func() *BatchWriter {
+		bw, _ := durabilityWriter(t, e.u)
+		bw.SetTenantPrefix(func(account, project uint32) string { return fmt.Sprintf("t%d-%d/", account, project) })
+		bw.SetMarkerPool(e.marks)
+		return bw
+	}
+	bw2 := newWriter2()
 	flusher2 := func(maxRows int64) *BufferFlusher {
-		f := newBufferFlusher(e.bw, segs2, dir2, nil, BufferFlusherConfig{TargetBytes: maxRows * estBytesPerLogRow, MaxAge: time.Hour, Grace: time.Minute})
+		f := newBufferFlusher(bw2, segs2, dir2, nil, BufferFlusherConfig{TargetBytes: maxRows * estBytesPerLogRow, MaxAge: time.Hour, Grace: time.Minute})
 		if err := f.load(time.Now()); err != nil {
 			t.Fatal(err)
 		}
@@ -377,6 +386,7 @@ func TestDrainPlan_TwoWritersEachRestartedWithAnotherMaxRows(t *testing.T) {
 	// Both restart; writer 1 now has groups of 1000, writer 2 groups of 5.
 	segs2.Close()
 	e.restart()
+	bw2 = newWriter2() // a new process: an empty manifest
 	segs2 = open2()
 	t.Cleanup(segs2.Close)
 	f1, f2 := e.flusher(1000), flusher2(5)

@@ -2,6 +2,7 @@ package smartcache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -92,6 +93,9 @@ type mockS3Fetcher struct {
 	data  map[string][]byte
 	calls atomic.Int64
 	delay time.Duration
+	// holdFirst, when set, is closed when the first download starts, and that download
+	// then blocks until its context ends.
+	holdFirst chan struct{}
 }
 
 func newMockS3() *mockS3Fetcher {
@@ -99,7 +103,11 @@ func newMockS3() *mockS3Fetcher {
 }
 
 func (m *mockS3Fetcher) Download(ctx context.Context, key string) ([]byte, error) {
-	m.calls.Add(1)
+	if m.calls.Add(1) == 1 && m.holdFirst != nil {
+		close(m.holdFirst)
+		<-ctx.Done()
+		return nil, fmt.Errorf("read s3 body: %w", ctx.Err())
+	}
 	if m.delay > 0 {
 		select {
 		case <-time.After(m.delay):
@@ -315,6 +323,76 @@ func TestController_Singleflight_Dedup(t *testing.T) {
 
 	if s3.calls.Load() != 1 {
 		t.Errorf("S3 calls = %d, want 1 (singleflight dedup)", s3.calls.Load())
+	}
+}
+
+// A query that shares another query's download of an object must not fail with the
+// first query's deadline or cancellation: it joins (waited for, not slept for), then
+// reads the object on its own context, in a second download.
+func TestController_Singleflight_LeaderDeadlineIsNotInherited(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+		end  func(cancel context.CancelFunc)
+		want error
+	}{
+		{"canceled", func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }, func(cancel context.CancelFunc) { cancel() }, context.Canceled},
+		{"deadline", func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 300*time.Millisecond)
+		}, func(context.CancelFunc) {}, context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s3 := newMockS3()
+			s3.data["k"] = []byte("data")
+			s3.holdFirst = make(chan struct{}) // the first download never answers until its context ends
+			ctrl := NewController(ControllerConfig{
+				L1:           newMockL1(),
+				L2:           newMockL2(),
+				PeerLookup:   &mockPeerLookup{selfAddr: "self:9428"},
+				PeerFetcher:  &mockPeerFetcher{},
+				S3Fetcher:    s3,
+				Metadata:     NewMetadataMap(),
+				MaxAge:       24 * time.Hour,
+				HotThreshold: 3,
+				HotWindow:    10 * time.Minute,
+				Signal:       "logs",
+			})
+			leaderCtx, cancel := tc.ctx()
+			defer cancel()
+			leaderErr := make(chan error, 1)
+			go func() {
+				_, err := ctrl.Get(leaderCtx, "k", 4)
+				leaderErr <- err
+			}()
+			<-s3.holdFirst // the first download is in flight
+			type result struct {
+				data []byte
+				err  error
+			}
+			second := make(chan result, 1)
+			go func() {
+				d, err := ctrl.Get(context.Background(), "k", 4)
+				second <- result{d, err}
+			}()
+			for ctrl.DownloadWaiters("k") < 1 {
+				time.Sleep(time.Millisecond)
+			}
+			tc.end(cancel)
+			select {
+			case r := <-second:
+				if r.err != nil || string(r.data) != "data" {
+					t.Fatalf("second Get: %q, %v: it must read the object on its own context", r.data, r.err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("second Get did not return")
+			}
+			if err := <-leaderErr; !errors.Is(err, tc.want) {
+				t.Fatalf("first Get: %v, want its own %v", err, tc.want)
+			}
+			if n := s3.calls.Load(); n != 2 {
+				t.Fatalf("%d downloads, want 2: the first (ended by its context) and the second caller's own", n)
+			}
+		})
 	}
 }
 
