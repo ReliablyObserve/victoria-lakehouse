@@ -98,6 +98,26 @@ class ParseTests(unittest.TestCase):
         self.ok("- **A.** " + "x" * (cc.FRAGMENT_MAX_BYTES - 20) + "\n")
         self.bad("- **A.** " + "x" * cc.FRAGMENT_MAX_BYTES + "\n", needle="larger than")
 
+    def test_the_size_cap_boundary_is_exact(self):
+        head = "- **A.** "
+        exactly = head + "x" * (cc.FRAGMENT_MAX_BYTES - len(head) - 1) + "\n"
+        self.assertEqual(len(exactly.encode()), cc.FRAGMENT_MAX_BYTES)
+        self.ok(exactly)
+        self.bad(exactly + "x", needle="larger than")
+
+    def test_characters_on_which_line_splitters_disagree_are_refused(self):
+        for ch in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(ch=repr(ch)):
+                self.bad(f"- **A.** b{ch}c\n", needle="line separator")
+
+    def test_unclosed_fences_and_pre_are_refused(self):
+        self.bad("- **A.** b\n\n  ```\n  code\n", needle="fenced")
+        self.bad("- **A.** b\n\n  ~~~\n  code\n", needle="fenced")
+        self.bad("- **A.** b <pre>x\n", needle="<pre>")
+        self.bad("- **A.** b </pre>\n", needle="<pre>")
+        self.ok("- **A.** b\n\n  ```\n  code\n  ```\n")
+        self.ok("- **A.** b <pre>x</pre> c\n")
+
     def test_a_name_with_a_trailing_newline_is_not_a_fragment(self):
         self.assertIsNone(cc.fragment_kind("changelog.d/1.fixed.md\n"))
         self.bad("- **A.** b\n", "changelog.d/1.fixed.md\n", needle="not a fragment name")
@@ -116,6 +136,14 @@ class ParseTests(unittest.TestCase):
     def test_trailing_whitespace_and_blank_edges_are_normalised(self):
         fr = self.ok("\n\n- **A.** b   \n  c  \n\n\n")
         self.assertEqual(fr.lines, ("- **A.** b", "  c"))
+
+    def test_lead_ins_are_compared_without_whitespace_case_or_the_closing_dot(self):
+        a = frag("changelog.d/1.fixed.md", "- **Same lead.** one\n")
+        for variant in ("- **Same lead. ** two\n", "- **same  LEAD.** two\n", "- **Same lead**. two\n", "- ** Same lead ** two\n"):
+            with self.subTest(variant=variant):
+                b = frag("changelog.d/2.fixed.md", variant)
+                self.assertIn("same bold lead-in", cc.duplicate_fragment_problems([a, b])[0])
+        self.assertEqual(cc.duplicate_fragment_problems([a, frag("changelog.d/2.fixed.md", "- **Other lead.** x\n")]), [])
 
     def test_duplicates(self):
         a = frag("changelog.d/1.fixed.md", "- **A.** b\n")
@@ -168,25 +196,28 @@ class AssembleTests(unittest.TestCase):
         self.assertIn("## [Unreleased]\n\n## [0.2.0] - 2026-02-02\n\n## [0.1.0]", out)
         self.assertEqual(cc.changelog_release_shape(BASE_CHANGELOG, out), ("0.1.0", "0.2.0"))
 
-    def test_legacy_unreleased_bullets_and_fragments_share_the_section(self):
-        legacy = BASE_CHANGELOG.replace(
-            "## [Unreleased]\n",
-            "## [Unreleased]\n\n### Fixed\n\n- **Legacy fix.** long\n  wrapped.\n\n  Second para.\n\n### Performance\n\n- **Legacy perf.** t\n",
-        )
-        frs = [frag("changelog.d/1.fixed.md", "- **New fix.** t\n"), frag("changelog.d/2.added.md", "- **New feat.** t\n")]
-        out = cf.assemble(legacy, frs, "0.2.0", "2026-02-02")
-        sect = out.split("## [0.2.0] - 2026-02-02\n\n", 1)[1].split("## [0.1.0]", 1)[0]
-        self.assertEqual(
-            sect,
-            "### Added\n\n- **New feat.** t\n\n"
-            "### Fixed\n\n- **Legacy fix.** long\n  wrapped.\n\n  Second para.\n\n- **New fix.** t\n\n"
-            "### Performance\n\n- **Legacy perf.** t\n\n",
-        )
-        self.assertTrue(out.split("## [0.2.0]")[0].endswith("## [Unreleased]\n\n"))
-        # [Keep a Changelog headings only] the release shape holds for the legacy text without '### Performance'
-        plain = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **Legacy fix.** long\n  wrapped.\n")
-        out2 = cf.assemble(plain, frs, "0.2.0", "2026-02-02")
-        self.assertEqual(cc.changelog_release_shape(plain, out2, frs), ("0.1.0", "0.2.0"))
+    def test_a_hand_written_bullet_under_unreleased_stops_the_release(self):
+        legacy = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **Legacy fix.** t\n")
+        with self.assertRaises(cf.AssembleError) as cm:
+            cf.assemble(legacy, [frag("changelog.d/1.fixed.md", "- **New.** t\n")], "0.2.0", "2026-02-02")
+        self.assertIn("[Unreleased]", str(cm.exception))
+        self.assertIn("fragments", str(cm.exception))
+
+    def test_a_section_too_large_for_a_release_body_stops_the_release(self):
+        big = [frag(f"changelog.d/{i}.fixed.md", f"- **F{i}.** " + "x" * 10000 + "\n") for i in range(11)]
+        with self.assertRaises(cf.AssembleError) as cm:
+            cf.assemble(BASE_CHANGELOG, big, "0.2.0", "2026-02-02")
+        self.assertIn("at most", str(cm.exception))
+        cf.assemble(BASE_CHANGELOG, big[:9], "0.2.0", "2026-02-02")
+
+    def test_the_section_cap_counts_bytes_and_names_the_files(self):
+        wide = [frag(f"changelog.d/{i}.fixed.md", f"- **W{i}.** " + "\u00e9" * 8000 + "\n") for i in range(7)]
+        chars = sum(len("\n".join(f.lines)) for f in wide)
+        self.assertLess(chars, cf.SECTION_MAX_BYTES)  # under the cap in characters ...
+        with self.assertRaises(cf.AssembleError) as cm:  # ... over it in bytes
+            cf.assemble(BASE_CHANGELOG, wide, "0.2.0", "2026-02-02")
+        self.assertIn("changelog.d/0.fixed.md (", str(cm.exception))
+        self.assertIn("largest first", str(cm.exception))
 
     def test_text_that_is_not_a_bullet_under_unreleased_is_an_error_not_a_loss(self):
         for body in ("prose without a heading\n", "### Fixed\n\nprose in a section\n", "- **bullet before any heading.** t\n"):
@@ -339,6 +370,90 @@ class ReleaseDryRunTests(RepoFixture):
             code = cf.main(["--root", str(self.repo), "assemble", "--version", "0.3.0", "--date", "2026-02-03", "--after-tag", "v0.2.0"])
         self.assertEqual(code, 1)
         self.assertIn("repeat the bold lead-in of a released", err.getvalue())
+
+    def test_a_fragment_left_behind_by_a_merged_metadata_pr_stops_the_next_release(self):
+        """The section of v0.2.0 is in CHANGELOG.md, yet the fragment it was built from is still here: skipped for ever otherwise."""
+        self.write("changelog.d/1.fixed.md", "- **Left.** t\n")
+        self.commit("merge 1")
+        self.git("tag", "v0.2.0")
+        stranded = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **Hand filed.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", stranded)
+        self.commit("the section was filed, the file was not removed")
+        self.write("changelog.d/2.fixed.md", "- **Next.** t\n")
+        self.commit("merge 2")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = cf.main(["--root", str(self.repo), "assemble", "--version", "0.3.0", "--date", "2026-02-03", "--after-tag", "v0.2.0"])
+        self.assertEqual(code, 1)
+        self.assertIn("changelog.d/1.fixed.md (released in v0.2.0;", err.getvalue())
+        self.assertEqual(self.fragments(), ["1.fixed.md", "2.fixed.md"])
+
+    def test_every_left_behind_fragment_is_listed(self):
+        self.write("changelog.d/1.fixed.md", "- **Left one.** t\n")
+        self.write("changelog.d/2.fixed.md", "- **Left two.** t\n")
+        self.commit("merge 1 and 2")
+        self.git("tag", "v0.2.0")
+        stranded = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **Hand filed.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", stranded)
+        self.commit("sections filed")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = cf.main(["--root", str(self.repo), "assemble", "--version", "0.3.0", "--date", "2026-02-03", "--after-tag", "v0.2.0"])
+        self.assertEqual(code, 1)
+        self.assertIn("changelog.d/1.fixed.md (released in v0.2.0; its bullet is NOT in the section: file it under [0.2.0] and delete the file)", err.getvalue())
+        self.assertIn("changelog.d/2.fixed.md (released in v0.2.0; its bullet is NOT in the section: file it under [0.2.0] and delete the file)", err.getvalue())
+
+    def test_the_left_behind_error_says_delete_only_when_the_bullet_is_in_the_section(self):
+        self.write("changelog.d/1.fixed.md", "- **Left one.** t\n")
+        self.commit("merge 1")
+        self.git("tag", "v0.2.0")
+        filed = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **Left one.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", filed)
+        self.commit("section filed")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = cf.main(["--root", str(self.repo), "assemble", "--version", "0.3.0", "--date", "2026-02-03", "--after-tag", "v0.2.0"])
+        self.assertEqual(code, 1)
+        self.assertIn("its bullet is in the section: delete the file", err.getvalue())
+        self.assertNotIn("NOT in the section", err.getvalue())
+
+    def test_a_dry_run_runs_every_check_and_changes_nothing(self):
+        self.write("changelog.d/1.fixed.md", "- **Fine.** t\n")
+        self.commit("merge 1")
+        before = (self.repo / "CHANGELOG.md").read_text()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cf.main(["--root", str(self.repo), "assemble", "--dry-run", "--version", "0.2.0", "--date", "2026-02-02",
+                            "--after-tag", "v0.1.0", "--consumed-out", str(self.tmp / "c.txt")])
+        self.assertEqual(code, 0)
+        self.assertIn("checked [0.2.0]", out.getvalue())
+        self.assertEqual((self.repo / "CHANGELOG.md").read_text(), before)
+        self.assertEqual(self.fragments(), ["1.fixed.md"])
+        self.assertFalse((self.tmp / "c.txt").exists())
+        # and it fails exactly where the real assembly fails
+        self.write("changelog.d/2.fixed.md", "not a bullet\n")
+        self.commit("bad")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(cf.main(["--root", str(self.repo), "assemble", "--dry-run", "--version", "0.2.0", "--date", "2026-02-02"]), 1)
+
+    def test_a_lead_in_that_differs_only_in_case_or_dot_is_still_released_twice(self):
+        self.write("changelog.d/1.fixed.md", "- **old FIX**. reworded\n")
+        self.commit("copy")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = cf.main(["--root", str(self.repo), "assemble", "--version", "0.2.0", "--date", "2026-02-02"])
+        self.assertEqual(code, 1)
+        self.assertIn("repeat the bold lead-in of a released", err.getvalue())
+
+    def test_a_pending_metadata_pr_is_not_left_behind(self):
+        """No section for v0.2.0 yet: its fragment is skipped by the next release, as before."""
+        self.write("changelog.d/1.fixed.md", "- **Pending.** t\n")
+        self.commit("merge 1")
+        self.git("tag", "v0.2.0")
+        self.write("changelog.d/2.fixed.md", "- **Next.** t\n")
+        self.commit("merge 2")
+        self.assertEqual(self.release("0.3.0", "v0.2.0"), ["changelog.d/2.fixed.md"])
 
     def test_previous_tag_ignores_stray_tags(self):
         self.git("tag", "v0.2.0")
@@ -503,32 +618,6 @@ class GateTests(RepoFixture):
         code, out = self.gate()
         self.assertEqual(code, 1)
 
-    def test_the_legacy_unreleased_bullet_is_accepted_only_until_a_release_contains_fragments(self):
-        legacy = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **Legacy.** t\n")
-        self.git("checkout", "-q", "-b", "pr")
-        self.write("internal/x/x.go", "package x\n")
-        self.write("CHANGELOG.md", legacy)
-        self.commit("fix: legacy")
-        code, out = self.gate()
-        self.assertEqual((code, out.strip()), (0, "changelog gate: ok"), out)  # v0.1.0 has no changelog.d/README.md
-        # a release whose tag contains changelog.d/README.md closes the window
-        self.git("checkout", "-q", "main")
-        self.git("tag", "v0.2.0")
-        self.git("branch", "-q", "-D", "pr")
-        self.git("checkout", "-q", "-b", "pr")
-        self.write("internal/x/x.go", "package x\n")
-        self.write("CHANGELOG.md", legacy)
-        self.commit("fix: legacy again")
-        code, out = self.gate()
-        self.assertEqual(code, 1)
-        self.assertIn("[Unreleased] in CHANGELOG.md stays empty", out)
-
-    def test_the_window_is_judged_from_the_base_not_from_todays_tags(self):
-        self.assertIs(cc.legacy_unreleased_window_open("HEAD", cwd=self.repo), True)
-        self.git("tag", "v0.2.0")
-        self.assertIs(cc.legacy_unreleased_window_open("HEAD", cwd=self.repo), False)
-        self.assertIs(cc.legacy_unreleased_window_open("v0.1.0", cwd=self.repo), True)
-
     def test_a_dependency_only_commit_with_an_invalid_fragment_is_not_skipped(self):
         self.pr({"go.sum": "x\n", "changelog.d/12.fixed.md": "not a bullet\n"}, subject="build(deps): bump x from 1 to 2")
         code, out = self.gate()
@@ -622,34 +711,339 @@ class GateTests(RepoFixture):
         self.assertEqual(code, 1)
         self.assertIn("must start with", out)
 
-    def test_the_window_is_judged_from_the_base_tip_so_a_stale_branch_cannot_keep_it_open(self):
+    def test_a_hand_written_unreleased_bullet_is_refused(self):
         legacy = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **Legacy.** t\n")
-        self.git("checkout", "-q", "-b", "stale")  # cut while the window is open
+        self.git("checkout", "-q", "-b", "pr")
         self.write("internal/x/x.go", "package x\n")
         self.write("CHANGELOG.md", legacy)
+        self.write("changelog.d/12.fixed.md", "- **With a fragment too.** t\n")
         self.commit("fix: legacy")
-        self.git("checkout", "-q", "main")
-        self.write("y.txt", "y")
-        self.commit("main moves on")
-        self.git("tag", "v0.2.0")  # the release that closes the window; the stale branch was cut before it
-        self.write("x.txt", "x")
-        self.commit("main moves on again")
-        self.git("checkout", "-q", "stale")
-        code, out = self.gate()  # base = the main tip; the merge base predates v0.2.0
-        self.assertEqual(code, 1, out)
+        code, out = self.gate()
+        self.assertEqual(code, 1)
         self.assertIn("stays empty", out)
 
-    def test_stray_tags_do_not_move_the_window(self):
-        self.git("tag", "foo-stray")
-        self.git("tag", "v0.2.0-rc1")
-        self.assertIs(cc.legacy_unreleased_window_open("HEAD", cwd=self.repo), True)
+    def test_a_bullet_filed_by_hand_under_a_released_section_is_refused(self):
+        filed = BASE_CHANGELOG.replace("## [0.1.0] - 2026-01-01\n", "## [0.1.0] - 2026-01-01\n\n### Added\n\n- **Hand filed.** t\n")
+        self.pr({"docs/x.md": "x\n", "CHANGELOG.md": filed}, subject="docs: file a bullet")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("by hand under a released section", out)
+
+    def test_two_fragments_with_the_same_bullet_fail_whichever_one_the_pr_adds(self):
+        self.write("changelog.d/940.fixed.md", "- **Dup.** same text\n")
+        self.commit("main has 940")
+        self.pr({"internal/x/x.go": "package x\n", "changelog.d/940-a.fixed.md": "- **Dup.** same text\n"})
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("the same bullet as changelog.d/940-a.fixed.md", out)  # sorted first: 940-a < 940.
+
+    def test_the_other_ordering_of_a_duplicate_pair_fails_too(self):
+        self.write("changelog.d/940-copy.fixed.md", "- **Dup.** same text\n")
+        self.commit("main has 940-copy")
+        self.pr({"internal/x/x.go": "package x\n", "changelog.d/940.fixed.md": "- **Dup.** same text\n"})
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("the same bullet as", out)
+
+    def test_a_regular_fragment_turned_into_a_symlink_is_refused(self):
+        self.tag_with_fragment()
+        self.git("checkout", "-q", "-b", "pr")
+        target = self.repo / "changelog.d" / "2.fixed.md"
+        target.unlink()
+        os.symlink("../README.md", target)  # a link to a file that is not a bullet
+        self.write("docs/x.md", "x\n")
+        self.commit("docs: retype")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+        self.assertIn("regular file", out)
+
+    def test_a_released_fragment_turned_into_a_symlink_is_refused_as_released(self):
+        self.tag_with_fragment()
+        self.git("checkout", "-q", "-b", "pr")
+        target = self.repo / "changelog.d" / "1.fixed.md"
+        target.unlink()
+        os.symlink("2.fixed.md", target)
+        self.write("docs/x.md", "x\n")
+        self.commit("docs: retype a released one")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+        self.assertIn("already released in v0.2.0", out)
+
+    def test_a_real_git_mv_of_a_released_fragment_is_refused(self):
+        self.tag_with_fragment()
+        self.git("checkout", "-q", "-b", "pr")
+        self.git("mv", "changelog.d/1.fixed.md", "changelog.d/1b.fixed.md")
+        self.commit("docs: rename")
+        self.assertIn("R", self.git("diff", "--name-status", "main..HEAD").split()[0])  # git sees a rename
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+        self.assertIn("already released in v0.2.0", out)
+
+    def test_the_readme_cannot_be_deleted_or_replaced_by_a_link(self):
+        # no cwd changes: all paths are absolute
+        cases = {
+            "deleted": lambda: (self.repo / "changelog.d" / "README.md").unlink(),
+            "symlink to a file": lambda: (self.repo / "changelog.d" / "README.md").unlink() or os.symlink("../CHANGELOG.md", self.repo / "changelog.d" / "README.md"),
+            "symlink to a directory": lambda: (self.repo / "changelog.d" / "README.md").unlink() or os.symlink("../internal", self.repo / "changelog.d" / "README.md"),
+            "dangling symlink": lambda: (self.repo / "changelog.d" / "README.md").unlink() or os.symlink("nowhere", self.repo / "changelog.d" / "README.md"),
+            "executable": lambda: os.chmod(self.repo / "changelog.d" / "README.md", 0o755),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                self.git("checkout", "-q", "main")
+                if "pr" in self.git("branch").split():
+                    self.git("branch", "-q", "-D", "pr")
+                self.git("checkout", "-q", "-b", "pr")
+                (self.repo / "internal").mkdir(exist_ok=True)
+                mutate()
+                self.write("docs/x.md", name)
+                self.commit("docs: " + name)
+                code, out = self.gate()
+                self.assertEqual(code, 1, out)
+                self.assertIn("changelog.d/README.md: must stay a regular file", out)
+
+    def test_the_readme_cannot_become_a_gitlink(self):
+        self.git("checkout", "-q", "-b", "pr")
+        sha = self.git("rev-parse", "HEAD")
+        self.git("rm", "-q", "--cached", "changelog.d/README.md")
+        self.git("update-index", "--add", "--cacheinfo", f"160000,{sha},changelog.d/README.md")
+        self.git("commit", "-q", "-m", "docs: gitlink")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+        self.assertIn("must stay a regular file", out)
+
+    def stranded(self):
+        """main: fragment 1 released in v0.2.0 (tag), then its section was filed in CHANGELOG.md by hand, the file left behind."""
+        self.write("changelog.d/1.fixed.md", "- **Stranded.** t\n")
+        self.commit("merge 1")
         self.git("tag", "v0.2.0")
-        self.git("tag", "zzz-latest-stray")
-        self.assertIs(cc.legacy_unreleased_window_open("HEAD", cwd=self.repo), False)
+        filed = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **Stranded.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", filed)
+        self.commit("chore: release metadata for v0.2.0 [skip release] (merged without the fragment removal)")
+
+    def test_a_stranded_fragment_whose_bullet_is_in_a_released_section_can_be_deleted(self):
+        self.stranded()
+        self.git("checkout", "-q", "-b", "pr")
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("chore: remove a fragment its release already took")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    def test_filing_the_bullet_by_hand_and_deleting_its_fragment_in_one_pr_is_allowed(self):
+        self.write("changelog.d/1.fixed.md", "- **Stranded.** t\n")
+        self.commit("merge 1")
+        self.git("tag", "v0.2.0")
+        self.git("checkout", "-q", "-b", "pr")
+        filed = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **Stranded.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", filed)
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("chore: file the bullet of v0.2.0 and remove its fragment")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    def test_the_deleted_fragments_bullet_may_be_filed_even_when_the_pr_is_not_a_plain_sync(self):
+        """With another file in the PR the strict-shape shortcut does not apply: the allowed-bullets rule decides."""
+        self.write("changelog.d/1.fixed.md", "- **Stranded.** t\n")
+        self.commit("merge 1")
+        self.git("tag", "v0.2.0")
+        self.git("checkout", "-q", "-b", "pr")
+        filed = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **Stranded.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", filed)
+        self.write("docs/x.md", "a note\n")
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("docs: file the bullet of v0.2.0, remove its fragment and add a note")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    def test_filing_a_different_bullet_while_deleting_a_fragment_is_refused(self):
+        self.write("changelog.d/1.fixed.md", "- **Stranded.** t\n")
+        self.commit("merge 1")
+        self.git("tag", "v0.2.0")
+        self.git("checkout", "-q", "-b", "pr")
+        filed = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **Something else.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", filed)
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("chore: file another bullet")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+
+    def test_deleting_a_released_fragment_whose_bullet_is_nowhere_is_refused_with_an_honest_message(self):
+        self.tag_with_fragment()
+        self.git("checkout", "-q", "-b", "pr")
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("chore: delete")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+        self.assertIn("If that pull request cannot merge, file the bullet under the section [0.2.0] and delete this file", out)
+
+    def _pr_changelog(self, text, extra=None, subject="docs: x"):
+        files = {"CHANGELOG.md": text, **(extra or {})}
+        self.pr(files, subject=subject)
+        return self.gate()
+
+    def test_a_changelog_only_pr_cannot_add_text_under_unreleased_even_as_a_fix(self):
+        legacy = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **Hotfix.** t\n")
+        code, out = self._pr_changelog(legacy, subject="fix: emergency")
+        self.assertEqual(code, 1)
+        self.assertNotIn("release metadata sync", out)
+        self.assertIn("stays empty", out)
+
+    def test_chart_plus_unreleased_text_under_a_feat_subject_is_no_metadata_sync(self):
+        legacy = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Added\n\n- **Feature.** t\n")
+        code, out = self._pr_changelog(legacy, {"charts/victoria-lakehouse/Chart.yaml": "version: 9.9.9\n"}, subject="feat: x")
+        self.assertEqual(code, 1)
+        self.assertNotIn("release metadata sync", out)
+
+    def test_a_hand_made_section_holding_a_bullet_is_no_metadata_sync(self):
+        hand = BASE_CHANGELOG.replace("## [0.1.0]", "## [9.9.9] - 2026-02-01\n\n### Fixed\n\n- **Hand made.** t\n\n## [0.1.0]")
+        code, out = self._pr_changelog(hand, {"charts/victoria-lakehouse/Chart.yaml": "version: 9.9.9\n"})
+        self.assertEqual(code, 1)
+        self.assertNotIn("release metadata sync", out)
+
+    def test_a_hand_bullet_under_an_old_release_plus_a_dummy_section_is_no_metadata_sync(self):
+        hand = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n## [0.0.0] - 2026-01-01\n").replace(
+            "- **Old fix.** text.", "- **Old fix.** text.\n\n- **Slipped in.** t")
+        code, out = self._pr_changelog(hand)
+        self.assertEqual(code, 1)
+        self.assertNotIn("release metadata sync", out)
+
+    def test_a_metadata_pr_that_keeps_its_fragments_is_no_metadata_sync(self):
+        self.write("changelog.d/1.fixed.md", "- **Fix.** t\n")
+        self.commit("merge 1")
+        self.git("checkout", "-q", "-b", "pr")
+        self.release("0.2.0", "v0.1.0")
+        self.git("checkout", "--", "changelog.d/1.fixed.md")  # the fragment comes back: assembled, not removed
+        self.commit("chore: release metadata for v0.2.0 [skip release]")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertNotIn("release metadata sync", out)
+
+    def test_a_fragment_bullet_bare_under_unreleased_above_an_empty_section_is_no_metadata_sync(self):
+        self.write("changelog.d/1.fixed.md", "- **Fix.** t\n")
+        self.commit("merge 1")
+        self.git("checkout", "-q", "-b", "pr")
+        self.release("0.2.0", "v0.1.0")
+        text = (self.repo / "CHANGELOG.md").read_text()
+        text = text.replace("- **Fix.** t\n\n", "").replace("### Fixed\n\n## [0.1.0]", "## [0.1.0]")
+        text = text.replace("## [Unreleased]\n", "## [Unreleased]\n\n- **Fix.** t\n", 1)
+        self.write("CHANGELOG.md", text)
+        self.commit("chore: release metadata for v0.2.0 [skip release]")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertNotIn("release metadata sync", out)
+
+    def test_a_release_without_fragments_is_a_valid_metadata_sync(self):
+        self.git("tag", "v0.2.0")
+        self.git("checkout", "-q", "-b", "pr")
+        self.release("0.2.0", "v0.1.0")
+        self.write("charts/victoria-lakehouse/Chart.yaml", "version: 0.2.0\n")
+        self.commit("chore: release metadata for v0.2.0 [skip release]")
+        code, out = self.gate()
+        self.assertEqual((code, out.strip()), (0, "changelog gate: ok (release metadata sync)"))
+
+    def test_unreleased_text_is_refused_before_the_dependency_only_skip(self):
+        legacy = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **Hotfix.** t\n")
+        self.pr({"go.sum": "x\n", "CHANGELOG.md": legacy}, subject="build(deps): bump x from 1 to 2")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("stays empty", out)
+
+    def test_an_unrelated_pr_fails_while_main_has_text_under_unreleased(self):
+        legacy = BASE_CHANGELOG.replace("## [Unreleased]\n", "## [Unreleased]\n\n### Fixed\n\n- **On main.** t\n")
+        self.write("CHANGELOG.md", legacy)
+        self.commit("main has text under unreleased")
+        self.pr({"docs/x.md": "x\n"}, subject="docs: unrelated")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("stays empty", out)
+
+    def test_released_text_of_every_kind_is_guarded(self):
+        cases = {
+            "star item": "* Hand star item",
+            "numbered item": "1. Hand numbered item",
+            "prose": "Hand written prose line",
+            "plus item": "+ Hand plus item",
+        }
+        for name, line in cases.items():
+            with self.subTest(name):
+                self.git("checkout", "-q", "main")
+                if "pr" in self.git("branch").split():
+                    self.git("branch", "-q", "-D", "pr")
+                filed = BASE_CHANGELOG.replace("- **Old fix.** text.", "- **Old fix.** text.\n\n" + line)
+                code, out = self._pr_changelog(filed)
+                self.assertEqual(code, 1, out)
+                self.assertIn("by hand under a released section", out)
+
+    def test_deleting_or_rewording_a_released_bullet_is_refused_but_a_reflow_is_not(self):
+        self.git("checkout", "-q", "-b", "pr")
+        self.write("CHANGELOG.md", BASE_CHANGELOG.replace("- **Old fix.** text.", "- **Old fix.**\n  text."))  # re-wrapped only
+        self.write("docs/x.md", "x\n")
+        self.commit("docs: reflow")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-q", "-D", "pr")
+        code, out = self._pr_changelog(BASE_CHANGELOG.replace("\n- **Old fix.** text.\n", "\n"))  # deleted
+        self.assertEqual(code, 1, out)
+        self.git("checkout", "-q", "main")
+        self.git("branch", "-q", "-D", "pr")
+        code, out = self._pr_changelog(BASE_CHANGELOG.replace("text.", "other words."))  # reworded
+        self.assertEqual(code, 1, out)
+
+    def test_a_lead_in_that_differs_only_in_case_or_dot_from_a_released_one_is_refused(self):
+        self.pr({"internal/x/x.go": "package x\n", "changelog.d/12.fixed.md": "- **old FIX**. reworded\n"})
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("already in a released section", out)
+
+    def test_an_unreleased_fragment_cannot_be_deleted_while_its_bullet_is_filed_under_a_release(self):
+        self.tag_with_fragment()  # fragment 2 is merged after v0.2.0: no release took it
+        self.git("checkout", "-q", "-b", "pr")
+        filed = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Fixed\n\n- **After the tag.** t\n\n## [0.1.0]")
+        self.write("CHANGELOG.md", filed)
+        (self.repo / "changelog.d" / "2.fixed.md").unlink()
+        self.write("docs/x.md", "x\n")
+        self.commit("docs: file it under 0.2.0")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+        self.assertIn("by hand under a released section", out)
+
+    def test_a_released_fragment_may_not_have_its_bullet_filed_under_another_release(self):
+        self.write("changelog.d/1.fixed.md", "- **Stranded.** t\n")
+        self.commit("merge 1")
+        self.git("tag", "v0.2.0")
+        self.git("checkout", "-q", "-b", "pr")
+        filed = BASE_CHANGELOG.replace("- **Old fix.** text.", "- **Old fix.** text.\n\n- **Stranded.** t")  # under 0.1.0, not 0.2.0
+        self.write("CHANGELOG.md", filed)
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("chore: wrong section")
+        code, out = self.gate()
+        self.assertEqual(code, 1, out)
+
+    def test_the_stranded_refusal_names_the_releasing_tag_not_the_newest(self):
+        self.tag_with_fragment()
+        self.git("tag", "v0.3.0")  # a later release, whose tree still holds fragment 1
+        self.git("checkout", "-q", "-b", "pr")
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("chore: delete")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("already released in v0.2.0", out)
+        self.assertNotIn("v0.3.0", out)
+
+    def test_a_delete_only_recovery_with_a_fix_subject_is_told_to_use_docs_or_chore(self):
+        self.stranded()
+        self.git("checkout", "-q", "-b", "pr")
+        (self.repo / "changelog.d" / "1.fixed.md").unlink()
+        self.commit("fix(changelog): remove a fragment its release already took")
+        code, out = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("docs: or chore: subject", out)
 
     def test_a_release_metadata_pr_with_fragment_deletions_is_a_metadata_sync(self):
         self.write("changelog.d/1.fixed.md", "- **Fix.** t\n")
         self.commit("merge 1")
+        self.git("tag", "v0.2.0")
         self.git("checkout", "-q", "-b", "pr")
         self.release("0.2.0", "v0.1.0")
         self.commit("chore: release metadata for v0.2.0 [skip release]")
@@ -667,6 +1061,61 @@ class GateTests(RepoFixture):
         self.assertNotIn("release metadata sync", out)
 
 
+class ConsumedListChecks(unittest.TestCase):
+    """The list is checked in the build job (before publish pushes anything) and again before the tag is pushed."""
+
+    def run_check(self, job, lines):
+        from scripts.ci.tests.test_auto_release_jobs import step_run
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "release-meta"))
+            with open(os.path.join(tmp, "release-meta", "consumed.txt"), "w") as fh:
+                fh.write(lines)
+            return subprocess.run(["bash", "-e", "-c", step_run(job, "Check the released fragment list")],
+                                  env=dict(os.environ, RUNNER_TEMP=tmp), capture_output=True, text=True)
+
+    def test_both_jobs_run_the_same_path_check(self):
+        from scripts.ci.tests.test_auto_release_jobs import step_run
+        pick = lambda job: [l for l in step_run(job, "Check the released fragment list").split("\n") if "grep -Eqx" in l]
+        self.assertEqual(len(pick("build")), 1)
+        self.assertEqual(pick("build"), pick("metadata"))
+
+    def test_the_build_job_checks_before_anything_is_published(self):
+        from scripts.ci.tests.test_auto_release_jobs import JOBS
+        names = [step.get("name") for step in JOBS["build"]["steps"]]
+        self.assertLess(names.index("Assemble the changelog"), names.index("Check the released fragment list"))
+        self.assertLess(names.index("Check the released fragment list"), names.index("Render release notes"))
+        # the publish job needs the build job, so a failure here ships nothing
+        self.assertIn("build", JOBS["publish"]["needs"])
+
+    def test_the_assembly_is_checked_before_anything_is_built_and_the_notes_size_after_they_render(self):
+        from scripts.ci.tests.test_auto_release_jobs import JOBS
+        names = [step.get("name") for step in JOBS["build"]["steps"]]
+        self.assertLess(names.index("Check the changelog assembles"), names.index("Prepare VL deps (logs)"))
+        self.assertLess(names.index("Check the changelog assembles"), names.index("Build binaries"))
+        self.assertLess(names.index("Render release notes"), names.index("Check the release notes size"))
+        self.assertLess(names.index("Check the release notes size"), names.index("Prepare release metadata"))
+
+    def test_the_notes_size_check_refuses_over_125000_bytes(self):
+        from scripts.ci.tests.test_auto_release_jobs import step_run
+        for size, want in ((125000, 0), (125001, 1)):
+            with tempfile.TemporaryDirectory() as tmp:
+                os.makedirs(os.path.join(tmp, "release-notes"))
+                with open(os.path.join(tmp, "release-notes", "release-notes.md"), "w") as fh:
+                    fh.write("x" * size)
+                r = subprocess.run(["bash", "-e", "-c", step_run("build", "Check the release notes size")],
+                                   env=dict(os.environ, RUNNER_TEMP=tmp), capture_output=True, text=True)
+                self.assertEqual(r.returncode, want, (size, r.stdout))
+
+    def test_good_and_bad_lists_in_both_jobs(self):
+        for job in ("build", "metadata"):
+            with self.subTest(job=job):
+                self.assertEqual(self.run_check(job, "").returncode, 0)
+                self.assertEqual(self.run_check(job, "changelog.d/1.fixed.md\nchangelog.d/2.added.md\n").returncode, 0)
+                for bad in ("CHANGELOG.md\n", "changelog.d/1.fixed.md\n\n", "changelog.d/1.fixed.md.sh\n", "changelog.d/../x.fixed.md\n",
+                            "changelog.d/1.fixed.md\nchangelog.d/2.fixed.md \n"):
+                    self.assertNotEqual(self.run_check(job, bad).returncode, 0, bad)
+
+
 class WorkflowUsesTheTagHelper(unittest.TestCase):
     def test_no_step_of_the_release_asks_git_describe_for_the_previous_release(self):
         text = (ROOT / ".github" / "workflows" / "auto-release.yaml").read_text()
@@ -674,6 +1123,250 @@ class WorkflowUsesTheTagHelper(unittest.TestCase):
         self.assertIn("changelog_fragments.py previous-tag", step)
         self.assertNotIn("git describe", step)
         self.assertNotIn("git describe", text.split("      - name: Render release notes\n", 1)[1].split("\n      - name:", 1)[0])
+
+
+class MetadataTieTests(RepoFixture):
+    """A release-metadata sync is tied to its tag: the fragments it deletes are the ones that release took."""
+
+    gate = GateTests.gate
+
+    def setUp(self):
+        super().setUp()
+        self.write("changelog.d/1.fixed.md", "- **One.** t\n")
+        self.write("changelog.d/2.added.md", "- **Two.** t\n")
+        self.commit("merge 1 and 2")
+        self.git("tag", "v0.2.0")  # the release commit of 0.2.0
+
+    def pr(self, version="0.2.0", prev="v0.1.0", chart=True, mutate=None, subject=None, at=None, merge_main=False):
+        """The metadata PR as the release job builds it (at the release commit `at`, default main's tip),
+        optionally hand-edited and with main merged in afterwards, on branch pr."""
+        self.git("checkout", "-q", "-b", "pr", *([at] if at else []))
+        self.release(version, prev)
+        if chart:
+            self.write("charts/victoria-lakehouse/Chart.yaml", f"version: {version}\n")
+        if mutate:
+            mutate()
+        self.commit(subject or f"chore: release metadata for v{version} [skip release]")
+        if merge_main:
+            self.git("merge", "-q", "main", "-m", "merge main")
+        return self.gate()
+
+    def land(self):
+        """The PR merges into main."""
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--ff-only", "pr")
+        self.git("branch", "-q", "-D", "pr")
+
+    def cl(self):
+        return (self.repo / "CHANGELOG.md").read_text()
+
+    def set_cl(self, text):
+        self.write("CHANGELOG.md", text)
+
+    def ok_sync(self, result):
+        self.assertEqual(result[0], 0, result[1])
+        self.assertIn("release metadata sync", result[1])
+
+    def refused(self, result, needle=None):
+        code, out = result
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("release metadata sync", out)
+        if needle:
+            self.assertIn(needle, out)
+
+    # ---- accepted
+
+    def test_a_normal_release_is_a_sync(self):
+        self.ok_sync(self.pr())
+
+    def test_a_release_without_fragments_is_a_sync(self):
+        self.git("checkout", "-q", "main")
+        self.git("rm", "-q", "changelog.d/1.fixed.md", "changelog.d/2.added.md")
+        self.commit("chore: nothing pending")
+        self.git("tag", "v0.2.1")
+        self.ok_sync(self.pr("0.2.1", "v0.2.0"))
+
+    def test_two_pending_releases_in_order(self):
+        self.write("changelog.d/3.fixed.md", "- **Three.** t\n")
+        self.commit("merge 3")
+        self.git("tag", "v0.3.0")
+        self.ok_sync(self.pr("0.2.0", "v0.1.0", at="v0.2.0", merge_main=True))
+        self.land()
+        self.ok_sync(self.pr("0.3.0", "v0.2.0"))  # built on the tip, where the first one has landed
+
+    def test_two_pending_releases_out_of_order(self):
+        self.write("changelog.d/3.fixed.md", "- **Three.** t\n")
+        self.commit("merge 3")
+        self.git("tag", "v0.3.0")
+        self.ok_sync(self.pr("0.3.0", "v0.2.0", at="v0.3.0", merge_main=True))  # deletes 3 only (1 and 2 belong to v0.2.0)
+        self.land()
+        # the earlier one second: a section under the newer one, so the strict shape does not apply; the
+        # normal path accepts it because the tag exists and the PR deletes what v0.2.0 took
+        code, out = self.pr("0.2.0", "v0.1.0", chart=False)
+        self.assertEqual(code, 0, out)
+
+    def test_main_moved_after_the_cut(self):
+        self.git("checkout", "-q", "-b", "pr")
+        self.release("0.2.0", "v0.1.0")
+        self.commit("chore: release metadata for v0.2.0 [skip release]")
+        self.git("checkout", "-q", "main")
+        self.write("changelog.d/9.fixed.md", "- **Nine.** t\n")  # merged after the release commit
+        self.commit("merge 9")
+        self.git("checkout", "-q", "pr")
+        self.git("merge", "-q", "main", "-m", "merge main")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    def test_recovery_filing_the_bullet_by_hand_and_deleting_the_file(self):
+        self.git("checkout", "-q", "-b", "pr")
+        filed = BASE_CHANGELOG.replace("## [0.1.0]", "## [0.2.0] - 2026-02-01\n\n### Added\n\n- **Two.** t\n\n### Fixed\n\n- **One.** t\n\n## [0.1.0]")
+        self.set_cl(filed)
+        (self.repo / "changelog.d/1.fixed.md").unlink()
+        (self.repo / "changelog.d/2.added.md").unlink()
+        self.commit("chore: file the bullets of v0.2.0 and remove their fragments")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    def test_recovery_dropping_an_empty_junk_heading(self):
+        self.git("checkout", "-q", "main")
+        self.set_cl(BASE_CHANGELOG.replace("## [0.1.0]", "## [0.0.1] - 2026-01-01\n\n## [0.1.0]"))
+        self.commit("junk heading on main")
+        self.git("checkout", "-q", "-b", "pr")
+        self.set_cl(BASE_CHANGELOG)
+        self.commit("docs: drop an empty heading")
+        code, out = self.gate()
+        self.assertEqual(code, 0, out)
+
+    # ---- refused
+
+    def test_a_hand_bullet_in_the_new_section(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("- **Two.** t", "- **Two.** t\n\n- **Slipped in.** t"))))
+
+    def test_a_hand_bullet_in_the_previous_section(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("- **Old fix.** text.", "- **Old fix.** text.\n\n- **Slipped in.** t"))))
+
+    def test_a_hand_made_section(self):
+        def mutate():
+            self.set_cl(self.cl().replace("## [0.2.0] - ", "## [9.9.9] - 2026-02-02\n\n- **Hand.** t\n\n## [0.2.0] - ", 1))
+        self.refused(self.pr(mutate=mutate))
+
+    def test_a_bare_bullet_under_unreleased_above_an_empty_new_section(self):
+        def mutate():
+            t = self.cl().replace("### Added\n\n- **Two.** t\n\n", "").replace("### Fixed\n\n- **One.** t\n\n", "")
+            self.set_cl(t.replace("## [Unreleased]\n", "## [Unreleased]\n\n- **One.** t\n- **Two.** t\n", 1))
+        self.refused(self.pr(mutate=mutate))
+
+    def test_a_metadata_pr_that_keeps_all_its_fragments(self):
+        self.refused(self.pr(mutate=self._restore_fragments))
+
+    def _restore_fragments(self):
+        self.write("changelog.d/1.fixed.md", "- **One.** t\n")
+        self.write("changelog.d/2.added.md", "- **Two.** t\n")
+
+    def test_feat_chart_and_an_unreleased_bullet(self):
+        def mutate():
+            self.set_cl(self.cl().replace("## [Unreleased]\n", "## [Unreleased]\n\n- **Feature.** t\n", 1))
+        self.refused(self.pr(mutate=mutate, subject="feat: metadata"))
+
+    def test_prose_in_the_new_section(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("- **Two.** t", "- **Two.** t\n\nProse nobody wrote."))))
+
+    def test_a_stray_heading(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("### Added", "### Weird\n\n### Added", 1))))
+
+    def test_a_re_indented_fragment_line(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("- **Two.** t", "  - **Two.** t"))))
+
+    def test_a_sync_shaped_zero_section(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("## [Unreleased]\n", "## [Unreleased]\n\n## [0.0.0] - 2026-01-01\n", 1))))
+
+    def test_w7c_one_fragment_kept_and_its_bullet_dropped(self):
+        def mutate():
+            self.write("changelog.d/1.fixed.md", "- **One.** t\n")
+            self.set_cl(self.cl().replace("### Fixed\n\n- **One.** t\n\n", ""))
+        self.refused(self.pr(mutate=mutate), None)
+
+    def test_w7c_without_chart(self):
+        def mutate():
+            self.write("changelog.d/1.fixed.md", "- **One.** t\n")
+            self.set_cl(self.cl().replace("### Fixed\n\n- **One.** t\n\n", ""))
+        self.refused(self.pr(chart=False, mutate=mutate), "without deleting the fragments release v0.2.0 took")
+
+    def test_empty_dated_sections(self):
+        for name, tagged in (("0.2.0", True), ("99.0.0", False), ("foo", False)):
+            with self.subTest(name):
+                self.git("checkout", "-q", "main")
+                if "pr" in self.git("branch").split():
+                    self.git("branch", "-q", "-D", "pr")
+                self.git("checkout", "-q", "-b", "pr")
+                self.set_cl(BASE_CHANGELOG.replace("## [0.1.0]", f"## [{name}] - 2026-02-02\n\n## [0.1.0]"))
+                self.commit("docs: an empty section")
+                self.refused(self.gate())
+
+    def test_a_renamed_unreleased_heading(self):
+        self.git("checkout", "-q", "-b", "pr")
+        self.set_cl(BASE_CHANGELOG.replace("## [Unreleased]", "## [Pending]"))
+        self.commit("docs: rename")
+        self.refused(self.gate(), "exactly one '## [Unreleased]'")
+
+    def test_deleting_the_unreleased_heading(self):
+        self.git("checkout", "-q", "-b", "pr")
+        self.set_cl(BASE_CHANGELOG.replace("## [Unreleased]\n\n", ""))
+        self.commit("docs: drop the heading")
+        self.refused(self.gate(), "exactly one '## [Unreleased]'")
+
+    def test_a_section_with_text_cannot_be_removed(self):
+        self.git("checkout", "-q", "-b", "pr")
+        self.set_cl(BASE_CHANGELOG.replace("\n## [0.1.0] - 2026-01-01\n\n### Fixed\n\n- **Old fix.** text.\n", ""))
+        self.commit("docs: drop a release")
+        self.refused(self.gate())
+
+    def test_a_bullet_moved_from_the_previous_section_into_the_new_one(self):
+        def mutate():
+            t = self.cl().replace("\n- **Old fix.** text.\n", "\n", 1)
+            self.set_cl(t.replace("- **Two.** t", "- **Two.** t\n\n- **Old fix.** text.", 1))
+        self.refused(self.pr(mutate=mutate))
+
+    def test_the_same_version_heading_twice(self):
+        self.git("checkout", "-q", "-b", "pr")
+        self.set_cl(BASE_CHANGELOG.rstrip("\n") + "\n\n## [0.1.0] - 2026-01-01\n")
+        self.commit("docs: duplicate a heading")
+        self.refused(self.gate(), "the same version heading twice")
+
+    def test_a_heading_cannot_be_dropped_while_its_text_stays(self):
+        self.git("checkout", "-q", "-b", "pr")
+        self.set_cl(BASE_CHANGELOG.replace("## [0.1.0] - 2026-01-01\n\n", "", 1))
+        self.commit("docs: drop a heading, keep its text")
+        self.refused(self.gate(), "is removed but it holds text")
+
+    # ---- the two mutants that survived the fourth review
+
+    def test_the_preamble_cannot_change_during_a_sync(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("preamble", "a different preamble", 1))))
+
+    def test_the_previous_newest_section_cannot_change_during_a_sync(self):
+        self.refused(self.pr(mutate=lambda: self.set_cl(self.cl().replace("- **Old fix.** text.", "- **Old fix.** reworded."))))
+
+    def test_a_release_whose_tag_does_not_exist_is_not_a_sync(self):
+        self.git("tag", "-d", "v0.2.0")
+        self.git("tag", "v0.2.9")
+        code, out = self.pr("0.2.0", "v0.1.0")
+        self.refused((code, out))
+
+    def test_the_assembler_checks_the_first_tag_of_a_fragment_not_the_previous_release(self):
+        """Out of order: v0.2.0 took fragments 1 and 2 (its metadata PR is pending); v0.3.0's section was merged first.
+        The next release must not call 1 and 2 left behind just because v0.3.0, their 'previous release', has a section."""
+        self.write("changelog.d/3.fixed.md", "- **Three.** t\n")
+        self.commit("merge 3")
+        self.git("tag", "v0.3.0")
+        self.git("checkout", "-q", "-b", "m3")
+        self.release("0.3.0", "v0.2.0")
+        self.commit("chore: release metadata for v0.3.0 [skip release]")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--ff-only", "m3")
+        self.write("changelog.d/4.fixed.md", "- **Four.** t\n")
+        self.commit("merge 4")
+        self.assertEqual(self.release("0.4.0", "v0.3.0"), ["changelog.d/4.fixed.md"])
 
 
 class ClassifierLockTests(unittest.TestCase):

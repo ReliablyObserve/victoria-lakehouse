@@ -298,6 +298,15 @@ jobs:
         run: |
           [[ "$VERSION" =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] || { echo "::error::not a release version"; exit 1; }
 
+      # Fail fast: every check of the assembly (fragments valid, nothing under [Unreleased], no left-behind
+      # fragment, a section that fits a release body) before anything is built. The real assembly follows
+      # the builds, so they see the release commit exactly.
+      - name: Check the changelog assembles
+        run: |
+          PREV=$(python3 scripts/ci/changelog_fragments.py previous-tag --rev "HEAD^")
+          python3 scripts/ci/changelog_fragments.py assemble --dry-run --version "${VERSION#v}" \
+            --date "$(date -u +%F)" --after-tag "$PREV"
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -392,6 +401,23 @@ jobs:
           python3 scripts/ci/changelog_fragments.py assemble --version "${VERSION#v}" \
             --date "$(date -u +%F)" --after-tag "$PREV" --consumed-out "$RUNNER_TEMP/release-meta/consumed.txt"
 
+      # The list is checked here, before the publish job pushes images, the chart or a draft release, and
+      # again by the metadata job before it pushes the tag: a bad list must not ship a release with no
+      # metadata pull request. Each line is a plain changelog.d/<name>.<kind>.md.
+      - name: Check the released fragment list
+        run: |
+          CONSUMED="$RUNNER_TEMP/release-meta/consumed.txt"
+          if [ ! -f "$CONSUMED" ] || [ -L "$CONSUMED" ] || [ "$(wc -c < "$CONSUMED")" -gt 200000 ]; then
+            echo "::error::consumed.txt is missing, not a regular file or too large"
+            exit 1
+          fi
+          while IFS= read -r P || [ -n "$P" ]; do
+            if ! printf '%s' "$P" | grep -Eqx 'changelog\.d/[a-z0-9][a-z0-9._-]{0,80}\.(added|changed|deprecated|removed|fixed|security)\.md'; then
+              echo "::error::consumed.txt lists a path that is not a changelog fragment"
+              exit 1
+            fi
+          done < "$CONSUMED"
+
       - name: Render release notes
         run: |
           REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
@@ -401,7 +427,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/release-notes"
 
           # Release notes in the VictoriaLogs style from the section the step above assembled
-          NOTES=$(python3 scripts/ci/release_notes.py --version "${VERSION#v}" --after-tag "$(python3 scripts/ci/changelog_fragments.py previous-tag --rev "$VERSION^" 2>/dev/null)" || echo "Released at $(date -u +%F)")
+          NOTES=$(python3 scripts/ci/release_notes.py --version "${VERSION#v}" || echo "Released at $(date -u +%F)")
 
           cat > "$RUNNER_TEMP/release-notes/release-notes.md" <<EOF
           ${NOTES}
@@ -443,6 +469,16 @@ jobs:
             --set logs.enabled=false --set traces.enabled=true
           \`\`\`
           EOF
+
+      # GitHub refuses a release body over 125000 characters; the section cap does not bound the rendered notes
+      # (links expand, the artifacts block follows), so the file that is published is what is measured.
+      - name: Check the release notes size
+        run: |
+          SIZE=$(wc -c < "$RUNNER_TEMP/release-notes/release-notes.md" | tr -d ' ')
+          if [ "$SIZE" -gt 125000 ]; then
+            echo "::error::the release notes are $SIZE bytes; GitHub accepts at most 125000 characters. Shorten the fragments of this release"
+            exit 1
+          fi
 
       # The release-metadata pull request is prepared here, where running the repository's
       # generators is safe, and only its four files and the list of released fragments travel to
@@ -490,7 +526,7 @@ jobs:
 
           Auto-generated after ${VERSION} release. Updates:
           - Chart.yaml version and appVersion → ${VERSION#v}
-          - CHANGELOG.md: the \`changelog.d/\` fragments (and any legacy \`[Unreleased]\` bullets) assembled as \`[${VERSION#v}]\`
+          - CHANGELOG.md: the \`changelog.d/\` fragments assembled as \`[${VERSION#v}]\`
           - changelog.d/: the $(wc -l < "$META/consumed.txt" | tr -d ' ') released fragment(s) removed
           - README.md: version badge updated
           - docs/features.md: regenerated (feature "since" naming only)

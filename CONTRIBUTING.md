@@ -189,8 +189,8 @@ token it needs.
 
 The GitHub release notes are generated from `CHANGELOG.md` in the VictoriaLogs style
 (`SECURITY`, `FEATURE`, `BUGFIX` bullets). Behaviour an operator has to act on when upgrading
-goes in a `### Update notes` subsection of the release's `CHANGELOG.md` section, one bullet per note (a fragment
-has no such kind yet: put the instruction in the bullet of the change). The mapping and
+goes inside the bullet of the change, as an indented second paragraph that opens with a bold `**Update note.**`
+(the release writes `CHANGELOG.md` from the fragments, so a hand-written `### Update notes` subsection is refused). The mapping and
 the preview command are in [docs/release-notes.md](docs/release-notes.md).
 
 ## Architecture

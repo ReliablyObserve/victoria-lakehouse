@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/bytesutil"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/format"
@@ -167,16 +169,19 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	neededFields := logstorage.GetQueryNeededFields(q)
 	filter := rowFilterOf(ctx, q)
 
-	// Per-query memory ceiling for in-flight DataBlock rows. Mirror of the
-	// budget in internal/storage/parquets3 (logs module). See that file for
-	// the rationale and VL reference. A worker that reaches it WAITS for the
-	// consumer (liveBytesGate); the budget never cancels the query or drops a
-	// block, which would answer 200 with rows missing.
+	// Per-query memory ceiling (query.max_live_bytes): a file worker reserves the
+	// estimated decoded size of a ROW GROUP against it before it decodes it
+	// (queryFile, liveBytesGate), from the footer it has already read, and waits for
+	// room when the row groups already reserved fill it. The writeBlock below stays
+	// synchronous (wbMu): the consumer's backpressure is what keeps the reservations
+	// in use. The budget never cancels the query and never drops a block: a read
+	// stopped by it would answer 200 with rows missing.
 	maxLiveBytes := s.cfg.Query.MaxLiveBytes
 	if maxLiveBytes <= 0 {
 		maxLiveBytes = defaultMaxLiveBytes
 	}
-	var liveBytes liveBytesGate
+	liveGate := newQueryLiveGate()
+	ctx = withLiveBytesGate(ctx, liveGate, maxLiveBytes)
 
 	var rowsEmitted atomic.Int64
 	maxRows := rowCeilingOf(ctx, s.cfg.Query.MaxRows)
@@ -186,7 +191,6 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 	// Pre-filter runs in each worker goroutine without locks.
 	// Only the final writeBlock call is serialized.
 	var writeBlockPanic atomic.Bool
-	var budgetLogged atomic.Bool
 	counting := storage.IsFieldNamesCounter(ctx)
 	preFilter := func(db *logstorage.DataBlock, tss []tombstone) *logstorage.DataBlock {
 		if writeBlockPanic.Load() {
@@ -195,9 +199,6 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 		if maxRows > 0 && rowsEmitted.Load() >= maxRows {
 			cancel()
 			return nil
-		}
-		if !liveBytes.waitBelow(ctx, maxLiveBytes, &budgetLogged) {
-			return nil // the query was cancelled while waiting; RunQuery reports why
 		}
 		if counting {
 			return s.preFilterFieldNames(ctx, db, tss, filter)
@@ -223,8 +224,7 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				return
 			}
 			rowsEmitted.Add(int64(db.RowsCount()))
-			sz := dataBlockApproxBytes(db)
-			liveBytes.add(sz)
+			defer trackInflightBlock(db)()
 			wbMu.Lock()
 			func() {
 				defer func() {
@@ -236,7 +236,6 @@ func (s *Storage) runQuery(ctx context.Context, tenantIDs []logstorage.TenantID,
 				writeBlock(workerID, db)
 			}()
 			wbMu.Unlock()
-			liveBytes.release(sz)
 		}
 	}
 
@@ -575,7 +574,21 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 	// fail the read rather than answer with a silent hole.
 	metrics.QueryFileErrorsTotal.Inc()
 	logger.Warnf("query file error: %s; key=%s", err, fi.Key)
-	return fmt.Errorf("cannot read %s: %w", fi.Key, err)
+	return unreadableObjectError(fi.Key, err)
+}
+
+// unreadableObjectError is the failure of a read that could not read an object it
+// selected: "cannot read <key>: <cause>", answered 502 Bad Gateway, the status
+// upstream gives a read whose storage node is unavailable (netselect's
+// getFirstError), where the default for an error with no status would be 400 (the
+// client's fault, never retried by clients that retry 502). The cause stays in
+// the chain (errors.As finds the S3 error); the caller's own cancellation or
+// deadline is not wrapped and keeps upstream's handling.
+func unreadableObjectError(key string, err error) error {
+	return &httpserver.ErrorWithStatusCode{
+		Err:        fmt.Errorf("cannot read %s: %w", key, err),
+		StatusCode: http.StatusBadGateway,
+	}
 }
 
 // isObjectGone reports whether err says the object itself is absent. An error
@@ -1368,8 +1381,16 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 			return ctx.Err()
 		}
 		metrics.ParquetRowGroupsScanned.Inc()
-		if err := s.readOneRowGroup(f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr, aliasCols, storage.IsFieldNamesQuery(ctx)); err != nil {
-			return err
+		// Reserve the row group's decoded bytes against the query's ceiling, from the
+		// footer already read (no request is added); the wait ends with the context.
+		relLive, liveErr := reserveRowGroup(ctx, f, m.idx, projectedCols, fi.Size)
+		if liveErr != nil {
+			return liveErr
+		}
+		rgErr := s.readOneRowGroup(ctx, f, m.rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDsPtr, aliasCols, storage.IsFieldNamesQuery(ctx))
+		relLive()
+		if rgErr != nil {
+			return rgErr
 		}
 	}
 
@@ -1384,11 +1405,11 @@ func (s *Storage) queryFile(ctx context.Context, fi manifest.FileInfo, startNs, 
 	return nil
 }
 
-func (s *Storage) readOneRowGroup(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, aliasCols map[string]bool, fieldNames ...bool) error {
+func (s *Storage) readOneRowGroup(ctx context.Context, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, projectedCols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, aliasCols map[string]bool, fieldNames ...bool) error {
 	if projectedCols == nil {
 		projectedCols = allLeafColumns(f)
 	}
-	return s.readRowGroupWithProjection(f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs, aliasCols, fieldNames...)
+	return s.readRowGroupWithProjectionKeys(ctx, f, rg, startNs, endNs, projectedCols, pdf, writeBlock, traceIDs, aliasCols, nil, fieldNames...)
 }
 
 // allLeafColumns is the projection used by an unprojected (wildcard) scan. It
@@ -1480,7 +1501,7 @@ func readRowGroupTyped[T any](s *Storage, f *parquet.File, rg parquet.RowGroup, 
 }
 
 func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, aliasCols map[string]bool, fieldNames ...bool) error {
-	return s.readRowGroupWithProjectionKeys(f, rg, startNs, endNs, cols, pdf, writeBlock, traceIDs, aliasCols, nil, fieldNames...)
+	return s.readRowGroupWithProjectionKeys(context.Background(), f, rg, startNs, endNs, cols, pdf, writeBlock, traceIDs, aliasCols, nil, fieldNames...)
 }
 
 // readRowGroupWithProjectionKeys is readRowGroupWithProjection that, with
@@ -1493,7 +1514,7 @@ func (s *Storage) readRowGroupWithProjection(f *parquet.File, rg parquet.RowGrou
 // columns some row of the stream has a value for (storage.EmitFieldNamesStreamBlocks).
 // The caller's row filter then selects the rows, and upstream's field_names pipe
 // credits each column of a block with the rows that matched.
-func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, aliasCols map[string]bool, onlyKeys map[string]struct{}, fieldNames ...bool) error {
+func (s *Storage) readRowGroupWithProjectionKeys(ctx context.Context, f *parquet.File, rg parquet.RowGroup, startNs, endNs int64, cols map[string]bool, pdf *PushDownFilter, writeBlock logstorage.WriteDataBlockFunc, traceIDs *[]string, aliasCols map[string]bool, onlyKeys map[string]struct{}, fieldNames ...bool) error {
 	streamBlocks := len(fieldNames) > 0 && fieldNames[0]
 	if streamBlocks {
 		startNs, endNs, pdf = math.MinInt64, math.MaxInt64, nil
@@ -1506,7 +1527,10 @@ func (s *Storage) readRowGroupWithProjectionKeys(f *parquet.File, rg parquet.Row
 	// of the 512 MiB cache, deterministic OOM on a 2 GiB container.
 	// Mirrors VL's partitionSearchConcurrencyLimitCh pattern
 	// (deps/VictoriaLogs/lib/logstorage/storage_search.go:1424).
-	release := acquireRGDecode()
+	release, err := acquireRGDecode(ctx)
+	if err != nil {
+		return err
+	}
 	defer release()
 
 	maxRowsPerBlock := defaultMaxRowsPerBlock

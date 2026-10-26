@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -116,7 +117,7 @@ func TestGroup_ConcurrentSameKey(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			val, err, shared := g.Do("same-key", func() ([]byte, error) {
+			val, err, shared := g.DoCtx(context.Background(), "same-key", func(context.Context) ([]byte, error) {
 				callCount.Add(1)
 				return expected, nil
 			})
@@ -152,7 +153,7 @@ func TestGroup_ConcurrentDifferentKeys(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Sprintf("key-%d", id)
 			expected := []byte(fmt.Sprintf("result-%d", id))
-			val, err, _ := g.Do(key, func() ([]byte, error) {
+			val, err, _ := g.DoCtx(context.Background(), key, func(context.Context) ([]byte, error) {
 				return expected, nil
 			})
 			if err != nil {

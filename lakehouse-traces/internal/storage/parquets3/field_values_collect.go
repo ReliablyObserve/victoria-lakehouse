@@ -2,7 +2,6 @@ package parquets3
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -236,7 +235,7 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 					// the answer: fail the read, as the query path does.
 					metrics.QueryFileErrorsTotal.Inc()
 					logger.Warnf("scan projected %s: %s; key=%s", r.op, err, fi.Key)
-					recordReadError(&failure, fmt.Errorf("cannot read %s: %w", fi.Key, err))
+					recordReadError(&failure, unreadableObjectError(fi.Key, err))
 					return
 				}
 				mu.Lock()

@@ -111,7 +111,7 @@ func (s *Storage) scanMapAwareFieldValues(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := s.readRowGroupWithProjectionKeys(f, rowGroups[ri], winLo, winHi, cols, nil, count, nil, keys); err != nil {
+		if err := s.readRowGroupWithProjectionKeys(ctx, f, rowGroups[ri], winLo, winHi, cols, nil, count, nil, keys); err != nil {
 			return err
 		}
 	}

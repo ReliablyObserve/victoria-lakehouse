@@ -463,6 +463,7 @@ func FuzzBufferRestart(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, seed int64, steps uint8) {
 		restartPropertyRun(t, seed, int(steps%10)+1) // short: the fuzz engine kills an input that runs over 10s
+		flushStateDecoderRun(t, seed)                // the flush state decoder (#748)
 	})
 }
 
