@@ -340,3 +340,5 @@ func TestSystemEnv_EvictionKeepsInflightEntries(t *testing.T) {
 		t.Error("an idle entry was kept")
 	}
 }
+
+// pr-quality evidence run (temporary, reverted in the next commit)
