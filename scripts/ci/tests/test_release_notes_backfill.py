@@ -581,7 +581,7 @@ class LegacyAssembly(unittest.TestCase):
         assembled = bf.legacy_assemble(AFTER, [], "1.0.1", "2026-05-01")
         self.assertIn("## [1.0.1] - 2026-05-01\n\n### Added\n\n- **New feature.**", assembled)
         self.assertIn("### Fixed\n\n- **Old fix (#10).**", assembled)
-        self.assertTrue(assembled.index("### Added") < assembled.index("### Fixed"))  # Keep a Changelog order
+        self.assertLess(assembled.index("### Added"), assembled.index("### Fixed"))  # Keep a Changelog order
 
     def test_legacy_text_and_fragments_merge_in_one_section(self):
         fragment, _ = bf.cc.parse_fragment("changelog.d/9.fixed.md", "- **Fragment fix.** f\n")
