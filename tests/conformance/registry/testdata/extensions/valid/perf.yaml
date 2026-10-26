@@ -1,0 +1,65 @@
+# Example perf rows: the optional scenario, baseline, gate and tolerance of the perf block.
+- id: vl.perf.count_total.base_counters
+  title: "count_total, judged on exact counters against the main build"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [logs.fieldmeta]
+  upstream: { route: /select/logsql/stats_query }
+  request: { method: GET, path: /select/logsql/stats_query, params: { query: "* | stats count() n" } }
+  compare: { type: exact-json }
+  layers: [perf]
+  pending: true
+  tier: core
+  perf:
+    cell: count_total/layout=flushed/s3=0ms
+    counters: { s3_gets: 3, s3_bytes: 42000, path: catalog }
+    budget: { p50_ms: 5.5, p90_ms: 8.1, valid: 10/10 }
+    scenario: { set: control-logs, shape: logs count_total }
+    baseline: base
+    gate: counters
+- id: vl.perf.field_names.hot_latency
+  title: "field_names, judged on latency against hot VictoriaLogs"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [logs.fieldmeta]
+  upstream: { route: /select/logsql/field_names }
+  request: { method: GET, path: /select/logsql/field_names, params: { query: "*" } }
+  compare: { type: values-with-hits }
+  layers: [perf]
+  pending: true
+  tier: focused
+  perf:
+    cell: field_names/layout=flushed/s3=50ms
+    counters: { s3_gets: 24, s3_bytes: 1720000, row_groups: 24, pages: 200, path: scan }
+    budget: { p50_ms: 30, p90_ms: 44, valid: 10/10 }
+    scenario: { set: enumeration }
+    baseline: hot-vl
+    gate: latency
+    tolerance: { pct: 20, ms: 5 }
+- id: vt.perf.trace_by_id.report_only
+  title: "trace by ID against hot VictoriaTraces, reported only"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [cold]
+  seed: [traces.base]
+  upstream: { route: "/select/jaeger/api/traces/{traceID}" }
+  request: { method: GET, path: "/select/jaeger/api/traces/0123456789abcdef0123456789abcdef" }
+  compare: { type: trace }
+  layers: [perf]
+  pending: true
+  tier: daily
+  perf:
+    cell: trace_by_id/layout=compacted/s3=20ms
+    counters: { s3_gets: 2, s3_bytes: 64000, path: bloom }
+    budget: { p50_ms: 12, p90_ms: 19, valid: 10/10 }
+    scenario: { set: trace-by-id }
+    baseline: hot-vt
+    gate: none

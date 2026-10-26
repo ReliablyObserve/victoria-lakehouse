@@ -1,0 +1,9 @@
+{
+  "ranges": {"1h": 3600},
+  "layers": {"cold": {}, "compacted": {}, "buffer": {}, "after-restart": {}},
+  "sets": {
+    "control-logs": {"shapes": [{"name": "logs count_total", "signal": "logs"}, {"name": "logs scan", "signal": "logs"}]},
+    "enumeration": {"shapes": [{"name": "logs field_names", "signal": "logs"}]},
+    "trace-by-id": {"shapes": [{"name": "jaeger trace_by_id", "signal": "traces"}]}
+  }
+}

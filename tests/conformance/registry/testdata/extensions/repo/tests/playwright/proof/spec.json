@@ -1,0 +1,8 @@
+{
+  "ranges": ["cold", "buffer"],
+  "pages": [
+    {"id": "vl-explore-logs"},
+    {"id": "jaeger-ui-trace", "ranges": ["cold"]},
+    {"id": "lh-ui-storage"}
+  ]
+}

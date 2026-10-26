@@ -3624,7 +3624,7 @@
         "rows": 0,
         "rows_pending": 0,
         "rows_targeting_hot": 0,
-        "tests": 111,
+        "tests": 112,
         "bench": [],
         "perf_cells": 0,
         "perf_scenario": false,
@@ -3977,12 +3977,8 @@
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go"
         ],
-        "dir_guards": [
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/cmd/confgen/main_test.go",
-          "tests/conformance/pins_test.go"
-        ],
         "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -3992,12 +3988,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "tests/parity/servicegraph_parity_test.go"
         ],
-        "dir_guards": [
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/cmd/confgen/main_test.go",
-          "tests/conformance/pins_test.go"
-        ],
         "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4009,7 +4001,8 @@
         ],
         "dir_guards": [
           "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/cmd/confgen/main_test.go"
+          "tests/conformance/cmd/confgen/main_test.go",
+          "tests/conformance/registry/proof_ext_test.go"
         ],
         "guards_many": false,
         "guarded": true
@@ -4021,12 +4014,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "internal/vlstorage/severity_fallback_test.go"
         ],
-        "dir_guards": [
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/cmd/confgen/main_test.go",
-          "tests/conformance/pins_test.go"
-        ],
         "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4036,12 +4025,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "internal/vlstorage/severity_fallback_test.go"
         ],
-        "dir_guards": [
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/cmd/confgen/main_test.go",
-          "tests/conformance/pins_test.go"
-        ],
         "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4053,7 +4038,8 @@
         ],
         "dir_guards": [
           "tests/conformance/cmd/confgen/main_test.go",
-          "tests/conformance/pins_test.go"
+          "tests/conformance/pins_test.go",
+          "tests/conformance/registry/proof_ext_test.go"
         ],
         "guards_many": false,
         "guarded": true
