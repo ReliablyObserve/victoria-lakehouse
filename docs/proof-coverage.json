@@ -13,9 +13,9 @@
     "upstream_pass_rows_differential": 108,
     "upstream_pass_rows_other_test": 33,
     "upstream_pass_rows_no_test": 246,
-    "rows_total": 1368,
-    "rows_pending": 1278,
-    "rows_pending_waiting_for_runner": 494,
+    "rows_total": 1373,
+    "rows_pending": 1283,
+    "rows_pending_waiting_for_runner": 499,
     "rows_pending_executed_elsewhere": 784,
     "rows_pending_unclassified": 0,
     "shipped_features": 155,
@@ -1982,26 +1982,26 @@
     }
   ],
   "registry": {
-    "rows": 1368,
+    "rows": 1373,
     "by_surface": {
-      "lh": 133,
+      "lh": 138,
       "vl": 684,
       "vt": 551
     },
     "by_expect": {
       "absent": 3,
-      "differ": 62,
-      "pass": 1277,
+      "differ": 66,
+      "pass": 1278,
       "unsupported": 26
     },
     "by_origin": {
-      "lh-addition": 109,
+      "lh-addition": 114,
       "lh-shim": 28,
       "native": 1231
     },
     "perf_cells": 768,
-    "non_perf_rows": 600,
-    "pending_rows": 1278,
+    "non_perf_rows": 605,
+    "pending_rows": 1283,
     "pending_perf_cells": 768
   },
   "features": {
@@ -2666,10 +2666,10 @@
       {
         "id": "lh.feature.query.memory_budget",
         "area": "query",
-        "rows": 1,
-        "rows_pending": 1,
+        "rows": 4,
+        "rows_pending": 4,
         "rows_targeting_hot": 0,
-        "tests": 15,
+        "tests": 33,
         "bench": [],
         "perf_cells": 0,
         "perf_scenario": false,
@@ -2678,8 +2678,8 @@
       {
         "id": "lh.feature.query.parallel_file_workers",
         "area": "query",
-        "rows": 1,
-        "rows_pending": 1,
+        "rows": 3,
+        "rows_pending": 3,
         "rows_targeting_hot": 0,
         "tests": 4,
         "bench": [],
@@ -3612,7 +3612,7 @@
         "rows": 0,
         "rows_pending": 0,
         "rows_targeting_hot": 0,
-        "tests": 110,
+        "tests": 111,
         "bench": [],
         "perf_cells": 0,
         "perf_scenario": false,
@@ -3920,20 +3920,10 @@
         "replace": "./deps/VictoriaLogs"
       },
       {
-        "file": "go.mod",
-        "module": "github.com/VictoriaMetrics/VictoriaMetrics",
-        "version": "v1.152.1-0.20260924162003-018bc7808882"
-      },
-      {
         "file": "lakehouse-traces/go.mod",
         "module": "github.com/VictoriaMetrics/VictoriaLogs",
         "version": "v1.121.1-0.20260716015338-c945d2949e98",
         "replace": "./deps/VictoriaLogs"
-      },
-      {
-        "file": "lakehouse-traces/go.mod",
-        "module": "github.com/VictoriaMetrics/VictoriaMetrics",
-        "version": "v1.152.1-0.20260924162003-018bc7808882"
       },
       {
         "file": "lakehouse-traces/go.mod",
@@ -3947,48 +3937,24 @@
         "kind": "pin",
         "name": "VL_COMMIT_TRACES",
         "detail": "c945d2949e98",
-        "guards": [
-          "scripts/ci/check_patches_equal.sh",
-          "scripts/ci/check_registry_touch.sh",
-          "scripts/ci/pr_classify.py",
-          "scripts/ci/release_product_check.py",
-          "scripts/ci/upstream_sync_probe.sh",
-          "tests/conformance/inventory/inventory_test.go",
-          "tests/conformance/pins_test.go",
-          "tests/conformance/upstreamcopies_test.go"
-        ],
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       },
       {
         "kind": "pin",
         "name": "VL_VERSION_LOGS",
         "detail": "v1.53.0",
-        "guards": [
-          "scripts/ci/check_patches_equal.sh",
-          "scripts/ci/check_registry_touch.sh",
-          "scripts/ci/pr_classify.py",
-          "scripts/ci/release_product_check.py",
-          "scripts/ci/upstream_sync_probe.sh",
-          "tests/conformance/inventory/inventory_test.go",
-          "tests/conformance/pins_test.go",
-          "tests/conformance/registry/rows_test.go",
-          "tests/conformance/upstreamcopies_test.go"
-        ],
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       },
       {
         "kind": "pin",
         "name": "VT_VERSION",
         "detail": "v0.12.0",
-        "guards": [
-          "scripts/ci/check_registry_touch.sh",
-          "scripts/ci/pr_classify.py",
-          "scripts/ci/release_product_check.py",
-          "scripts/ci/upstream_sync_probe.sh",
-          "tests/conformance/inventory/inventory_test.go",
-          "tests/conformance/pins_test.go",
-          "tests/conformance/upstreamcopies_test.go"
-        ],
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       }
     ],
@@ -4004,6 +3970,7 @@
           "tests/conformance/cmd/confgen/main_test.go",
           "tests/conformance/pins_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4018,6 +3985,7 @@
           "tests/conformance/cmd/confgen/main_test.go",
           "tests/conformance/pins_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4031,6 +3999,7 @@
           "scripts/ci/check_patches_equal.sh",
           "tests/conformance/cmd/confgen/main_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4045,6 +4014,7 @@
           "tests/conformance/cmd/confgen/main_test.go",
           "tests/conformance/pins_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4059,6 +4029,7 @@
           "tests/conformance/cmd/confgen/main_test.go",
           "tests/conformance/pins_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4066,12 +4037,13 @@
         "name": "patches/vl-logs/vlstorage-dispatch.patch",
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/cmd/confgen/main_test.go"
+          "scripts/ci/check_patches_equal.sh"
         ],
         "dir_guards": [
+          "tests/conformance/cmd/confgen/main_test.go",
           "tests/conformance/pins_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4080,13 +4052,8 @@
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4096,12 +4063,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "tests/parity/servicegraph_parity_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4111,12 +4074,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4126,12 +4085,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "tests/conformance/pins_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4141,13 +4096,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "internal/vlstorage/severity_fallback_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4157,13 +4107,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "internal/vlstorage/severity_fallback_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4173,12 +4118,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4187,13 +4128,8 @@
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4203,12 +4139,8 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4216,15 +4148,10 @@
         "name": "patches/vl-traces/vlstorage-dispatch.patch",
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go",
-          "scripts/ci/check_patches_equal.sh",
-          "tests/conformance/cmd/confgen/main_test.go"
+          "scripts/ci/check_patches_equal.sh"
         ],
-        "dir_guards": [
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go",
-          "tests/conformance/pins_test.go",
-          "tests/parity/servicegraph_parity_test.go"
-        ],
+        "guards_many": false,
+        "dir_guards_many": true,
         "guarded": true
       },
       {
@@ -4236,6 +4163,7 @@
         "dir_guards": [
           "tests/conformance/flagdedup_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4246,6 +4174,7 @@
           "tests/conformance/flagdedup_test.go",
           "tests/conformance/sharedscalar_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4256,6 +4185,7 @@
           "lakehouse-traces/ingest_flags_test.go",
           "tests/conformance/flagdedup_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4267,6 +4197,7 @@
         "dir_guards": [
           "tests/conformance/flagdedup_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
@@ -4276,538 +4207,165 @@
           "internal/upstreamreuse/upstreamreuse_test.go",
           "tests/conformance/flagdedup_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       }
     ],
     "imported_packages": [
       {
         "package": "VictoriaLogs/app/vlinsert",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 0,
-        "guard_files": 1,
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": false,
         "guards": [
           "cmd/lakehouse-logs/maintenance_gate_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/app/vlinsert/insertutil",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 0,
-        "guard_files": 2,
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": false,
         "guards": [
           "internal/storage/parquets3/acked_rows_support_test.go",
           "internal/upstreamreuse/upstreamreuse_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/app/vlinsert/opentelemetry",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 0,
-        "guard_files": 1,
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": false,
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/app/vlselect",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 0,
-        "guard_files": 3,
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": false,
         "guards": [
           "cmd/lakehouse-logs/public_delete_post_only_test.go",
           "internal/storage/parquets3/row_read_http_test.go",
           "internal/vlstorage/internal_delete_gate_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/app/vlselect/internalselect",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 2,
-        "guard_files": 6,
-        "guards": [
-          "cmd/lakehouse-logs/maintenance_gate_test.go",
-          "cmd/lakehouse-logs/public_delete_post_only_test.go",
-          "internal/vlstorage/internal_delete_gate_test.go",
-          "lakehouse-traces/internal/vlstorage/internal_delete_gate_test.go",
-          "lakehouse-traces/maintenance_gate_test.go",
-          "lakehouse-traces/public_delete_post_only_test.go"
-        ],
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/app/vlselect/logsql",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 0,
-        "guard_files": 1,
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": false,
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/app/vlstorage",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 2,
-        "guard_files": 14,
-        "guards": [
-          "internal/storage/parquets3/cold_filtered_stats_test.go",
-          "internal/storage/parquets3/cold_hits_hint_test.go",
-          "internal/storage/parquets3/cold_projection_review_test.go",
-          "internal/storage/parquets3/cold_read_bench_test.go",
-          "internal/storage/parquets3/cold_read_getcount_test.go",
-          "internal/storage/parquets3/cold_review_adv_test.go",
-          "internal/storage/parquets3/cold_runquery_bench_test.go",
-          "internal/storage/parquets3/row_read_http_test.go",
-          "internal/storage/parquets3/subquery_rows_real_store_test.go",
-          "internal/storage/parquets3/tombstone_gating_bench_test.go",
-          "internal/storage/parquets3/tombstone_gating_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_read_bench_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tombstone_gating_test.go"
-        ],
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/lib/logstorage",
-        "src_files_logs_module": 45,
-        "src_files_traces_module": 33,
-        "guard_files": 320,
-        "guards": [
-          "cmd/lakehouse-logs/maintenance_gate_test.go",
-          "cmd/lakehouse-logs/public_delete_mount_test.go",
-          "cmd/lakehouse-logs/public_delete_post_only_test.go",
-          "cmd/lakehouse-logs/ring_multiinstance_test.go",
-          "cmd/lakehouse-logs/shutdown_snapshot_test.go",
-          "cmd/lakehouse-logs/tombstone_multiinstance_test.go",
-          "internal/delete/coverage_test.go",
-          "internal/delete/proof_test.go",
-          "internal/delete/tasks_test.go",
-          "internal/hiddenfields/hiddenfields_test.go",
-          "internal/membuffer/rows_in_window_test.go",
-          "internal/membuffer/segments_hold_test.go",
-          "internal/membuffer/segments_reap_crash_test.go",
-          "internal/membuffer/segments_test.go",
-          "internal/membuffer/store_hardening_test.go",
-          "internal/membuffer/store_test.go",
-          "internal/selectapi/handler_test.go",
-          "internal/selectapi/jaeger_fallback_test.go",
-          "internal/selectapi/tenant_autoregister_test.go",
-          "internal/selectapi/time_range_params_test.go",
-          "internal/storage/column_order_test.go",
-          "internal/storage/epoch_test.go",
-          "internal/storage/field_names_block_memory_test.go",
-          "internal/storage/field_names_counter_property_test.go",
-          "internal/storage/field_names_counter_test.go",
-          "internal/storage/field_names_observe_test.go",
-          "internal/storage/parquets3/acked_rows_cardinality_test.go",
-          "internal/storage/parquets3/acked_rows_pre1970_test.go",
-          "internal/storage/parquets3/acked_rows_support_test.go",
-          "internal/storage/parquets3/block_column_order_test.go",
-          "internal/storage/parquets3/bloom_rangeread_regression_test.go",
-          "internal/storage/parquets3/buffer_bridge_auth_test.go",
-          "internal/storage/parquets3/buffer_bridge_rollout_test.go",
-          "internal/storage/parquets3/buffer_flusher_lifecycle_test.go",
-          "internal/storage/parquets3/buffer_flusher_segments_test.go",
-          "internal/storage/parquets3/buffer_flusher_test.go",
-          "internal/storage/parquets3/buffer_flusher_trace_id_hex_test.go",
-          "internal/storage/parquets3/buffer_restart_hold_test.go",
-          "internal/storage/parquets3/buffer_restart_test.go",
-          "internal/storage/parquets3/buffer_view_bench_test.go",
-          "internal/storage/parquets3/buffer_view_compat_test.go",
-          "internal/storage/parquets3/buffer_view_test.go",
-          "internal/storage/parquets3/buffered_rows_test.go",
-          "internal/storage/parquets3/cold_column_order_engine_test.go",
-          "internal/storage/parquets3/cold_filtered_stats_test.go",
-          "internal/storage/parquets3/cold_hits_hint_test.go",
-          "internal/storage/parquets3/cold_projection_review_test.go",
-          "internal/storage/parquets3/cold_read_bench_test.go",
-          "internal/storage/parquets3/cold_read_getcount_test.go",
-          "internal/storage/parquets3/cold_review_adv_test.go",
-          "internal/storage/parquets3/cold_row_fields_test.go",
-          "internal/storage/parquets3/cold_runquery_bench_test.go",
-          "internal/storage/parquets3/cold_tie_order_test.go",
-          "internal/storage/parquets3/column_order_property_test.go",
-          "internal/storage/parquets3/count_pushdown_test.go",
-          "internal/storage/parquets3/coverage_integration_test.go",
-          "internal/storage/parquets3/coverage_s3_paths_test.go",
-          "internal/storage/parquets3/dedicated_e2e_test.go",
-          "internal/storage/parquets3/drain_cancel_test.go",
-          "internal/storage/parquets3/drain_collect_once_test.go",
-          "internal/storage/parquets3/drain_crowded_test.go",
-          "internal/storage/parquets3/drain_healthy_property_test.go",
-          "internal/storage/parquets3/drain_invariant_test.go",
-          "internal/storage/parquets3/drain_memory_test.go",
-          "internal/storage/parquets3/drain_plan_bench_test.go",
-          "internal/storage/parquets3/drain_plan_recorded_test.go",
-          "internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go",
-          "internal/storage/parquets3/drain_stalled_gauge_test.go",
-          "internal/storage/parquets3/drop_trace_shaped_rows_test.go",
-          "internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "internal/storage/parquets3/epoch_regression_test.go",
-          "internal/storage/parquets3/field_names_buffer_layers_test.go",
-          "internal/storage/parquets3/field_names_exact_test.go",
-          "internal/storage/parquets3/field_names_pruning_control_test.go",
-          "internal/storage/parquets3/field_value_counter_test.go",
-          "internal/storage/parquets3/field_values_bench_test.go",
-          "internal/storage/parquets3/field_values_buffer_test.go",
-          "internal/storage/parquets3/field_values_collect_test.go",
-          "internal/storage/parquets3/field_values_map_bench_test.go",
-          "internal/storage/parquets3/field_values_sampled_index_test.go",
-          "internal/storage/parquets3/fields_tombstones_span_test.go",
-          "internal/storage/parquets3/fields_tombstones_test.go",
-          "internal/storage/parquets3/filter_alloc_test.go",
-          "internal/storage/parquets3/filter_ast_test.go",
-          "internal/storage/parquets3/filter_test.go",
-          "internal/storage/parquets3/filtered_count_pushdown_test.go",
-          "internal/storage/parquets3/footer_cache_retention_test.go",
-          "internal/storage/parquets3/free_text_filter_test.go",
-          "internal/storage/parquets3/inferred_bounds_test.go",
-          "internal/storage/parquets3/local_buffer_readmerge_test.go",
-          "internal/storage/parquets3/manifest_fastpath_exactness_test.go",
-          "internal/storage/parquets3/manifest_fastpath_test.go",
-          "internal/storage/parquets3/phrase_exact_test.go",
-          "internal/storage/parquets3/phrase_pruning_test.go",
-          "internal/storage/parquets3/pmeta_integration_test.go",
-          "internal/storage/parquets3/projected_fetch_test.go",
-          "internal/storage/parquets3/projection_fuzz_test.go",
-          "internal/storage/parquets3/projection_test.go",
-          "internal/storage/parquets3/pure_buffer_pipes_test.go",
-          "internal/storage/parquets3/pure_buffer_test.go",
-          "internal/storage/parquets3/pure_buffer_tombstone_test.go",
-          "internal/storage/parquets3/query_bench_test.go",
-          "internal/storage/parquets3/query_limits_test.go",
-          "internal/storage/parquets3/query_memory_budget_test.go",
-          "internal/storage/parquets3/retention_cut_test.go",
-          "internal/storage/parquets3/row_read_complete_test.go",
-          "internal/storage/parquets3/rowgroup_bloom_metric_test.go",
-          "internal/storage/parquets3/runtime_acquire_wiring_test.go",
-          "internal/storage/parquets3/severity_absent_test.go",
-          "internal/storage/parquets3/storage_coverage_test.go",
-          "internal/storage/parquets3/storage_fields_compacted_overlap_test.go",
-          "internal/storage/parquets3/storage_fields_test.go",
-          "internal/storage/parquets3/storage_query_test.go",
-          "internal/storage/parquets3/storage_test.go",
-          "internal/storage/parquets3/subquery_rows_real_store_test.go",
-          "internal/storage/parquets3/sumavg_block_shape_test.go",
-          "internal/storage/parquets3/suppress_helper_test.go",
-          "internal/storage/parquets3/synthetic_block_stream_test.go",
-          "internal/storage/parquets3/tenant_scope_labelindex_test.go",
-          "internal/storage/parquets3/tenant_scope_test.go",
-          "internal/storage/parquets3/time_only_filter_test.go",
-          "internal/storage/parquets3/token_bloom_context_test.go",
-          "internal/storage/parquets3/token_bloom_soundness_test.go",
-          "internal/storage/parquets3/token_bloom_test.go",
-          "internal/storage/parquets3/token_bloom_unicode_test.go",
-          "internal/storage/parquets3/tombstone_gate_test.go",
-          "internal/storage/parquets3/tombstone_gating_bench_test.go",
-          "internal/storage/parquets3/tombstone_gating_test.go",
-          "internal/storage/parquets3/tombstone_proof_bench_test.go",
-          "internal/storage/parquets3/tombstone_proof_test.go",
-          "internal/storage/parquets3/tombstone_scope_test.go",
-          "internal/storage/parquets3/vl_1_53_logsql_fixes_test.go",
-          "internal/storage/tenant_stream_map_bench_test.go",
-          "internal/storage/tenant_stream_map_fuzz_test.go",
-          "internal/storage/tenant_stream_map_test.go",
-          "internal/telemetry/traced_storage_tenant_test.go",
-          "internal/telemetry/traced_storage_test.go",
-          "internal/telemetry/traced_writer_test.go",
-          "internal/upstreamreuse/upstreamreuse_test.go",
-          "internal/vlstorage/buffer_export_fuzz_test.go",
-          "internal/vlstorage/buffer_export_test.go",
-          "internal/vlstorage/buffer_rows_test.go",
-          "internal/vlstorage/insert_adapter_test.go",
-          "internal/vlstorage/insert_admission_bench_test.go",
-          "internal/vlstorage/insert_admission_cross_tenant_test.go",
-          "internal/vlstorage/insert_admission_mixed_bench_test.go",
-          "internal/vlstorage/insert_admission_test.go",
-          "internal/vlstorage/insert_before_epoch_test.go",
-          "internal/vlstorage/insert_test.go",
-          "internal/vlstorage/insert_verify_test.go",
-          "internal/vlstorage/memleak_test.go",
-          "internal/vlstorage/severity_fallback_test.go",
-          "internal/vlstorage/stream_id_test.go",
-          "internal/vlstorage/subqueries_test.go",
-          "internal/vlstorage/tenant_ids_test.go",
-          "internal/vlstorage/values_filter_limit_test.go",
-          "internal/vlstorage/vlstorage_test.go",
-          "lakehouse-traces/adapter_storage_test.go",
-          "lakehouse-traces/discovery_vtstorage_test.go",
-          "lakehouse-traces/ingest_flags_test.go",
-          "lakehouse-traces/internal/membuffer/rows_in_window_test.go",
-          "lakehouse-traces/internal/membuffer/segments_hold_test.go",
-          "lakehouse-traces/internal/membuffer/segments_reap_crash_test.go",
-          "lakehouse-traces/internal/membuffer/segments_test.go",
-          "lakehouse-traces/internal/membuffer/store_hardening_test.go",
-          "lakehouse-traces/internal/membuffer/store_test.go",
-          "lakehouse-traces/internal/selectapi/handler_bench_test.go",
-          "lakehouse-traces/internal/selectapi/handler_test.go",
-          "lakehouse-traces/internal/selectapi/latency_offset_test.go",
-          "lakehouse-traces/internal/selectapi/logsql_equivalence_test.go",
-          "lakehouse-traces/internal/selectapi/tempo_search_test.go",
-          "lakehouse-traces/internal/selectapi/tenant_autoregister_test.go",
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_cardinality_test.go",
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_pre1970_test.go",
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_support_test.go",
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go",
-          "lakehouse-traces/internal/storage/parquets3/block_column_order_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_bridge_auth_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_bridge_rollout_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_lifecycle_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_flusher_trace_id_hex_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_restart_hold_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_view_bench_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_view_compat_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_view_retired_gap_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffer_view_test.go",
-          "lakehouse-traces/internal/storage/parquets3/buffered_rows_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_column_order_engine_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_events_links_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_filtered_stats_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_hot_parity_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_projection_review_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_read_bench_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_read_getcount_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_review_more_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_row_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_tie_order_test.go",
-          "lakehouse-traces/internal/storage/parquets3/column_order_property_test.go",
-          "lakehouse-traces/internal/storage/parquets3/coverage_integration_test.go",
-          "lakehouse-traces/internal/storage/parquets3/coverage_query_final_test.go",
-          "lakehouse-traces/internal/storage/parquets3/coverage_s3_paths_test.go",
-          "lakehouse-traces/internal/storage/parquets3/dedicated_e2e_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_cancel_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_collect_once_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_crowded_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_healthy_property_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_invariant_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_memory_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_plan_bench_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_plan_recorded_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_nocheck_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_stalled_gauge_test.go",
-          "lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_names_buffer_layers_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_names_exact_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_names_peer_aliases_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_names_pruning_control_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_value_counter_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_values_bench_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_values_buffer_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_values_collect_test.go",
-          "lakehouse-traces/internal/storage/parquets3/field_values_sampled_index_test.go",
-          "lakehouse-traces/internal/storage/parquets3/fields_tombstones_span_test.go",
-          "lakehouse-traces/internal/storage/parquets3/fields_tombstones_test.go",
-          "lakehouse-traces/internal/storage/parquets3/filter_ast_test.go",
-          "lakehouse-traces/internal/storage/parquets3/filter_parity_test.go",
-          "lakehouse-traces/internal/storage/parquets3/filter_test.go",
-          "lakehouse-traces/internal/storage/parquets3/flush_events_links_e2e_test.go",
-          "lakehouse-traces/internal/storage/parquets3/footer_cache_retention_test.go",
-          "lakehouse-traces/internal/storage/parquets3/full_read_footer_cache_test.go",
-          "lakehouse-traces/internal/storage/parquets3/inferred_bounds_test.go",
-          "lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go",
-          "lakehouse-traces/internal/storage/parquets3/latency_offset_cold_test.go",
-          "lakehouse-traces/internal/storage/parquets3/local_buffer_readmerge_test.go",
-          "lakehouse-traces/internal/storage/parquets3/manifest_fastpath_exactness_test.go",
-          "lakehouse-traces/internal/storage/parquets3/manifest_fastpath_test.go",
-          "lakehouse-traces/internal/storage/parquets3/phrase_exact_test.go",
-          "lakehouse-traces/internal/storage/parquets3/phrase_pruning_test.go",
-          "lakehouse-traces/internal/storage/parquets3/pmeta_integration_test.go",
-          "lakehouse-traces/internal/storage/parquets3/projected_fetch_test.go",
-          "lakehouse-traces/internal/storage/parquets3/projection_fuzz_test.go",
-          "lakehouse-traces/internal/storage/parquets3/projection_test.go",
-          "lakehouse-traces/internal/storage/parquets3/pure_buffer_pipes_test.go",
-          "lakehouse-traces/internal/storage/parquets3/pure_buffer_test.go",
-          "lakehouse-traces/internal/storage/parquets3/pure_buffer_tombstone_test.go",
-          "lakehouse-traces/internal/storage/parquets3/query_coverage_boost_test.go",
-          "lakehouse-traces/internal/storage/parquets3/query_limits_test.go",
-          "lakehouse-traces/internal/storage/parquets3/query_memory_budget_test.go",
-          "lakehouse-traces/internal/storage/parquets3/query_paths_coverage_test.go",
-          "lakehouse-traces/internal/storage/parquets3/retention_cut_test.go",
-          "lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go",
-          "lakehouse-traces/internal/storage/parquets3/row_read_trace_index_test.go",
-          "lakehouse-traces/internal/storage/parquets3/storage_coverage_test.go",
-          "lakehouse-traces/internal/storage/parquets3/storage_fields_test.go",
-          "lakehouse-traces/internal/storage/parquets3/storage_test.go",
-          "lakehouse-traces/internal/storage/parquets3/stream_field_values_layers_test.go",
-          "lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go",
-          "lakehouse-traces/internal/storage/parquets3/sumavg_block_shape_test.go",
-          "lakehouse-traces/internal/storage/parquets3/suppress_helper_test.go",
-          "lakehouse-traces/internal/storage/parquets3/synthetic_block_stream_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tenant_scope_labelindex_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tenant_scope_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tenant_scope_traces_test.go",
-          "lakehouse-traces/internal/storage/parquets3/time_only_filter_test.go",
-          "lakehouse-traces/internal/storage/parquets3/token_bloom_context_test.go",
-          "lakehouse-traces/internal/storage/parquets3/token_bloom_soundness_test.go",
-          "lakehouse-traces/internal/storage/parquets3/token_bloom_test.go",
-          "lakehouse-traces/internal/storage/parquets3/token_bloom_unicode_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tombstone_gate_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tombstone_gating_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tombstone_proof_test.go",
-          "lakehouse-traces/internal/storage/parquets3/tombstone_scope_test.go",
-          "lakehouse-traces/internal/storage/parquets3/trace_message_test.go",
-          "lakehouse-traces/internal/vlstorage/buffer_export_test.go",
-          "lakehouse-traces/internal/vlstorage/buffer_rows_test.go",
-          "lakehouse-traces/internal/vlstorage/events_links_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_adapter_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_admission_bench_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_admission_cross_tenant_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_admission_mixed_bench_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_admission_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_before_epoch_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_fuzz_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_index_rows_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_memleak_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_race_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_verify_test.go",
-          "lakehouse-traces/internal/vlstorage/memleak_test.go",
-          "lakehouse-traces/internal/vlstorage/stream_id_test.go",
-          "lakehouse-traces/internal/vlstorage/tenant_ids_test.go",
-          "lakehouse-traces/internal/vlstorage/trace_message_test.go",
-          "lakehouse-traces/internal/vlstorage/traced_lookup_test.go",
-          "lakehouse-traces/internal/vlstorage/traced_storage_test.go",
-          "lakehouse-traces/internal/vlstorage/values_filter_limit_test.go",
-          "lakehouse-traces/internal/vlstorage/vlstorage_coverage_test.go",
-          "lakehouse-traces/internal/vlstorage/vlstorage_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/adapter_coverage_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/adapter_memleak_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/adapter_race_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/adapter_stress_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/adapter_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/hidden_fields_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fuzz_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/values_filter_limit_test.go",
-          "lakehouse-traces/maintenance_gate_test.go",
-          "lakehouse-traces/public_delete_post_only_test.go",
-          "lakehouse-traces/public_delete_test.go",
-          "lakehouse-traces/ring_multiinstance_test.go",
-          "lakehouse-traces/shutdown_snapshot_test.go",
-          "lakehouse-traces/tombstone_multiinstance_test.go",
-          "tests/conformance/logsql_literals_test.go",
-          "tests/conformance/registry/rows_test.go",
-          "tests/ingestmatrix/matrix_test.go",
-          "tests/ingestmatrix/native_controls_test.go"
-        ],
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       },
       {
         "package": "VictoriaLogs/lib/prefixfilter",
-        "src_files_logs_module": 1,
-        "src_files_traces_module": 0,
-        "guard_files": 0,
-        "guards": null,
+        "imported_by_logs_module": true,
+        "imported_by_traces_module": false,
+        "guards": [],
+        "guards_many": false,
         "guarded": false
       },
       {
         "package": "VictoriaTraces/app/victoria-traces/servicegraph",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 1,
-        "guard_files": 0,
-        "guards": null,
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": false,
         "guarded": false
       },
       {
         "package": "VictoriaTraces/app/vtinsert",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 1,
-        "guard_files": 1,
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
         "guards": [
           "lakehouse-traces/maintenance_gate_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaTraces/app/vtinsert/insertutil",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 1,
-        "guard_files": 4,
-        "guards": [
-          "lakehouse-traces/ingest_flags_test.go",
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go",
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_support_test.go",
-          "lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go"
-        ],
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       },
       {
         "package": "VictoriaTraces/app/vtselect/logsql",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 1,
-        "guard_files": 0,
-        "guards": null,
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": false,
         "guarded": false
       },
       {
         "package": "VictoriaTraces/app/vtselect/traces/jaeger",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 1,
-        "guard_files": 2,
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go",
           "lakehouse-traces/tombstone_multiinstance_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaTraces/app/vtselect/traces/tempo",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 1,
-        "guard_files": 1,
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go"
         ],
+        "guards_many": false,
         "guarded": true
       },
       {
         "package": "VictoriaTraces/app/vtstorage",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 1,
-        "guard_files": 11,
-        "guards": [
-          "lakehouse-traces/discovery_vtstorage_test.go",
-          "lakehouse-traces/internal/selectapi/logsql_equivalence_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_filtered_stats_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_projection_review_test.go",
-          "lakehouse-traces/internal/storage/parquets3/cold_review_more_test.go",
-          "lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go",
-          "lakehouse-traces/internal/storage/parquets3/row_read_http_test.go",
-          "lakehouse-traces/internal/storage/parquets3/row_read_trace_index_test.go",
-          "lakehouse-traces/internal/storage/parquets3/subquery_in_real_store_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/adapter_coverage_test.go",
-          "lakehouse-traces/tombstone_multiinstance_test.go"
-        ],
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       },
       {
         "package": "VictoriaTraces/lib/protoparser/opentelemetry/pb",
-        "src_files_logs_module": 0,
-        "src_files_traces_module": 3,
-        "guard_files": 13,
-        "guards": [
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go",
-          "lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go",
-          "lakehouse-traces/internal/storage/parquets3/drain_healthy_property_test.go",
-          "lakehouse-traces/internal/storage/parquets3/ingest_trace_id_hex_test.go",
-          "lakehouse-traces/internal/storage/parquets3/row_read_trace_index_test.go",
-          "lakehouse-traces/internal/vlstorage/events_links_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_fuzz_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_index_rows_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_parity_test.go",
-          "lakehouse-traces/internal/vlstorage/insert_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fastpath_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/trace_index_fuzz_test.go",
-          "lakehouse-traces/internal/vtstorage_adapter/trace_index_shape_test.go"
-        ],
+        "imported_by_logs_module": false,
+        "imported_by_traces_module": true,
+        "guards": [],
+        "guards_many": true,
         "guarded": true
       }
     ],
@@ -4840,7 +4398,7 @@
     },
     {
       "reason": "chaos-or-ui-harness",
-      "rows": 19,
+      "rows": 24,
       "executed_elsewhere": false,
       "description": "layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner",
       "refs_doc": [

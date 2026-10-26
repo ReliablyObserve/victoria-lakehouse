@@ -17,8 +17,8 @@ What the conformance registry proves, how, and what is missing. Computed from `t
 | ... linking a differential test (hot target, tests/parity or tests/e2e) | 108 |
 | ... linking only another test | 33 |
 | ... linking no test at all | 246 |
-| Registry rows / pending rows | 1368 / 1278 |
-| ... pending and waiting for the HTTP runner or a harness | 494 |
+| Registry rows / pending rows | 1373 / 1283 |
+| ... pending and waiting for the HTTP runner or a harness | 499 |
 | ... pending but executed by another CI job or by cited Go tests | 784 |
 | ... pending, reason unclassified | 0 |
 | Shipped features | 155 |
@@ -387,8 +387,8 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.query.logsql_filter_eval` | query | 4 (4) | 4 | 14 | fulltext, level_filter, multi_filter, negation | upstream-exact |
 | `lh.feature.query.loki_drilldown` | query | 0 (0) | 0 | 3 | none | unproven |
 | `lh.feature.query.max_rows` | query | 0 (0) | 0 | 4 | none | unproven |
-| `lh.feature.query.memory_budget` | query | 1 (1) | 0 | 15 | none | lh-extension |
-| `lh.feature.query.parallel_file_workers` | query | 1 (1) | 0 | 4 | none | lh-extension |
+| `lh.feature.query.memory_budget` | query | 4 (4) | 0 | 33 | none | lh-extension |
+| `lh.feature.query.parallel_file_workers` | query | 3 (3) | 0 | 4 | none | lh-extension |
 | `lh.feature.query.resource_bounds` | query | 0 (0) | 0 | 5 | none | unproven |
 | `lh.feature.query.select_overlay` | query | 2 (2) | 1 | 10 | none | lh-extension |
 | `lh.feature.query.translated_metadata` | query | 0 (0) | 0 | 2 | none | unproven |
@@ -465,7 +465,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.ops.benchmark_harness` | ops | 0 (0) | 0 | 4 | count_by_service, count_total, scan, trace_by_id | perf-proven |
 | `lh.feature.ops.config_drift_gate` | ops | 1 (1) | 0 | 5 | none | lh-extension |
 | `lh.feature.ops.config_profiles` | ops | 0 (0) | 0 | 3 | none | unproven |
-| `lh.feature.ops.conformance_registry` | ops | 0 (0) | 0 | 110 | none | unproven |
+| `lh.feature.ops.conformance_registry` | ops | 0 (0) | 0 | 111 | none | unproven |
 | `lh.feature.ops.datagen` | ops | 0 (0) | 0 | 1 | none | unproven |
 | `lh.feature.ops.feature_catalog` | ops | 0 (0) | 0 | 9 | none | unproven |
 | `lh.feature.ops.hot_cold_parity_suite` | ops | 0 (0) | 0 | 10 | none | unproven |
@@ -500,68 +500,66 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | go.mod | Module | Version | Replaced by |
 |---|---|---|---|
 | `go.mod` | `VictoriaLogs` | `v1.53.0` | `./deps/VictoriaLogs` |
-| `go.mod` | `VictoriaMetrics` | `v1.152.1-0.20260924162003-018bc7808882` | `—` |
 | `lakehouse-traces/go.mod` | `VictoriaLogs` | `v1.121.1-0.20260716015338-c945d2949e98` | `./deps/VictoriaLogs` |
-| `lakehouse-traces/go.mod` | `VictoriaMetrics` | `v1.152.1-0.20260924162003-018bc7808882` | `—` |
 | `lakehouse-traces/go.mod` | `VictoriaTraces` | `v0.12.0` | `./deps/VictoriaTraces` |
 
 ### Pins (Makefile)
 
 | Pin | Value | Guard |
 |---|---|---|
-| `VL_COMMIT_TRACES` | `c945d2949e98` | `scripts/ci/check_patches_equal.sh`, `scripts/ci/check_registry_touch.sh` (+6) |
-| `VL_VERSION_LOGS` | `v1.53.0` | `scripts/ci/check_patches_equal.sh`, `scripts/ci/check_registry_touch.sh` (+7) |
-| `VT_VERSION` | `v0.12.0` | `scripts/ci/check_registry_touch.sh`, `scripts/ci/pr_classify.py` (+5) |
+| `VL_COMMIT_TRACES` | `c945d2949e98` | many (more than 3 files) |
+| `VL_VERSION_LOGS` | `v1.53.0` | many (more than 3 files) |
+| `VT_VERSION` | `v0.12.0` | many (more than 3 files) |
 
 ### Patches and compiled-in sources (`patches/`)
 
 | File | Kind | Named by | Directory named by |
 |---|---|---|---|
-| `patches/vl-logs/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go` (+1) |
-| `patches/vl-logs/external_query.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/parity/servicegraph_parity_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go` (+1) |
+| `patches/vl-logs/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
+| `patches/vl-logs/external_query.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/parity/servicegraph_parity_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
 | `patches/vl-logs/vl-const-timestamps-parse.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/pins_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go` |
-| `patches/vl-logs/vl-export-severity.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go` (+1) |
-| `patches/vl-logs/vl-export-streamtags-get.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go` (+1) |
-| `patches/vl-logs/vlstorage-dispatch.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `scripts/ci/check_patches_equal.sh` (+1) | `tests/conformance/pins_test.go` |
-| `patches/vl-traces/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` (+3) |
-| `patches/vl-traces/external_query.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/parity/servicegraph_parity_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` (+2) |
-| `patches/vl-traces/vl-allow-duplicate-stream-tags.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go` | `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go`, `scripts/ci/check_patches_equal.sh` (+2) |
-| `patches/vl-traces/vl-const-timestamps-parse.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/pins_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` (+2) |
-| `patches/vl-traces/vl-export-severity.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` (+3) |
-| `patches/vl-traces/vl-export-streamtags-get.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` (+3) |
-| `patches/vl-traces/vl-math-keep-quoted-constants.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `scripts/ci/check_patches_equal.sh` (+2) |
-| `patches/vl-traces/vl-partition-close-order.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` (+3) |
-| `patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `scripts/ci/check_patches_equal.sh` (+2) |
-| `patches/vl-traces/vlstorage-dispatch.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `scripts/ci/check_patches_equal.sh` (+1) | `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` (+2) |
+| `patches/vl-logs/vl-export-severity.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
+| `patches/vl-logs/vl-export-streamtags-get.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
+| `patches/vl-logs/vlstorage-dispatch.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `scripts/ci/check_patches_equal.sh` | `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
+| `patches/vl-traces/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | many (more than 3 files) |
+| `patches/vl-traces/external_query.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/parity/servicegraph_parity_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vl-allow-duplicate-stream-tags.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vl-const-timestamps-parse.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/pins_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vl-export-severity.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vl-export-streamtags-get.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vl-math-keep-quoted-constants.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vl-partition-close-order.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vl-syslog-rfc5424-incomplete-sd.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/storage/parquets3/vl_1_53_backports_test.go` | many (more than 3 files) |
+| `patches/vl-traces/vlstorage-dispatch.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `scripts/ci/check_patches_equal.sh` | many (more than 3 files) |
 | `patches/vt-traces/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | `tests/conformance/flagdedup_test.go` |
-| `patches/vt-traces/flag_dedup.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/flagdedup_test.go` (+1) | — |
-| `patches/vt-traces/vtinsert-flag-dedup.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/ingest_flags_test.go` (+1) | — |
+| `patches/vt-traces/flag_dedup.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/flagdedup_test.go`, `tests/conformance/sharedscalar_test.go` | — |
+| `patches/vt-traces/vtinsert-flag-dedup.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/ingest_flags_test.go`, `tests/conformance/flagdedup_test.go` | — |
 | `patches/vt-traces/vtstorage-dispatch.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go` | `tests/conformance/flagdedup_test.go` |
 | `patches/vt-traces/vtstorage-flag-dedup.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/flagdedup_test.go` | — |
 
 ### Imported upstream packages
 
-17 VictoriaLogs / VictoriaTraces packages are imported by shipped code (plus 10 `VictoriaMetrics/lib` packages, not listed). *Logs* and *traces* count the non-test Go files of each module that import the package; *Guard files* count the Go tests and gates that name its quoted import path.
+17 VictoriaLogs / VictoriaTraces packages are imported by shipped code (plus 10 `VictoriaMetrics/lib` packages, not listed). *Logs* and *traces* say which module's non-test Go files import the package; *Guards* are the Go tests and gates that name its quoted import path, listed when there are at most three and summarised as *many* beyond that (no counts are kept: they would change with every added test).
 
-| Package | Logs | Traces | Guard files | Guards |
-|---|--:|--:|--:|---|
-| `VictoriaLogs/app/vlinsert` | 1 | 0 | 1 | `cmd/lakehouse-logs/maintenance_gate_test.go` |
-| `VictoriaLogs/app/vlinsert/insertutil` | 1 | 0 | 2 | `internal/storage/parquets3/acked_rows_support_test.go`, `internal/upstreamreuse/upstreamreuse_test.go` |
-| `VictoriaLogs/app/vlinsert/opentelemetry` | 1 | 0 | 1 | `internal/upstreamreuse/upstreamreuse_test.go` |
-| `VictoriaLogs/app/vlselect` | 1 | 0 | 3 | `cmd/lakehouse-logs/public_delete_post_only_test.go`, `internal/storage/parquets3/row_read_http_test.go` (+1) |
-| `VictoriaLogs/app/vlselect/internalselect` | 1 | 2 | 6 | `cmd/lakehouse-logs/maintenance_gate_test.go`, `cmd/lakehouse-logs/public_delete_post_only_test.go` (+4) |
-| `VictoriaLogs/app/vlselect/logsql` | 1 | 0 | 1 | `internal/upstreamreuse/upstreamreuse_test.go` |
-| `VictoriaLogs/app/vlstorage` | 1 | 2 | 14 | `internal/storage/parquets3/cold_filtered_stats_test.go`, `internal/storage/parquets3/cold_hits_hint_test.go` (+12) |
-| `VictoriaLogs/lib/logstorage` | 45 | 33 | 320 | `cmd/lakehouse-logs/maintenance_gate_test.go`, `cmd/lakehouse-logs/public_delete_mount_test.go` (+318) |
-| `VictoriaLogs/lib/prefixfilter` | 1 | 0 | 0 | — |
-| `VictoriaTraces/app/victoria-traces/servicegraph` | 0 | 1 | 0 | — |
-| `VictoriaTraces/app/vtinsert` | 0 | 1 | 1 | `lakehouse-traces/maintenance_gate_test.go` |
-| `VictoriaTraces/app/vtinsert/insertutil` | 0 | 1 | 4 | `lakehouse-traces/ingest_flags_test.go`, `lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go` (+2) |
-| `VictoriaTraces/app/vtselect/logsql` | 0 | 1 | 0 | — |
-| `VictoriaTraces/app/vtselect/traces/jaeger` | 0 | 1 | 2 | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/tombstone_multiinstance_test.go` |
-| `VictoriaTraces/app/vtselect/traces/tempo` | 0 | 1 | 1 | `internal/upstreamreuse/upstreamreuse_test.go` |
-| `VictoriaTraces/app/vtstorage` | 0 | 1 | 11 | `lakehouse-traces/discovery_vtstorage_test.go`, `lakehouse-traces/internal/selectapi/logsql_equivalence_test.go` (+9) |
-| `VictoriaTraces/lib/protoparser/opentelemetry/pb` | 0 | 3 | 13 | `lakehouse-traces/internal/storage/parquets3/acked_rows_otlp_wrap_test.go`, `lakehouse-traces/internal/storage/parquets3/acked_rows_trace_index_test.go` (+11) |
+| Package | Logs | Traces | Guards |
+|---|---|---|---|
+| `VictoriaLogs/app/vlinsert` | yes | no | `cmd/lakehouse-logs/maintenance_gate_test.go` |
+| `VictoriaLogs/app/vlinsert/insertutil` | yes | no | `internal/storage/parquets3/acked_rows_support_test.go`, `internal/upstreamreuse/upstreamreuse_test.go` |
+| `VictoriaLogs/app/vlinsert/opentelemetry` | yes | no | `internal/upstreamreuse/upstreamreuse_test.go` |
+| `VictoriaLogs/app/vlselect` | yes | no | `cmd/lakehouse-logs/public_delete_post_only_test.go`, `internal/storage/parquets3/row_read_http_test.go`, `internal/vlstorage/internal_delete_gate_test.go` |
+| `VictoriaLogs/app/vlselect/internalselect` | yes | yes | many (more than 3 files) |
+| `VictoriaLogs/app/vlselect/logsql` | yes | no | `internal/upstreamreuse/upstreamreuse_test.go` |
+| `VictoriaLogs/app/vlstorage` | yes | yes | many (more than 3 files) |
+| `VictoriaLogs/lib/logstorage` | yes | yes | many (more than 3 files) |
+| `VictoriaLogs/lib/prefixfilter` | yes | no | — |
+| `VictoriaTraces/app/victoria-traces/servicegraph` | no | yes | — |
+| `VictoriaTraces/app/vtinsert` | no | yes | `lakehouse-traces/maintenance_gate_test.go` |
+| `VictoriaTraces/app/vtinsert/insertutil` | no | yes | many (more than 3 files) |
+| `VictoriaTraces/app/vtselect/logsql` | no | yes | — |
+| `VictoriaTraces/app/vtselect/traces/jaeger` | no | yes | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/tombstone_multiinstance_test.go` |
+| `VictoriaTraces/app/vtselect/traces/tempo` | no | yes | `internal/upstreamreuse/upstreamreuse_test.go` |
+| `VictoriaTraces/app/vtstorage` | no | yes | many (more than 3 files) |
+| `VictoriaTraces/lib/protoparser/opentelemetry/pb` | no | yes | many (more than 3 files) |
 
 ### Unguarded
 
@@ -577,7 +575,7 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 |---|--:|---|---|
 | `perf-cell` | 768 | yes | layer `perf`: a measurement cell run by a perf CI job (its `refs.doc` names the harness), not by the registry runner |
 | `durability-cell` | 16 | yes | kind `durability`: backed by the cited Go tests, no HTTP request |
-| `chaos-or-ui-harness` | 19 | no | layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner |
+| `chaos-or-ui-harness` | 24 | no | layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner |
 | `flag-row` | 35 | no | kind `flag`: no HTTP request; the flag drift checks and cited tests apply |
 | `http-runner-test-linked` | 147 | no | has an HTTP request; waits for the registry HTTP runner, a cited Go test covers part of it |
 | `http-runner-nothing-linked` | 293 | no | has an HTTP request; waits for the registry HTTP runner and links no test |
@@ -588,7 +586,7 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 
 ## 6. Registry totals and what is not inventoried
 
-1368 rows: lh 133, vl 684, vt 551; expect absent 3, differ 62, pass 1277, unsupported 26; origin lh-addition 109, lh-shim 28, native 1231. 768 perf cells (768 pending), 600 other rows.
+1373 rows: lh 138, vl 684, vt 551; expect absent 3, differ 66, pass 1278, unsupported 26; origin lh-addition 114, lh-shim 28, native 1231. 768 perf cells (768 pending), 605 other rows.
 
 Surfaces with no inventory, so no completeness number can be computed for them:
 
@@ -602,5 +600,5 @@ Surfaces with no inventory, so no completeness number can be computed for them:
 - Kinds, statuses: `tests/conformance/inventory.generated.yaml` joined with the rows exactly as `UPSTREAM_COVERAGE.md` joins them.
 - Test links: each row's `refs.tests`; *differential* means the row targets `hot` and a linked path starts with `tests/parity/` or `tests/e2e/`. A named test is a link, not proof the test checks that exact request.
 - Features: `tests/conformance/registry/features/`; perf scenario means a `bench:` id or a cited perf-layer row.
-- Shared code: `go.mod` and `lakehouse-traces/go.mod` (upstream modules), `Makefile` pins, the files under `patches/`, and the import statements of every non-vendored Go file. A *guard* is a Go test file, or a gate script under `scripts/ci/`, that names the item (the patch path or file name, the pin variable, the quoted import path). That a guard exists is derived; that it is sufficient is not.
+- Shared code: `go.mod` and `lakehouse-traces/go.mod` (upstream modules), `Makefile` pins, the files under `patches/`, and the import statements of every non-vendored Go file. A *guard* is a Go test file, or a gate script under `scripts/ci/`, that names the item (the patch path or file name, the pin variable, the quoted import path). An item named by more than three files shows *many* instead of a list or a count, so the report does not change each time a test is added. That a guard exists is derived; that it is sufficient is not.
 - Pending reasons: the row's kind, layers, request and test links (section 5).

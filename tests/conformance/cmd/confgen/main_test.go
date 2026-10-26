@@ -256,9 +256,9 @@ func TestBuildPlan_ProofCoverage(t *testing.T) {
 			t.Errorf("the Markdown and JSON verdicts disagree: Markdown lacks %q", want)
 		}
 	}
-	// Spelled in two halves so this file does not itself name the patch and the
-	// pin, which would make it a "guard" of both in the report it checks.
-	if !strings.Contains(string(md), "`patches/vl-logs/"+"vlstorage-dispatch.patch`") || !strings.Contains(string(md), "`VL_COMMIT"+"_TRACES`") {
-		t.Error("the shared-code scan must list the real patches and pins")
+	// This file names no patch and no pin, which would make it a "guard" of
+	// them in the report it checks.
+	if !strings.Contains(string(md), "### Pins (Makefile)") || !strings.Contains(string(md), "| `patches/vl-logs/") {
+		t.Error("the shared-code scan must list the real pins and patches")
 	}
 }

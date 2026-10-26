@@ -357,7 +357,7 @@ func TestProofCoverage_SharedCode(t *testing.T) {
 		t.Errorf("packages = %+v libs = %d", s.Packages, s.LibPackages)
 	}
 	a := s.Packages[0]
-	if a.Package != "VictoriaLogs/lib/logstorage" || a.SrcLogs != 1 || a.SrcTraces != 1 || !a.Guarded || a.TestFiles != 1 {
+	if a.Package != "VictoriaLogs/lib/logstorage" || !a.InLogs || !a.InTraces || !a.Guarded || len(a.Guards) != 1 {
 		t.Errorf("logstorage = %+v", a)
 	}
 	var dirOnly *SharedItem
@@ -559,5 +559,60 @@ func TestPendingReason(t *testing.T) {
 		if got := pendingReason(&c.row); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// TestComputeShared_GuardListsAreStable: the report must not move each time a
+// test is added to a heavily guarded item, so an item with more than three
+// guards says "many" and lists none; sparse items name their guards; an item
+// with no guard lists an empty (non-nil) list, for stable JSON.
+func TestComputeShared_GuardListsAreStable(t *testing.T) {
+	const pkg = "github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	const sparse = "github.com/VictoriaMetrics/VictoriaLogs/app/vlstorage"
+	in := &SharedCodeInput{
+		Pins:    []PinRef{{Name: "P", Guards: []string{"e_test.go", "a_test.go", "d_test.go", "b_test.go", "c_test.go"}}, {Name: "Q", Guards: []string{"c.go", "a.go", "b.go"}}},
+		Patches: []PatchRef{{Path: "patches/x/p.patch", DirGuards: []string{"1", "2", "3", "4"}}, {Path: "patches/x/q.patch"}},
+		Imports: []ImportUse{
+			{Path: pkg, Module: "logs", File: "a.go", Kind: ImportSrc},
+			{Path: sparse, Module: "logs", File: "a.go", Kind: ImportSrc},
+			{Path: sparse, Module: "logs", File: "s_test.go", Kind: ImportTest},
+		},
+	}
+	for _, f := range []string{"z_test.go", "y_test.go", "x_test.go", "w_test.go"} {
+		in.Imports = append(in.Imports, ImportUse{Path: pkg, Module: "logs", File: f, Kind: ImportTest})
+	}
+	sc := computeShared(in)
+	pins := map[string]SharedItem{}
+	for _, p := range sc.Pins {
+		pins[p.Name] = p
+	}
+	if p := pins["P"]; !p.Guarded || !p.GuardsMany || len(p.Guards) != 0 || p.Guards == nil {
+		t.Errorf("five guards must read as many, with an empty non-nil list: %+v", p)
+	}
+	if q := pins["Q"]; !q.Guarded || q.GuardsMany || strings.Join(q.Guards, ",") != "a.go,b.go,c.go" {
+		t.Errorf("three guards are named, sorted: %+v", q)
+	}
+	if p := sc.Patches[0]; !p.Guarded || !p.DirGuardsMany || len(p.DirGuards) != 0 || p.GuardsMany {
+		t.Errorf("four directory guards read as many: %+v", p)
+	}
+	if q := sc.Patches[1]; q.Guarded || q.GuardsMany || q.Guards == nil || len(q.Guards) != 0 {
+		t.Errorf("an unguarded patch lists an empty non-nil list: %+v", q)
+	}
+	pk := map[string]PackageItem{}
+	for _, p := range sc.Packages {
+		pk[p.Package] = p
+	}
+	if p := pk["VictoriaLogs/lib/logstorage"]; !p.Guarded || !p.GuardsMany || len(p.Guards) != 0 {
+		t.Errorf("a package named by four tests reads as many: %+v", p)
+	}
+	if p := pk["VictoriaLogs/app/vlstorage"]; !p.Guarded || p.GuardsMany || strings.Join(p.Guards, ",") != "s_test.go" {
+		t.Errorf("a package named by one test names it: %+v", p)
+	}
+	if sc.Unguarded != 1 || sc.UnguardedItems[0] != "patch patches/x/q.patch" {
+		t.Errorf("unguarded = %d %v", sc.Unguarded, sc.UnguardedItems)
+	}
+	md := (&ProofCoverage{Shared: sc}).Markdown()
+	if !strings.Contains(md, "many (more than 3 files)") {
+		t.Errorf("the table must say many:\n%s", md)
 	}
 }

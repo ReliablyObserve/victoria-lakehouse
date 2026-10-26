@@ -73,18 +73,33 @@ type SharedItem struct {
 	Detail    string   `json:"detail,omitempty"`
 	Guards    []string `json:"guards"`
 	DirGuards []string `json:"dir_guards,omitempty"`
-	Guarded   bool     `json:"guarded"`
+	// GuardsMany and DirGuardsMany are true when more than maxListedGuards
+	// files name the item (or its directory); the matching list is then empty.
+	GuardsMany    bool `json:"guards_many"`
+	DirGuardsMany bool `json:"dir_guards_many,omitempty"`
+	Guarded       bool `json:"guarded"`
 }
 
-// PackageItem is one imported upstream package.
+// maxListedGuards is how many guard files the report names per item. The report
+// must be regenerated whenever its inputs change, so it carries no count and no
+// long list that moves each time a test file is added: a package like
+// lib/logstorage is named by hundreds of tests. An item with up to this many
+// guards names them (that is where knowing which guard matters); an item with
+// more says "many". An item that gains its first guard, or loses its last,
+// always changes the report.
+const maxListedGuards = 3
+
+// PackageItem is one imported upstream package: whether shipped code of each
+// module imports it, and whether any test or gate names it.
 type PackageItem struct {
-	Package     string   `json:"package"`
-	SrcLogs     int      `json:"src_files_logs_module"`
-	SrcTraces   int      `json:"src_files_traces_module"`
-	TestFiles   int      `json:"guard_files"`
-	Guards      []string `json:"guards"`
-	Guarded     bool     `json:"guarded"`
-	UpstreamLib bool     `json:"-"`
+	Package  string   `json:"package"`
+	InLogs   bool     `json:"imported_by_logs_module"`
+	InTraces bool     `json:"imported_by_traces_module"`
+	Guards   []string `json:"guards"`
+	// GuardsMany is true when more than maxListedGuards files name the
+	// package; Guards is then empty.
+	GuardsMany bool `json:"guards_many"`
+	Guarded    bool `json:"guarded"`
 }
 
 // SharedCoverage is the computed shared-code section.
@@ -126,6 +141,8 @@ func computeShared(in *SharedCodeInput) SharedCoverage {
 
 	add := func(it SharedItem) SharedItem {
 		it.Guarded = len(it.Guards) > 0 || len(it.DirGuards) > 0
+		it.Guards, it.GuardsMany = limitGuards(it.Guards)
+		it.DirGuards, it.DirGuardsMany = limitGuards(it.DirGuards)
 		sc.Items++
 		if it.Guarded {
 			sc.Guarded++
@@ -192,7 +209,8 @@ func computeShared(in *SharedCodeInput) SharedCoverage {
 			g = append(g, f)
 		}
 		sort.Strings(g)
-		pi := PackageItem{Package: rel, SrcLogs: len(a.logsSrc), SrcTraces: len(a.tracesSrc), TestFiles: len(g), Guards: g, Guarded: len(g) > 0}
+		pi := PackageItem{Package: rel, InLogs: len(a.logsSrc) > 0, InTraces: len(a.tracesSrc) > 0, Guarded: len(g) > 0}
+		pi.Guards, pi.GuardsMany = limitGuards(g)
 		sc.Packages = append(sc.Packages, pi)
 		sc.Items++
 		if pi.Guarded {
@@ -213,24 +231,30 @@ func sortedCopy(in []string) []string {
 	return out
 }
 
-// shortList renders at most max file names and the count of the rest.
-func shortList(files []string, max int) string {
-	if len(files) == 0 {
+// limitGuards returns the sorted list itself when it has at most
+// maxListedGuards entries, and an empty list with many=true otherwise. The
+// result is never nil, so the JSON is stable.
+func limitGuards(in []string) (list []string, many bool) {
+	if len(in) > maxListedGuards {
+		return []string{}, true
+	}
+	return append([]string{}, in...), false
+}
+
+// guardCell renders a guard list for a table cell: the names, "many" when the
+// list was too long to be kept (see maxListedGuards), or a dash for none.
+func guardCell(files []string, many bool) string {
+	switch {
+	case many:
+		return fmt.Sprintf("many (more than %d files)", maxListedGuards)
+	case len(files) == 0:
 		return "—"
 	}
-	shown := files
-	if len(shown) > max {
-		shown = shown[:max]
-	}
-	parts := make([]string, len(shown))
-	for i, f := range shown {
+	parts := make([]string, len(files))
+	for i, f := range files {
 		parts[i] = "`" + f + "`"
 	}
-	s := strings.Join(parts, ", ")
-	if len(files) > max {
-		s += fmt.Sprintf(" (+%d)", len(files)-max)
-	}
-	return s
+	return strings.Join(parts, ", ")
 }
 
 func (pc *ProofCoverage) writeShared(b *strings.Builder) {
@@ -252,20 +276,20 @@ func (pc *ProofCoverage) writeShared(b *strings.Builder) {
 
 	b.WriteString("### Pins (Makefile)\n\n| Pin | Value | Guard |\n|---|---|---|\n")
 	for _, p := range s.Pins {
-		fmt.Fprintf(b, "| `%s` | `%s` | %s |\n", p.Name, p.Detail, shortList(p.Guards, 2))
+		fmt.Fprintf(b, "| `%s` | `%s` | %s |\n", p.Name, p.Detail, guardCell(p.Guards, p.GuardsMany))
 	}
 	b.WriteString("\n")
 
 	b.WriteString("### Patches and compiled-in sources (`patches/`)\n\n| File | Kind | Named by | Directory named by |\n|---|---|---|---|\n")
 	for _, p := range s.Patches {
-		fmt.Fprintf(b, "| `%s` | %s | %s | %s |\n", p.Name, p.Kind, shortList(p.Guards, 2), shortList(p.DirGuards, 2))
+		fmt.Fprintf(b, "| `%s` | %s | %s | %s |\n", p.Name, p.Kind, guardCell(p.Guards, p.GuardsMany), guardCell(p.DirGuards, p.DirGuardsMany))
 	}
 	b.WriteString("\n")
 
-	fmt.Fprintf(b, "### Imported upstream packages\n\n%d VictoriaLogs / VictoriaTraces packages are imported by shipped code (plus %d `VictoriaMetrics/lib` packages, not listed). *Logs* and *traces* count the non-test Go files of each module that import the package; *Guard files* count the Go tests and gates that name its quoted import path.\n\n", len(s.Packages), s.LibPackages)
-	b.WriteString("| Package | Logs | Traces | Guard files | Guards |\n|---|--:|--:|--:|---|\n")
+	fmt.Fprintf(b, "### Imported upstream packages\n\n%d VictoriaLogs / VictoriaTraces packages are imported by shipped code (plus %d `VictoriaMetrics/lib` packages, not listed). *Logs* and *traces* say which module's non-test Go files import the package; *Guards* are the Go tests and gates that name its quoted import path, listed when there are at most three and summarised as *many* beyond that (no counts are kept: they would change with every added test).\n\n", len(s.Packages), s.LibPackages)
+	b.WriteString("| Package | Logs | Traces | Guards |\n|---|---|---|---|\n")
 	for _, p := range s.Packages {
-		fmt.Fprintf(b, "| `%s` | %d | %d | %d | %s |\n", p.Package, p.SrcLogs, p.SrcTraces, p.TestFiles, shortList(p.Guards, 2))
+		fmt.Fprintf(b, "| `%s` | %s | %s | %s |\n", p.Package, yesNo(p.InLogs), yesNo(p.InTraces), guardCell(p.Guards, p.GuardsMany))
 	}
 	b.WriteString("\n")
 
@@ -284,8 +308,8 @@ func (pc *ProofCoverage) writeShared(b *strings.Builder) {
 
 var (
 	upstreamImportRe = regexp.MustCompile(`"(github\.com/VictoriaMetrics/(?:VictoriaLogs|VictoriaTraces|VictoriaMetrics)/[^"\s]+)"`)
-	goModRequireRe   = regexp.MustCompile(`(?m)^\s*(?:require\s+)?(github\.com/VictoriaMetrics/(?:VictoriaLogs|VictoriaTraces|VictoriaMetrics))\s+(v\S+)`)
-	goModReplaceRe   = regexp.MustCompile(`(?m)^\s*replace\s+(github\.com/VictoriaMetrics/(?:VictoriaLogs|VictoriaTraces|VictoriaMetrics))(?:\s+v\S+)?\s+=>\s+(\S+)`)
+	goModRequireRe   = regexp.MustCompile(`(?m)^\s*(?:require\s+)?(github\.com/VictoriaMetrics/(?:VictoriaLogs|VictoriaTraces))\s+(v\S+)`)
+	goModReplaceRe   = regexp.MustCompile(`(?m)^\s*replace\s+(github\.com/VictoriaMetrics/(?:VictoriaLogs|VictoriaTraces))(?:\s+v\S+)?\s+=>\s+(\S+)`)
 )
 
 // pinNames are the Makefile variables that pin the upstream versions.
@@ -451,8 +475,10 @@ func uniqueMatches(re *regexp.Regexp, s string) []string {
 	return out
 }
 
-// parseGoModUpstream extracts the VictoriaLogs / VictoriaTraces /
-// VictoriaMetrics requires and replaces of one go.mod, sorted by module.
+// parseGoModUpstream extracts the VictoriaLogs and VictoriaTraces requires and
+// replaces of one go.mod, sorted by module. The VictoriaMetrics library module
+// is left out on purpose: dependency bots bump it, and a bump must not make
+// the generated report stale.
 func parseGoModUpstream(file, content string) []GoModDep {
 	deps := map[string]*GoModDep{}
 	for _, m := range goModRequireRe.FindAllStringSubmatch(content, -1) {

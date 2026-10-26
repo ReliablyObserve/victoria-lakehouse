@@ -144,11 +144,12 @@
     - tests/conformance/report/proof_coverage_test.go#TestIsDifferentiallyLinked
     - tests/conformance/report/proof_coverage_test.go#TestClassifyItem
     - tests/conformance/report/proof_coverage_test.go#TestPendingReason
+    - tests/conformance/report/proof_coverage_test.go#TestComputeShared_GuardListsAreStable
     - tests/conformance/report/proof_shared_test.go#TestScanSharedCode
     - tests/conformance/report/proof_shared_test.go#TestScanSharedCode_Deterministic
     - tests/conformance/report/proof_shared_test.go#TestScanSharedCode_EmptyTree
     - tests/conformance/report/proof_shared_test.go#TestParseGoModUpstream
-    - tests/conformance/report/proof_shared_test.go#TestShortList
+    - tests/conformance/report/proof_shared_test.go#TestGuardCell
     - tests/conformance/cmd/confgen/main_test.go#TestBuildPlan_ProofCoverage
     - tests/conformance/registry/testlinks_test.go#TestTestFuncs_OnlyRealTests
     - tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile

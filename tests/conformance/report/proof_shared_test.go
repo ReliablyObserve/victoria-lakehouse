@@ -101,7 +101,6 @@ func TestScanSharedCode(t *testing.T) {
 
 	wantMods := []GoModDep{
 		{File: "go.mod", Module: "github.com/VictoriaMetrics/VictoriaLogs", Version: "v1.53.0", Replace: "./deps/VictoriaLogs"},
-		{File: "go.mod", Module: "github.com/VictoriaMetrics/VictoriaMetrics", Version: "v1.152.1"},
 		{File: "lakehouse-traces/go.mod", Module: "github.com/VictoriaMetrics/VictoriaTraces", Version: "v0.12.0", Replace: "./deps/VictoriaTraces"},
 	}
 	if !reflect.DeepEqual(in.GoMods, wantMods) {
@@ -174,14 +173,14 @@ replace github.com/VictoriaMetrics/VictoriaLogs v1.0.0 => ../vl
 	}
 }
 
-func TestShortList(t *testing.T) {
-	if got := shortList(nil, 2); got != "—" {
+func TestGuardCell(t *testing.T) {
+	if got := guardCell(nil, false); got != "—" {
 		t.Errorf("empty = %q", got)
 	}
-	if got := shortList([]string{"a", "b"}, 2); got != "`a`, `b`" {
+	if got := guardCell([]string{"a", "b"}, false); got != "`a`, `b`" {
 		t.Errorf("two = %q", got)
 	}
-	if got := shortList([]string{"a", "b", "c", "d"}, 2); got != "`a`, `b` (+2)" {
-		t.Errorf("four = %q", got)
+	if got := guardCell(nil, true); got != "many (more than 3 files)" {
+		t.Errorf("many = %q", got)
 	}
 }
