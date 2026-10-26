@@ -34,6 +34,16 @@ PROOF = ".github/workflows/pr-proof.yaml"
 QUALITY = ".github/workflows/pr-quality.yaml"
 
 
+def read_file(path, mode="r"):
+    with open(path, mode) as f:
+        return f.read()
+
+
+def write_file(path, data):
+    with open(path, "wb" if isinstance(data, bytes) else "w") as f:
+        f.write(data)
+
+
 def png(w=2, h=2, extra=b""):
     def chunk(t, d):
         return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
@@ -631,11 +641,11 @@ class Validate(unittest.TestCase):
     def run_validate(self, api, env=None, out=None):
         with tempfile.TemporaryDirectory() as d:
             gh_out = os.path.join(d, "out.txt")
-            open(gh_out, "w").close()
+            write_file(gh_out, "")
             e = env_for(api, GITHUB_OUTPUT=gh_out, **(env or {}))
             bundle = os.path.join(d, "bundle")
             rc = pc.main(["validate", "--out", bundle], env=e, api=api)
-            outputs = dict(line.split("=", 1) for line in open(gh_out).read().splitlines())
+            outputs = dict(line.split("=", 1) for line in read_file(gh_out).splitlines())
             files = sorted(os.listdir(bundle)) if os.path.isdir(bundle) else []
             return rc, outputs, files
 
@@ -752,7 +762,7 @@ class Validate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             e = env_for(api)
             self.assertEqual(pc.main(["validate", "--out", d], env=e, api=api), 0)
-            body = open(os.path.join(d, "perf-smoke.md")).read()
+            body = read_file(os.path.join(d, "perf-smoke.md"))
             self.assertNotIn("<b>", body)
             self.assertIsNone(re.search(r"@[a-z]", body))
             self.assertEqual(os.listdir(os.path.join(d, "images")), [f"{SHA[:12]}-page.png"])
@@ -767,7 +777,7 @@ class ImageOwnership(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(pc.main(["validate", "--out", d], env=env_for(api), api=api), 0)
             self.assertEqual(os.listdir(os.path.join(d, "images")), [])
-            self.assertNotIn("](", open(os.path.join(d, "perf-smoke.md")).read())
+            self.assertNotIn("](", read_file(os.path.join(d, "perf-smoke.md")))
 
 
 class BundleAndComment(unittest.TestCase):
@@ -808,15 +818,15 @@ class BundleAndComment(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self.bundle(os.path.join(d, "b"), api)
             out = os.path.join(d, "o.txt")
-            open(out, "w").close()
+            write_file(out, "")
             e = env_for(api, GITHUB_OUTPUT=out)
             d = os.path.join(d, "b")
             self.assertEqual(pc.main(["check-bundle", "--bundle", d], env=e, api=api), 0)
-            self.assertIn("current=true", open(out).read())
+            self.assertIn("current=true", read_file(out))
             api.prs = {7: api.pr(7, sha=OTHER_SHA)}
-            open(out, "w").close()
+            write_file(out, "")
             self.assertEqual(pc.main(["check-bundle", "--bundle", d], env=e, api=api), 0)
-            got = open(out).read()
+            got = read_file(out)
             self.assertIn("current=false", got)
             self.assertNotIn("current=true", got)
 
@@ -826,22 +836,22 @@ class BundleAndComment(unittest.TestCase):
             self.bundle(d, api)
             pc.read_bundle(d, REPO)
             img = os.path.join(d, "images", f"{SHA[:12]}-page.png")
-            good = open(img, "rb").read()
-            open(img, "wb").write(b"<script>")
+            good = read_file(img, "rb")
+            write_file(img, b"<script>")
             with self.assertRaisesRegex(pc.Reject, "PNG"):
                 pc.read_bundle(d, REPO)
-            open(img, "wb").write(good)
+            write_file(img, good)
             os.remove(img)
             os.symlink("/etc/hostname", img)
             with self.assertRaisesRegex(pc.Reject, "regular"):
                 pc.read_bundle(d, REPO)
             os.remove(img)
-            open(img, "wb").write(good)
-            open(os.path.join(d, "stray.sh"), "w").write("x")
+            write_file(img, good)
+            write_file(os.path.join(d, "stray.sh"), "x")
             with self.assertRaisesRegex(pc.Reject, "unexpected"):
                 pc.read_bundle(d, REPO)
             os.remove(os.path.join(d, "stray.sh"))
-            open(os.path.join(d, "images", "extra.png"), "wb").write(good)
+            write_file(os.path.join(d, "images", "extra.png"), good)
             with self.assertRaisesRegex(pc.Reject, "images"):
                 pc.read_bundle(d, REPO)
             with self.assertRaisesRegex(pc.Reject, "meta"):
@@ -867,7 +877,7 @@ class DryRun(unittest.TestCase):
     def test_a_zip_of_the_fixture_renders_too(self):
         with tempfile.TemporaryDirectory(dir=ROOT / pc.FIXTURE_ROOT) as d:
             z = os.path.join(d, "a.zip")
-            open(z, "wb").write(make_zip(pc.read_dir(str(ROOT / pc.FIXTURE_ROOT / "valid"))))
+            write_file(z, make_zip(pc.read_dir(str(ROOT / pc.FIXTURE_ROOT / "valid"))))
             self.assertEqual(self.run_cli("--source", z, "--pr", "12345")[0], 0)
 
     def test_a_source_outside_the_fixture_root_is_refused(self):
