@@ -775,6 +775,53 @@ Self-tests: `bash scripts/ci/tests/test_check_registry_touch.sh`,
 repository: PR code, a planted git hook, an edited gate or bootstrap, and an exported
 `TESTLINKS_BIN` never run) and `python -m unittest discover -s scripts/ci/tests`.
 
+## Proof extensions: data layers, tiers, perf scenarios, visual pages, API contracts, shared code
+
+The PR proof (perf smoke, API matrix, visual proof) reads what to run from the registry. These fields exist so a
+cell is declared once, in the registry, instead of in workflow YAML. **Every field is optional**: a row or feature
+that uses none of them loads and validates exactly as before, and no live row uses one yet (rows are migrated in
+later PRs, each reviewed by the owner). The rules are in `registry/proof_ext.go`; `registry/proofrefs.go`
+(`CheckProofRefs`) checks that every pointer resolves in the repository.
+
+### Row fields
+
+| Field | Values | Meaning |
+|---|---|---|
+| `data_layers` | any of `buffer`, `cold`, `compacted`, `after-restart` | The data layers the cell is proven on. The spelling is that of `layers` in `scripts/bench/ab/shapes.json` (a test pins the two together). Not the row's `layers` (`api`, `ui`, `perf`, `chaos`: the kind of test), and `cold` is not `targets: cold` (the engine that answers). |
+| `tenant_forms` | any of `numeric`, `alias` | The tenant spellings the cell is proven with: upstream's integer AccountID/ProjectID, Lakehouse's string aliases/OrgIDs. |
+| `tier` | `core`, `focused`, `daily` | Where the cell runs in the PR proof: always, only when the changed files reach it, or only in the daily run. One field for every row kind (perf, visual, api-schema, ...). |
+| `perf.scenario` | `{set, shape?}` | Optional keys of the existing `perf` block. `set` is a shape set of `scripts/bench/ab/shapes.json`, `shape` optionally one shape of it by name. |
+| `perf.baseline` | `base`, `hot-vl`, `hot-vt`, `release` | The system the scenario is judged against: the main build, hot VictoriaLogs (logs shapes only), hot VictoriaTraces (traces shapes only), the previous release. |
+| `perf.gate` | `counters`, `latency`, `none` | What fails a PR: a deterministic counter (S3 requests and bytes, row groups, pages) that rose, a latency beyond `tolerance`, or nothing (reported only). |
+| `perf.tolerance` | `{pct, ms}` | The latency a `latency` gate allows (required with it, rejected with any other gate). |
+| `kind: visual` + `visual` | `{page, ranges?, signals, reference}` | A UI page of `tests/playwright/proof/spec.json` as a row. `page` is the page id; `ranges` (default: the page's own) are capture ranges of that file; `signals` are `logs`/`traces`; `reference` is `hot-vl`, `hot-vt`, `loki`, `tempo` or `release`. `compare` is `ui`; no `request`, no `seed`. |
+| `kind: api-schema` + `contract` | `tests/conformance/contracts/<row id>.json` | A Lakehouse-only API (`/lakehouse/api/v1/*`, `/lakehouse/info`): surface `lh`, origin `lh-addition`, `request.path` under `/lakehouse/`, `compare: schema`, and the committed JSON contract. |
+| `kind: shared-code` + `shared_code` | `{type, name, binaries, gate?}` | Code shared with, imported from or patched into VictoriaLogs/VictoriaTraces. `type` is `patch` (`name`: `patches/**/*.patch`), `src` (`patches/**/*.src`), `package` (a Go import path) or `pin` (`VL_VERSION_LOGS`, `VL_COMMIT_TRACES`, `VT_VERSION`); `binaries` are `logs`/`traces`; `gate` is a CI script besides the tests. The guard tests are `refs.tests` (required), as for a durability cell. Origin `lh-addition`; no `request`, `compare` or `seed`. |
+
+The `perf` scenario keys sit inside the existing `perf` block: every rule of that block still applies (perf layer,
+`cell`, `counters`, a budget on a pass row), and the parity-lock perf rule treats a change of any of the new keys on
+a pass row as a different measurement (Rule 3 FAIL), like any other key of the block.
+
+### Feature fields
+
+| Field | Values | Meaning |
+|---|---|---|
+| `perf_na` | `{class, reason, see?}` | Why the feature has no perf scenario. `class` is one of `no-runtime-path`, `upstream-unchanged`, `constant-cost`, `ui-only`, `covered-by-feature`. Rejected next to a non-empty `bench:`. |
+| `proof_na` | `{class, reason, see?}` | Why the feature has no API or visual proof. `class` is one of `no-user-surface`, `deploy-only`, `cli-only`, `covered-by-feature`. |
+
+`reason` is required in words. `covered-by-feature` requires `see:` (the feature that has the proof) and no other
+class accepts it; `CheckProofRefs` requires that feature to exist, not to be `*_na` itself (no chains), and to have a
+bench scenario or perf row (`perf_na`) or a registry row (`proof_na`). A new class is a schema change for the owner.
+
+### Examples and tests
+
+`registry/testdata/extensions/` holds three example rows per new kind (four for `shared-code`, one per type), rows
+that carry `data_layers`/`tenant_forms`/`tier`, four example features, and a small fixture repository the pointers
+resolve in. `registry/proof_ext_test.go` (entry point `TestProofExtensions`) covers valid fixtures, every
+rejection with its message, the YAML round trip, dangling pointers and the lock-gate treatment of the perf keys,
+and checks that the live registry's proof pointers resolve. The generated documents (`docs/features.md`,
+`UPSTREAM_COVERAGE.md`) do not show these fields yet.
+
 ## CI scope: which checks a change needs
 
 `pr_classify.py --ci-scope --event pull_request` lets CI decide, from the changed files, which checks a

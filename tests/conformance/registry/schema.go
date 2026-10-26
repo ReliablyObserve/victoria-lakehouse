@@ -35,6 +35,7 @@ const (
 	// write mode, one signal, with the guarantee that holds and the Go tests that
 	// prove it. It is backed by tests, not by an HTTP request and compare.
 	KindDurability Kind = "durability"
+	// KindVisual, KindAPISchema and KindSharedCode are declared in proof_ext.go.
 
 	OriginNative     Origin = "native"
 	OriginLHShim     Origin = "lh-shim"
@@ -188,6 +189,14 @@ type Perf struct {
 	Cell     string        `yaml:"cell"`
 	Budget   *PerfBudget   `yaml:"budget,omitempty"`
 	Counters *PerfCounters `yaml:"counters,omitempty"`
+
+	// Scenario, Baseline, Gate and Tolerance are optional (proof_ext.go): they
+	// tie the cell to a shape set of scripts/bench/ab/shapes.json, say which
+	// system it is judged against and what fails a PR. Set together.
+	Scenario  *PerfScenario  `yaml:"scenario,omitempty"`
+	Baseline  string         `yaml:"baseline,omitempty"` // base, hot-vl, hot-vt, release
+	Gate      string         `yaml:"gate,omitempty"`     // counters, latency, none
+	Tolerance *PerfTolerance `yaml:"tolerance,omitempty"`
 }
 
 // Durability describes one cell of the durability matrix (kind=durability): the
@@ -251,6 +260,14 @@ type Row struct {
 	Notes      string            `yaml:"notes,omitempty"`
 	Perf       *Perf             `yaml:"perf,omitempty"`
 	Durability *Durability       `yaml:"durability,omitempty"`
+
+	// Proof-harness extensions (proof_ext.go). All optional.
+	DataLayers  []string    `yaml:"data_layers,omitempty"`  // buffer, cold, compacted, after-restart
+	TenantForms []string    `yaml:"tenant_forms,omitempty"` // numeric, alias
+	Tier        string      `yaml:"tier,omitempty"`         // core, focused, daily
+	Contract    string      `yaml:"contract,omitempty"`     // kind=api-schema: tests/conformance/contracts/<row id>.json
+	Visual      *Visual     `yaml:"visual,omitempty"`       // kind=visual
+	SharedCode  *SharedCode `yaml:"shared_code,omitempty"`  // kind=shared-code
 }
 
 type Registry struct {
@@ -292,7 +309,7 @@ func (r *Row) Validate() error {
 
 	// Kind validation
 	switch r.Kind {
-	case KindSelect, KindInsert, KindPipe, KindFilter, KindStats, KindTraceQL, KindFlag, KindUI, KindAdmin, KindInternal, KindDurability:
+	case KindSelect, KindInsert, KindPipe, KindFilter, KindStats, KindTraceQL, KindFlag, KindUI, KindAdmin, KindInternal, KindDurability, KindVisual, KindAPISchema, KindSharedCode:
 	default:
 		add("kind %q invalid", r.Kind)
 	}
@@ -341,7 +358,7 @@ func (r *Row) Validate() error {
 	// rules are Expect-specific.
 	switch r.Expect {
 	case ExpectPass, ExpectDiffer:
-		if len(r.Seed) == 0 && r.Kind != KindFlag && r.Kind != KindDurability {
+		if len(r.Seed) == 0 && r.Kind != KindFlag && r.Kind != KindDurability && r.Kind != KindVisual && r.Kind != KindSharedCode {
 			add("seed required when expect=%s", r.Expect)
 		}
 	case ExpectAbsent:
@@ -391,7 +408,7 @@ func (r *Row) Validate() error {
 	}
 
 	// Request validation
-	if r.Kind != KindUI && r.Kind != KindFlag && r.Kind != KindDurability && r.Request == nil {
+	if r.Kind != KindUI && r.Kind != KindFlag && r.Kind != KindDurability && r.Kind != KindVisual && r.Kind != KindSharedCode && r.Request == nil {
 		add("request required for kind=%s", r.Kind)
 	}
 	if r.Request != nil {
@@ -413,6 +430,8 @@ func (r *Row) Validate() error {
 		if r.Request != nil {
 			add("request not allowed for kind=durability")
 		}
+	} else if r.Kind == KindSharedCode {
+		// no compare: the guard tests prove it (validateSharedCode rejects one)
 	} else if r.Compare == nil {
 		add("compare required")
 	} else {
@@ -420,11 +439,11 @@ func (r *Row) Validate() error {
 			add("compare.type %q unknown", r.Compare.Type)
 		}
 		// Comparator coherence: ui kind requires ui comparator
-		if r.Kind == KindUI && r.Compare.Type != "ui" {
+		if (r.Kind == KindUI || r.Kind == KindVisual) && r.Compare.Type != "ui" {
 			add("compare.type %q incompatible with kind %q", r.Compare.Type, r.Kind)
 		}
 		// Non-ui kinds must not use ui comparator
-		if r.Kind != KindUI && r.Compare.Type == "ui" {
+		if r.Kind != KindUI && r.Kind != KindVisual && r.Compare.Type == "ui" {
 			add("compare.type %q incompatible with kind %q", r.Compare.Type, r.Kind)
 		}
 		// absent expect requires specific comparators
@@ -547,6 +566,8 @@ func (r *Row) Validate() error {
 			}
 		}
 	}
+
+	r.validateProofExtensions(add)
 
 	if len(errs) == 0 {
 		return nil

@@ -1,0 +1,41 @@
+# Example api-schema rows: Lakehouse-only APIs with a committed JSON contract.
+- id: lh.api.stats_overview.contract
+  title: "/lakehouse/api/v1/stats/overview contract"
+  surface: lh
+  kind: api-schema
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/overview }
+  compare: { type: schema }
+  layers: [api]
+  tier: core
+  contract: tests/conformance/contracts/lh.api.stats_overview.contract.json
+- id: lh.api.info.contract
+  title: "/lakehouse/info contract"
+  surface: lh
+  kind: api-schema
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/info }
+  compare: { type: schema }
+  layers: [api]
+  tier: core
+  contract: tests/conformance/contracts/lh.api.info.contract.json
+- id: lh.api.compaction_status.contract
+  title: "/lakehouse/api/v1/compaction/status contract"
+  surface: lh
+  kind: api-schema
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/compaction/status }
+  compare: { type: schema }
+  layers: [api]
+  tier: focused
+  data_layers: [cold, compacted]
+  contract: tests/conformance/contracts/lh.api.compaction_status.contract.json
