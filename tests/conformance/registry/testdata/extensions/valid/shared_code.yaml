@@ -1,6 +1,6 @@
 # Example shared-code rows: code shared with, imported from or patched into upstream.
-- id: lh.shared.vl_export_severity.patch
-  title: "patches/vl-logs/vl-export-severity.patch applies and stays mirrored"
+- id: lh.shared.example_export.patch
+  title: "patches/example/example-export.patch applies and stays mirrored"
   surface: lh
   kind: shared-code
   origin: lh-addition
@@ -11,11 +11,11 @@
   refs: { tests: ["internal/example/example_test.go#TestPatchApplies"] }
   shared_code:
     type: patch
-    name: patches/vl-logs/vl-export-severity.patch
+    name: patches/example/example-export.patch
     binaries: [logs, traces]
     gate: scripts/ci/check_patches_equal.sh
-- id: lh.shared.external_query.src
-  title: "external_query.go.src compiled into lib/logstorage keeps its markers"
+- id: lh.shared.example_query.src
+  title: "example-query.go.src compiled into lib/logstorage keeps its markers"
   surface: lh
   kind: shared-code
   origin: lh-addition
@@ -26,7 +26,7 @@
   refs: { tests: ["internal/example/example_test.go#TestPatchApplies"] }
   shared_code:
     type: src
-    name: patches/vl-logs/external_query.go.src
+    name: patches/example/example-query.go.src
     binaries: [logs]
 - id: lh.shared.logstorage.package
   title: "lib/logstorage imported by both binaries compiles against both pins"

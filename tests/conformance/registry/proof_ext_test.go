@@ -221,19 +221,19 @@ func proofExt_RowRejects(t *testing.T) {
 		{"api-schema compare must be schema", "lh.api.info.contract", func(r *Row) { r.Compare.Type = "exact-json" }, "compare.type must be schema"},
 
 		// shared-code
-		{"shared-code without block", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode = nil }, "shared_code block required"},
+		{"shared-code without block", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode = nil }, "shared_code block required"},
 		{"shared-code block on another kind", "lh.api.info.contract", func(r *Row) { r.SharedCode = &SharedCode{} }, "shared_code block only allowed for kind=shared-code"},
-		{"shared-code unknown type", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode.Type = "fork" }, `shared_code.type "fork" invalid (package|patch|pin|src)`},
-		{"patch name not a patch", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode.Name = "deps/x.go" }, "patches/**/*.patch"},
-		{"src name not a src", "lh.shared.external_query.src", func(r *Row) { r.SharedCode.Name = "patches/vl-logs/x.patch" }, "patches/**/*.src"},
+		{"shared-code unknown type", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode.Type = "fork" }, `shared_code.type "fork" invalid (package|patch|pin|src)`},
+		{"patch name not a patch", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode.Name = "deps/x.go" }, "patches/**/*.patch"},
+		{"src name not a src", "lh.shared.example_query.src", func(r *Row) { r.SharedCode.Name = "patches/example/x.patch" }, "patches/**/*.src"},
 		{"package name not an import path", "lh.shared.logstorage.package", func(r *Row) { r.SharedCode.Name = "logstorage" }, "Go import path"},
 		{"pin name unknown", "lh.shared.vl_commit_traces.pin", func(r *Row) { r.SharedCode.Name = "GO_VERSION" }, "must be a Makefile pin"},
-		{"no binaries", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode.Binaries = nil }, "shared_code.binaries required"},
-		{"unknown binary", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode.Binaries = []string{"select"} }, `shared_code.binaries: "select" invalid (logs|traces)`},
-		{"no guard tests", "lh.shared.vl_export_severity.patch", func(r *Row) { r.Refs = nil }, "refs.tests required for kind=shared-code"},
-		{"shared-code is not native", "lh.shared.vl_export_severity.patch", func(r *Row) { r.Origin = OriginNative }, "origin must be lh-addition"},
-		{"shared-code has no compare", "lh.shared.vl_export_severity.patch", func(r *Row) { r.Compare = &Compare{Type: "exact-json"} }, "compare not allowed for kind=shared-code"},
-		{"shared-code has no request", "lh.shared.vl_export_severity.patch", func(r *Row) { r.Request = &Request{Method: "GET", Path: "/x"} }, "request not allowed for kind=shared-code"},
+		{"no binaries", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode.Binaries = nil }, "shared_code.binaries required"},
+		{"unknown binary", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode.Binaries = []string{"select"} }, `shared_code.binaries: "select" invalid (logs|traces)`},
+		{"no guard tests", "lh.shared.example_export.patch", func(r *Row) { r.Refs = nil }, "refs.tests required for kind=shared-code"},
+		{"shared-code is not native", "lh.shared.example_export.patch", func(r *Row) { r.Origin = OriginNative }, "origin must be lh-addition"},
+		{"shared-code has no compare", "lh.shared.example_export.patch", func(r *Row) { r.Compare = &Compare{Type: "exact-json"} }, "compare not allowed for kind=shared-code"},
+		{"shared-code has no request", "lh.shared.example_export.patch", func(r *Row) { r.Request = &Request{Method: "GET", Path: "/x"} }, "request not allowed for kind=shared-code"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -388,13 +388,13 @@ func proofExt_RefsDangling(t *testing.T) {
 			r.ID = "lh.api.gone.contract"
 			r.Contract = "tests/conformance/contracts/lh.api.gone.contract.json"
 		}, "contract:"},
-		{"patch missing", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode.Name = "patches/vl-logs/gone.patch" }, "shared_code.name:"},
-		{"src missing", "lh.shared.external_query.src", func(r *Row) { r.SharedCode.Name = "patches/vl-logs/gone.go.src" }, "shared_code.name:"},
+		{"patch missing", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode.Name = "patches/example/gone.patch" }, "shared_code.name:"},
+		{"src missing", "lh.shared.example_query.src", func(r *Row) { r.SharedCode.Name = "patches/example/gone.go.src" }, "shared_code.name:"},
 		{"pin missing in the Makefile", "lh.shared.vl_commit_traces.pin", func(r *Row) { r.SharedCode.Name = "VT_VERSION" }, "is not set in the Makefile"},
-		{"gate missing", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode.Gate = "scripts/ci/gone.sh" }, "shared_code.gate:"},
-		{"gate escapes the repo", "lh.shared.vl_export_severity.patch", func(r *Row) { r.SharedCode.Gate = "../x.sh" }, "must stay inside the repository"},
-		{"guard test missing", "lh.shared.vl_export_severity.patch", func(r *Row) { r.Refs.Tests = []string{"internal/example/example_test.go#TestGone"} }, "refs.tests"},
-		{"guard is not a test", "lh.shared.vl_export_severity.patch", func(r *Row) { r.Refs.Tests = []string{"scripts/ci/check_patches_equal.sh"} }, "not a test"},
+		{"gate missing", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode.Gate = "scripts/ci/gone.sh" }, "shared_code.gate:"},
+		{"gate escapes the repo", "lh.shared.example_export.patch", func(r *Row) { r.SharedCode.Gate = "../x.sh" }, "must stay inside the repository"},
+		{"guard test missing", "lh.shared.example_export.patch", func(r *Row) { r.Refs.Tests = []string{"internal/example/example_test.go#TestGone"} }, "refs.tests"},
+		{"guard is not a test", "lh.shared.example_export.patch", func(r *Row) { r.Refs.Tests = []string{"scripts/ci/check_patches_equal.sh"} }, "not a test"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

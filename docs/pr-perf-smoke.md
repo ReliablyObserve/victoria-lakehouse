@@ -11,8 +11,8 @@ data and the Markdown for three sticky pull request comments:
 | PR quality | `<!-- lh-pr-quality -->` | tests, coverage, registry counts, parity, fuzz targets and lint, base vs PR |
 
 Both of the first two end with **Known differences and gaps**, the list of every difference the run found and what records it.
-Wiring the comments and checks into GitHub Actions, and the visual proof, are separate changes; this one is the harness and its
-tests.
+Posting the comments, wiring the perf smoke and the API matrix into GitHub Actions, and the visual proof are separate changes. The
+quality report is computed in CI as an artifact (see [Quality report](#quality-report)).
 
 ## Running it
 
@@ -203,12 +203,54 @@ registry's known-difference rows cite an issue and how many do not.
 
 ## Quality report
 
-`quality.py collect` snapshots a tree: the number of Go tests and fuzz targets per module (a static count), the registry (rows per
-`expect`, features per status, known differences and how many cite an issue), and, from files the CI jobs already produce, coverage
-profiles, the parity suite's `go test -json` stream (parsed with `scripts/ci/parity_ratchet.py`) and a golangci-lint JSON report.
-`quality.py report` joins a base and a PR snapshot and gates: a module's coverage below 90 % or down by more than 0.2 points, fewer
-tests than the base, more rows that record a difference without new rows, a parity failure outside the allowlist, more lint findings.
-A figure that was not collected is shown as "not collected", never as zero.
+The `pr-quality` workflow (`.github/workflows/pr-quality.yaml`, name `PR Quality`) computes this report for every pull request and uploads
+it as artifacts. It is informational: it is not a required check, it holds a read-only token (`contents: read`, `actions: read`) and cannot
+comment. It is not gated by the CI scope (the scope can only skip a job, and a skipped job leaves the previous head's comment on the pull
+request): a PR that changes no Go package pays for the checkout and the static counts only, and its comment says "skipped" when nothing the
+report counts moved.
+
+What it measures, base (the merge base) vs PR, for both modules:
+
+| Section | Source | Gate |
+|---|---|---|
+| Go tests, fuzz targets | static count of `func Test*` / `func Fuzz*` in the two trees | fewer tests than the base |
+| Coverage | `go test -cover -json` of the Go packages the PR changes (at most 12 per module, the busiest first; the rest is listed), on the merge base and on the PR; the figure is the one `go test -cover` prints, which `scripts/ci/check_coverage.sh` reads in the CI test jobs, with the same 90 % floor and exclusions (a test pins them to `ci.yaml`) | a package under `internal/` below the floor, or down by more than 0.2 points |
+| Registry | rows per `expect`, pending rows, features per status, known-difference rows and how many cite an issue | more `differ`/`unsupported`/`absent` rows without more rows overall |
+| Parity | pass/fail per signal from the parity run of the same head when it has finished, otherwise the allowlist of the tree only (known failures with their issue links, the pass floor) | a failure outside the allowlist |
+| New lint findings | `golangci-lint run --new-from-rev=<merge base>` on the changed packages (the CI lint jobs run whole modules) | any new finding |
+| Flaky-test watch | jobs that failed in one attempt and passed in a later attempt of the same workflow run of this head, with the failed test names read from the failed attempt's log | none (a finding, not noise); fills in only after a re-run |
+| Test time | package time of the coverage run against the 600 s `-timeout` the CI test jobs hold (without `-race`, so a lower bound) | none |
+
+Only the changed packages are measured: the job does not re-run the CI test jobs, so it costs minutes, not the 35 of `test-logs`.
+Measured on `ubuntu-latest`: 1.4 minutes of job time for a PR that changes two small packages, 9.6 minutes for one that changes
+`internal/storage/parquets3` in both modules (the coverage runs of the merge base and the PR are 8 of those). A
+figure that was not collected is shown as "not collected", never as zero. The report puts the verdict first, lists only the rows that
+changed, regressed or fall below the floor, and collapses the rest into a count.
+
+### The artifacts
+
+| Artifact | Files | For |
+|---|---|---|
+| `lh-proof-comment` | `manifest.json`, `pr-quality.md` | the commenter workflow, which runs the base branch's code, treats the artifact as untrusted data, sanitises the body again and posts the sticky comment |
+| `pr-quality-data` | `quality.json` (schema `scripts/bench/ab/schemas/pr-quality.schema.json`, `schema_version` 1) | the data behind the body, for a later trend |
+
+`lh-proof-comment` is the commenter's contract: `manifest.json` has `schema_version`, `pr_number`, `head_sha`, one comment `{kind: pr-quality,
+verdict}` (`pass`, `fail`, `skipped` or `incomplete`), no image, and `allowed_issue_refs` (the issue numbers the body writes as `#N`). The body
+starts with the marker `<!-- lh-pr-quality -->` and uses only text, tables, code spans, attribute-free `<details>`, `<summary>` and `<sub>`,
+links to this repository's runs and issues, and `#N` for the allowed numbers. It is uploaded on every run, also when the job failed (verdict
+`incomplete`), so a stale verdict never stays. Every string that comes from the PR (test names, file paths, lint text) goes through `md_safe` /
+`md_code` in `quality_bundle.py`, which defuse it the way the commenter's sanitiser does (so the sanitiser leaves it unchanged), and the
+body is capped at 60000 characters with a note. `quality.py verify <dir>` checks a directory against these rules, and the tests hold the
+body to them.
+
+### Run it by hand
+
+```bash
+python3 scripts/bench/ab/quality.py packages --base-ref origin/main --module root          # what would be measured
+python3 scripts/bench/ab/quality.py collect --tree . --out pr.json --gotest root=go-test.json --module-path root=github.com/ReliablyObserve/victoria-lakehouse
+python3 scripts/bench/ab/quality.py bundle --base base.json --pr pr.json --out-dir lh-proof-comment --data-dir pr-quality-data --pr-number N --head-sha SHA
+python3 -m pytest scripts/bench/ab/tests/test_quality*.py -q
+```
 
 ## Limits
 

@@ -131,6 +131,27 @@
     - tests/conformance/registry/schema_durability_test.go#TestDurability_RealRegistry
     - tests/conformance/registry/proof_ext_test.go#TestProofExtensions
     - tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_KindCounts
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_AgreesWithUpstreamCoverageDoc
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_PassRowSplit
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_FeatureClasses
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_PendingReasons
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_SharedCode
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_Verdict
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_Deterministic
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_JSONShape
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_MarkdownHeadlines
+    - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_NilInputs
+    - tests/conformance/report/proof_coverage_test.go#TestIsDifferentiallyLinked
+    - tests/conformance/report/proof_coverage_test.go#TestClassifyItem
+    - tests/conformance/report/proof_coverage_test.go#TestPendingReason
+    - tests/conformance/report/proof_coverage_test.go#TestComputeShared_GuardListsAreStable
+    - tests/conformance/report/proof_shared_test.go#TestScanSharedCode
+    - tests/conformance/report/proof_shared_test.go#TestScanSharedCode_Deterministic
+    - tests/conformance/report/proof_shared_test.go#TestScanSharedCode_EmptyTree
+    - tests/conformance/report/proof_shared_test.go#TestParseGoModUpstream
+    - tests/conformance/report/proof_shared_test.go#TestGuardCell
+    - tests/conformance/cmd/confgen/main_test.go#TestBuildPlan_ProofCoverage
     - tests/conformance/registry/testlinks_test.go#TestTestFuncs_OnlyRealTests
     - tests/conformance/registry/testlinks_test.go#TestIsLinkedTestFile
     - tests/conformance/registry/testlinks_test.go#TestDiffAddedTests_MovesAreNotAdds
@@ -215,6 +236,7 @@
   docs:
     - tests/conformance/README.md
     - UPSTREAM_COVERAGE.md
+    - docs/proof-coverage.md
   changelog_bullets:
     - 'Conformance registry + upstream inventory (verification machine, first slice).'
     - 'Registry gate: lock packages are owner-gated, locks are `file#Test`, run nonce.'
@@ -224,7 +246,9 @@
     The registry is the answer to "what does upstream have that we might have missed". The
     inventory is extracted from the vendored sources rather than maintained by hand, the drift
     check is a hard gate on unmapped items and on rows citing something upstream no longer has,
-    and `UPSTREAM_COVERAGE.md` is generated from both.
+    and `UPSTREAM_COVERAGE.md` is generated from both. `docs/proof-coverage.md` (with a
+    machine-readable `proof-coverage.json`) is generated from the same registry and answers what is
+    proven, how, and what is missing.
 
 - id: lh.feature.ops.feature_catalog
   title: Lakehouse feature catalog

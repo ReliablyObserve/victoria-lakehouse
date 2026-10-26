@@ -251,6 +251,30 @@ Checklist:
 `docs/features.md` and the README block between `<!-- features:begin -->` and
 `<!-- features:end -->` are generated — never edit them by hand.
 
+## Proof coverage report
+
+[`docs/proof-coverage.md`](../../docs/proof-coverage.md) is the single answer to "what is
+proven, how, and what is missing". `make conformance-gen` computes it from the rows, the
+feature catalog, the upstream inventory and the repository tree (`report/proof_coverage.go`,
+`report/proof_shared.go`); `make conformance-check` fails when it is stale, like the other
+generated files, so it is regenerated in the same PR as any registry change. It is
+deterministic (sorted, no timestamps). It holds, with a verdict header first:
+
+- per upstream kind and signal: items, with a row, verified, pending, differs, absent or
+  unsupported, no row, and how many link a differential test;
+- the upstream pass rows split into differential (the row targets `hot` and links a test
+  under `tests/parity/` or `tests/e2e/`), other test and no test, with the no-test row ids;
+- every shipped feature with its rows, tests, perf scenario and a proof class
+  (`upstream-exact`, `lh-extension`, `perf-proven`, `unproven`);
+- the shared upstream code (Makefile pins, `patches/` files, imported VictoriaLogs and
+  VictoriaTraces packages) and which of them no Go test or `scripts/ci` gate names;
+- the pending rows by reason (waiting for the HTTP runner, or executed by another CI job
+  or by cited Go tests).
+
+`docs/proof-coverage.json` carries the same numbers for PR comments (`verdict` holds the
+headline keys). The report reads only what the registry already declares; a link is a name,
+not proof that the named test checks that exact request.
+
 ## Registry gate on every PR
 
 Owner rule (2026-10-07): no PR merges unless its behaviour changes and its tests are covered by
