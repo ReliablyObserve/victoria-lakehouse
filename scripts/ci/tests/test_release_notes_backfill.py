@@ -2,6 +2,7 @@
 
 import contextlib
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import changelog_fragments as cf  # noqa: E402
 import release_notes_backfill as bf  # noqa: E402
 
 ARTIFACTS = (
@@ -525,6 +527,24 @@ class WithGit(unittest.TestCase):
         with self.assertRaises(bf.NoEntry):
             bf.notes_for_tag(repo, "v1.0.2", "2026-05-02")
 
+    def test_planner_on_real_tags_with_legacy_text_and_with_fragments(self):
+        empty = "# Changelog\n\n## [Unreleased]\n\n## [0.9.0] - 2025-12-01\n"
+        self.commit("v1.0.0", BEFORE)
+        self.commit("v1.0.1", AFTER)  # hand-written [Unreleased], as every release before v0.167.12
+        self.commit("v1.0.2", empty, {"7.added.md": "- **Fragment feature.** f\n"})  # fragments, empty [Unreleased]
+        self.commit("v1.0.3", empty, {"7.added.md": "- **Fragment feature.** f\n", "8.fixed.md": "- **Fragment fix.** g\n"})
+        repo = bf.Repo(self.root)
+        legacy = bf.plan_release(repo, rel("v1.0.1"))
+        self.assertEqual(legacy["status"], bf.EDIT, legacy["reason"])
+        self.assertIn("**New fix", legacy["new_body"])
+        self.assertNotIn("Old fix", legacy["new_body"])
+        fragment = bf.plan_release(repo, rel("v1.0.2"))
+        self.assertEqual(fragment["status"], bf.EDIT, fragment["reason"])
+        self.assertIn("* FEATURE: **Fragment feature.** f", fragment["new_body"])
+        after = bf.plan_release(repo, rel("v1.0.3"))
+        self.assertIn("**Fragment fix.**", after["new_body"])
+        self.assertNotIn("Fragment feature", after["new_body"])
+
     def test_plan_through_the_real_repo_and_main_dry_run(self):
         self.commit("v1.0.0", BEFORE)
         self.commit("v1.0.1", AFTER)
@@ -543,6 +563,136 @@ class WithGit(unittest.TestCase):
         for needle in ("considered: 3", "excluded as immutable or published after the cutoff: 1", "eligible, notes rewritten on apply: 2", "LH_BACKFILL_APPLY=yes", "--apply"):
             self.assertIn(needle, report)
         self.assertTrue((out / "new" / "v1.0.1.md").read_text().endswith(ARTIFACTS))
+
+
+class LegacyAssembly(unittest.TestCase):
+    """Historical tags were cut with hand-written [Unreleased] text, which the release assembler refuses.
+
+    The backfill merges it itself (bf.legacy_assemble); the release path stays strict and cannot reach it.
+    """
+
+    ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+    def test_the_release_assembler_still_refuses_legacy_text(self):
+        with self.assertRaisesRegex(cf.AssembleError, "text under '## \\[Unreleased\\]'"):
+            cf.assemble(AFTER, [], "1.0.1", "2026-05-01")
+
+    def test_the_backfill_assembles_the_same_text(self):
+        assembled = bf.legacy_assemble(AFTER, [], "1.0.1", "2026-05-01")
+        self.assertIn("## [1.0.1] - 2026-05-01\n\n### Added\n\n- **New feature.**", assembled)
+        self.assertIn("### Fixed\n\n- **Old fix (#10).**", assembled)
+        self.assertTrue(assembled.index("### Added") < assembled.index("### Fixed"))  # Keep a Changelog order
+
+    def test_legacy_text_and_fragments_merge_in_one_section(self):
+        fragment, _ = bf.cc.parse_fragment("changelog.d/9.fixed.md", "- **Fragment fix.** f\n")
+        assembled = bf.legacy_assemble(AFTER, [fragment], "1.0.1", "2026-05-01")
+        self.assertIn("- **New fix (#11).** It wraps\n  over two lines.\n\n- **Fragment fix.** f", assembled)
+
+    def test_bad_legacy_text_and_bad_arguments_are_errors(self):
+        for text in (
+            "# C\n\n## [Unreleased]\n\nloose prose\n",
+            "# C\n\n## [Unreleased]\n\n- bullet outside a heading\n",
+            "# C\n\n## [0.9.0] - 2025-01-01\n",
+        ):
+            with self.assertRaises(cf.AssembleError, msg=text):
+                bf.legacy_assemble(text, [], "1.0.1", "2026-05-01")
+        for version, date in (("v1.0.1", "2026-05-01"), ("1.0", "2026-05-01"), ("1.0.1", "2026-13-01")):
+            with self.assertRaises(cf.AssembleError):
+                bf.legacy_assemble(AFTER, [], version, date)
+
+    def test_the_release_path_cannot_reach_the_legacy_merge(self):
+        self.assertFalse(hasattr(cf, "legacy_assemble"))
+        self.assertFalse(hasattr(cf, "legacy_groups"))
+        self.assertEqual(list(inspect.signature(cf.assemble).parameters), ["text", "fragments", "version", "date"])
+        self.assertNotIn("legacy_assemble", inspect.getsource(cf))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            cf.main(["assemble", "--help"])
+        self.assertNotIn("legacy", out.getvalue().lower())
+        for relative in (".github/workflows/auto-release.yaml", "scripts/ci/changelog_fragments.py", "scripts/ci/release_notes.py"):
+            text = pathlib.Path(self.ROOT, relative).read_text(encoding="utf-8")
+            self.assertNotIn("release_notes_backfill", text, relative)
+            self.assertNotIn("legacy_assemble", text, relative)
+
+    def test_the_planner_handles_a_tag_with_legacy_text(self):
+        entry = bf.plan_release(two_tags(), rel())
+        self.assertEqual(entry["status"], bf.EDIT)
+        self.assertIn("**New feature.**", entry["new_body"])
+        self.assertNotIn("Old fix", entry["new_body"])
+
+    def test_the_planner_handles_a_tag_with_fragments_and_an_empty_unreleased(self):
+        empty = "# Changelog\n\n## [Unreleased]\n\n## [0.9.0] - 2025-12-01\n"
+        repo = FakeRepo(
+            {
+                "v1.0.1": {
+                    "changelog": empty,
+                    "fragments": {"changelog.d/2.added.md": "- **Frag.** a\n", "changelog.d/1.fixed.md": "- **Fix.** b\n"},
+                }
+            }
+        )
+        entry = bf.plan_release(repo, rel())
+        self.assertEqual(entry["status"], bf.EDIT)
+        self.assertLess(entry["new_body"].index("* FEATURE: **Frag.**"), entry["new_body"].index("* BUGFIX: **Fix.**"))
+
+    def test_the_planner_handles_legacy_text_next_to_fragments(self):
+        repo = FakeRepo({"v1.0.1": {"changelog": AFTER, "fragments": {"changelog.d/1.fixed.md": "- **Frag fix.** b\n"}}})
+        entry = bf.plan_release(repo, rel())
+        self.assertEqual(entry["status"], bf.EDIT)
+        for lead_in in ("**New fix", "**New feature.**", "**Frag fix.**"):
+            self.assertIn(lead_in, entry["new_body"])
+
+
+class ReleasedEntries(unittest.TestCase):
+    def render(self, text, version="Unreleased"):
+        return bf.rn.render(text, version, "2026-05-01")[0]
+
+    def test_nothing_released_changes_nothing(self):
+        notes = self.render(AFTER)
+        self.assertEqual(bf.without_released(notes, set()), notes)
+
+    def test_entries_with_nested_items_and_paragraphs_are_kept_whole(self):
+        text = "# C\n\n## [Unreleased]\n\n### Fixed\n\n- **A.** one\n  - nested\n\n  second paragraph\n- **B.** two\n"
+        notes = self.render(text)
+        self.assertEqual(bf.without_released(notes, set()), notes)
+        _, items = bf.notes_items(notes)
+        self.assertEqual(len(items), 2)
+        self.assertIn("  - nested", items[0][1])
+        self.assertIn("  second paragraph", items[0][1])
+        dropped = bf.without_released(notes, {items[1][1]})
+        self.assertIn("**A.** one", dropped)
+        self.assertNotIn("**B.**", dropped)
+
+    def test_dropping_everything_leaves_no_entry(self):
+        notes = self.render(AFTER)
+        released = {text for _, text in bf.notes_items(notes)[1]}
+        left = bf.without_released(notes, released)
+        self.assertEqual(left, "Released at 2026-05-01\n\nNo user-visible changes.\n")
+        with self.assertRaises(bf.NoEntry):
+            bf.check_entry(left)
+
+    def test_prose_and_update_notes_before_the_entries_stay(self):
+        text = "# C\n\n## [Unreleased]\n\nSome prose.\n\n### Update notes\n\n- change the flag\n\n### Added\n\n- **A.** a\n- **B.** b\n"
+        notes = self.render(text)
+        released = {text for _, text in bf.notes_items(notes)[1] if "**A.**" in text}
+        left = bf.without_released(notes, released)
+        self.assertIn("Some prose.", left)
+        self.assertIn("**Update note:** change the flag", left)
+        self.assertNotIn("**A.**", left)
+        self.assertIn("* FEATURE: **B.** b", left)
+
+    def test_groups_keep_the_upstream_order(self):
+        text = "# C\n\n## [Unreleased]\n\n### Fixed\n\n- **F.** f\n\n### Security\n\n- **S.** s\n\n### Added\n\n- **A.** a\n"
+        left = bf.without_released(self.render(text), set())
+        self.assertEqual([l.split(":")[0] for l in left.split("\n") if l.startswith("* ")], ["* SECURITY", "* FEATURE", "* BUGFIX"])
+
+    def test_count_entries(self):
+        self.assertEqual(bf.count_entries(AFTER, "0.9.0"), 1)
+        self.assertEqual(bf.count_entries(AFTER, "9.9.9"), 0)
+        self.assertEqual(bf.count_entries(AFTER, "Unreleased"), 3)
+
+    def test_unreleased_items_of_a_changelog_without_the_section(self):
+        self.assertEqual(bf.unreleased_items("# C\n\n## [0.9.0] - 2025-01-01\n"), set())
+        self.assertEqual(len(bf.unreleased_items(AFTER)), 3)
 
 
 class Report(unittest.TestCase):
