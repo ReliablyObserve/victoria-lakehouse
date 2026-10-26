@@ -35,10 +35,11 @@ images/<name>.png                                                    only the PN
 Only a manifest that posts `visual-proof` may carry images, and only the `visual-proof` body may show them: publishing
 replaces the pull request's whole `pr-<N>/` image folder, so two producers must never publish for the same head.
 
-**Always emit every kind you own.** A comment kind that a later head does not emit keeps the previous head's verdict on
-screen, and so does a run that dies before the upload. Emit each kind on every run, with the verdict `skipped` or
-`incomplete` and a short "did not complete" body when the job failed (the harness already renders such a body), so a stale
-verdict never stays. The commenter itself posts nothing when a run has no artifact.
+**Emit every kind you own, on every run.** A comment kind that a later head does not emit would keep the previous head's verdict
+on screen. When a run uploads no artifact, or one that fails validation, the commenter replaces the producer's older comments
+with a "no valid proof for this head" banner (see "A head without valid proof"). When a job fails after producing partial
+results, upload the artifact anyway (`if: always()`) with the verdict `incomplete` or `skipped` and a short body, which says
+more than the banner does.
 
 ### manifest.json
 
@@ -60,7 +61,7 @@ The schema is `scripts/ci/proof-comment-manifest.schema.json` (JSON Schema 2020-
   verdict-first text.
 * `pr_number` and `head_sha` are claims: they must equal what the GitHub API says (see the cross-checks).
 * `images[].name` matches `[a-z0-9][a-z0-9_.-]{0,60}.png`; at most 80 images, 300 000 bytes each, 8 MiB for everything.
-  Only PNG is accepted: it is what the Playwright capture and the montage emit.
+  Only plain PNG is accepted (see "Images"); it is what the montage emits.
 * `allowed_issue_refs`: up to 20 issue or PR numbers a body may write as `#N` and have auto-linked (the known-difference
   and gap links). Any other `#N` is neutralised.
 
@@ -86,6 +87,17 @@ through unchanged apart from that line (`RealRenderers` in the tests). Sanitisin
 final comment is at most 65 000 characters; a longer body is cut at a line boundary, open code fences and `<details>`
 are closed, and a note says it was cut.
 
+### Images
+
+The files are hosted on `raw.githubusercontent.com`, so an image must carry nothing but pixels. The commenter walks every
+chunk and checks its CRC. Allowed: `IHDR`, `PLTE`, `IDAT`, `IEND` and the fixed-size `pHYs`, `sRGB`, `gAMA`, `cHRM`
+and `tRNS`, each at most once and in a legal order, `IDAT` chunks consecutive. Refused: every other chunk (`tEXt`, `iTXt`,
+`zTXt`, `eXIf`, `iCCP`, `tIME` and private chunks can hold arbitrary data), interlacing, any byte after `IEND`, and any
+`IDAT` stream that does not inflate to exactly `height * (1 + ceil(width * bits per pixel / 8))` bytes (so nothing hides
+behind the zlib stream), with every row's filter byte in 0..4. Width and height are at most 8192 and the picture at most
+16 million pixels. Re-encode with PIL (the montage tool does) if a capture tool writes a text or profile chunk. JPEG is not
+accepted.
+
 ## What the commenter checks
 
 `validate` (token: `actions: read`, `contents: read`, `pull-requests: read`) does, in order, and fails closed:
@@ -96,21 +108,34 @@ are closed, and a note says it was cut.
 3. Reads the run from the API and requires the same event, head SHA, repository, head repository, status `completed`
    and path as the event says. A pull request can edit its own copy of a producer workflow, so the **path** decides which
    kinds the artifact may post.
-4. Lists the artifacts of that run: none named `lh-proof-comment` is a quiet skip; two is a rejection; the artifact must
-   belong to that run and head, and be at most 20 MiB.
-5. Downloads the zip with `gh api` (which drops the token on a cross-host redirect) and reads it **in memory, never
+4. Finds the open pull requests of this repository whose head is exactly that commit **and** that head repository
+   (`commits/{sha}/pulls`, then the newest open pull requests as a fallback). It does not use `workflow_run.pull_requests`
+   to find the PR (it is empty for forks). No such PR (closed, or the head moved on) is a quiet skip. Two pull requests can
+   share a head; both are "the PR" for the notices below, and the manifest picks one for a normal report.
+5. Lists the artifacts of that run: none named `lh-proof-comment` means **no proof**; two, one of another run or head,
+   or one over 20 MiB is rejected.
+6. Downloads the zip with `gh api` (which drops the token on a cross-host redirect) and reads it **in memory, never
    extracting**: at most 120 entries, only the allowlisted names above, no directories except `images/`, no symlink or
    special file, no absolute path, `..`, backslash or duplicate, no encrypted entry, per-entry and total caps enforced on
-   the bytes actually read (a lying size header does not help). Anything else rejects the whole artifact.
-6. Parses the manifest strictly (no duplicate keys, no `NaN`, exact keys and types) and requires its `head_sha` to equal
-   the event's. The `.md` files and the images must be exactly those the manifest lists, each image must be a PNG
-   (signature, `IHDR` with sane dimensions, `IEND`) whose size and SHA-256 match.
-7. Finds the open pull requests of this repository whose head is exactly that commit **and** that head repository
-   (`commits/{sha}/pulls`, then the newest open pull requests as a fallback). It does not use `workflow_run.pull_requests`
-   to find the PR (it is empty for forks); the manifest's `pr_number` must be one of the matches, and be listed by the
-   event when the event lists any. Two pull requests can share a head; the manifest picks one of those.
+   the bytes actually read (a lying size header does not help), a corrupt entry is a clean rejection. Anything else
+   rejects the whole artifact.
+7. Parses the manifest strictly (no duplicate keys, no `NaN`, exact keys and types) and requires its `head_sha` to equal
+   the event's and its `pr_number` to be one of the PRs of step 4 (and listed by the event when the event lists any). The
+   `.md` files and the images must be exactly those the manifest lists, each image a strict PNG whose size and SHA-256
+   match.
 8. Writes the **bundle**: the sanitised bodies, `meta.json`, and only the images a body shows, renamed
    `<head sha 12>-<name>.png`. It is uploaded for the two jobs below.
+
+### A head without valid proof
+
+Steps 5 to 7 end in one of two states. "No proof" (step 5) and "rejected" (steps 5 to 7) both mean the **current head has no
+valid report**. The older report of the same producer must not stay on screen as if it were this head's, and a pull request
+could cause that on purpose by skipping the upload. So the bundle then holds only API facts (the PRs of step 4, the kinds of
+that producer path, the run id and conclusion, a fixed reason code), and the `comment` job **edits the producer's existing
+comments** into `No valid proof for head <sha>`, with the reason, a link to the producing run and to the commenter's own log.
+It creates nothing when no comment exists, touches only the producer's kinds, and obeys the same head and run-id checks as
+a normal report. Nothing taken from the artifact reaches such a banner. A cancelled run, a closed PR and a moved head are
+still plain skips.
 
 `publish` (token: `contents: write`, `pull-requests: read`) re-checks the bundle (file set, regular files, PNG bytes) and
 that the pull request is still open at that head, then runs `scripts/proof/visual/publish.py` from the default branch:
@@ -126,8 +151,14 @@ one parentless commit on the data-only branch `pr-visuals`, folder `pr-<N>/`, pu
   the comment of a newer run;
 * a deleted comment between find and edit falls back to creating one.
 
-Missing artifact, closed pull request, moved head, cancelled run: nothing is posted and the job succeeds with a notice.
-A contract violation (bad zip, wrong SHA, wrong PR number, forbidden kind, bad image) fails the job and posts nothing.
+Closed pull request, moved head, cancelled run: nothing is posted and the job succeeds with a notice. A mismatch between the
+event and the GitHub API (wrong run, repository, head repository, status or path) fails the job and posts nothing. A 403 from
+the API (for example a read-only token) is a warning and the job stays green: nothing is posted.
+
+Every comment ends with a footer that names the head, the producer's verdict and a link to the producing run with the
+conclusion the API reports; a producer verdict `pass` on a run that concluded anything but `success` or `neutral` is flagged.
+An unclosed `<details>`, `<summary>`, `<sub>` or code fence is closed before the footer, so a body cannot hide it. Links to
+this repository's `issues/N` and `pull/N` count as `#N` references: only the numbers in `allowed_issue_refs` are kept.
 
 ## Permissions and untrusted inputs
 
@@ -136,6 +167,7 @@ A contract violation (bad zip, wrong SHA, wrong PR number, forbidden kind, bad i
 | (workflow) | `permissions: {}` | nothing by default | - |
 | `validate` | `actions: read`, `contents: read`, `pull-requests: read` | list/download the artifact, check out this one script, read the PR list | the artifact zip (parsed in memory by Python); `head_repository.full_name` and the run path (format-checked, compared to the API); the fork's head SHA |
 | `publish` | `contents: write`, `pull-requests: read` | push to `pr-visuals` | the bundle (re-validated: PNG bytes, names) |
+| `prune` (`pr-visuals-prune.yaml`, schedule and manual only) | `contents: write`, `pull-requests: read` | drop the folders of PRs that are not open | none (the list of open PRs from the API) |
 | `comment` | `contents: read`, `pull-requests: write` | read the script, write PR comments (`issues: write` is not needed for PR comments) | the bundle (re-validated, sanitised Markdown) |
 | `dry-run` (manual) | `contents: read` | render a committed fixture | `inputs.fixture`, `inputs.pr_number` (the path must stay under `scripts/ci/tests/testdata/proof_comment/`) |
 
@@ -150,8 +182,15 @@ permissions above are the only ones allowed for this workflow, and a new scope, 
 are **unsigned** (CI cannot sign; the alternative is a signing key in CI), an exception to the repository's signed-commit
 rule for a branch that carries no code. Every change is one parentless commit, so removed images become unreachable at once.
 Per pull request the folder is replaced with each new head (at most 80 files of 300 KB), and the files are named with the head
-SHA, so a comment never shows another head's screenshot. Folders of closed pull requests are removed by the clean-up
-workflow (`publish.py remove|prune`), which is a separate change.
+SHA, so a comment never shows another head's screenshot. Folders of pull requests that are no longer open are removed by
+`.github/workflows/pr-visuals-prune.yaml` (weekly and on demand; it runs `publish.py prune` with the list of open pull
+requests, never on a pull request event). Both jobs serialise on the concurrency group `pr-visuals-write`. Nothing may
+require the branch to be fast-forward only: `publish.py` pushes a parentless commit with a lease.
+
+**Image hosting risk.** A fork pull request can cause up to 80 files of 300 KB to be hosted on `raw.githubusercontent.com`
+under this repository's name. The strict PNG check (above) is what limits this to pictures: no text, profile or private
+chunk, no trailing data, no stream that is not exactly the pixels. Compensating controls: the branch is data-only, commits
+are parentless and never merged, `main` still needs a pull request and signatures, and the weekly prune bounds it.
 
 ## Dry run
 
@@ -168,7 +207,13 @@ until the file is merged the unit tests are the evidence.
 ## Limits and open points
 
 * `workflow_run` only starts workflows that exist on the default branch. The first real run is after merge.
+* `workflow_run.workflows` matches the producer's `name:`. A test fails when a producer file that exists is not named `PR Quality`
+  or `PR proof`, so a rename cannot silently disable the comments. Until the producers are merged under those names the
+  commenter is inert for them.
+* Fenced code shows `&lt;` and `&#91;` literally: the sanitiser escapes everywhere, because deciding what is code the way
+  GitHub does (indented fences, fences in lists or quotes) is where a mistake would let HTML through.
 * Dependabot: a workflow that Dependabot triggers gets a read-only `GITHUB_TOKEN` unless the workflow sets `permissions:`
   (documented by GitHub for `pull_request`); this workflow sets them explicitly. Whether the `workflow_run` that follows a
   Dependabot pull request keeps those write scopes is verified on the first such pull request.
 * JPEG is not accepted. The `publish` step is the existing `scripts/proof/visual/publish.py`, which is PNG only.
+* Whether a ruleset blocks `github-actions[bot]` pushing `pr-visuals` is verified on the first publish.

@@ -44,11 +44,20 @@ def write_file(path, data):
         f.write(data)
 
 
-def png(w=2, h=2, extra=b""):
-    def chunk(t, d):
-        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
-    raw = b"".join(b"\x00" + b"\x10\x20\x30" * w for _ in range(h))
-    return pc.PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw + extra)) + chunk(b"IEND", b"")
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+
+
+def raw_rows(w, h, bpp=3, noise=False):
+    return b"".join(b"\x00" + (os.urandom(w * bpp) if noise else b"\x10\x20\x30\x40"[:bpp] * w) for _ in range(h))
+
+
+def png(w=2, h=2, noise=False, ihdr=None, idat_raw=None, extra_chunks=(), trailing=b"", ctype=2, depth=8):
+    """A valid truecolor PNG unless a knob says otherwise (ihdr: bytes; idat_raw: the uncompressed pixel stream)."""
+    head = ihdr if ihdr is not None else struct.pack(">IIBBBBB", w, h, depth, ctype, 0, 0, 0)
+    raw = idat_raw if idat_raw is not None else raw_rows(w, h, noise=noise)
+    mid = b"".join(chunk(t, d) for t, d in extra_chunks)
+    return pc.PNG_SIG + chunk(b"IHDR", head) + mid + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"") + trailing
 
 
 def manifest(**over):
@@ -86,11 +95,12 @@ class FakeApi:
     """The slice of the GitHub API the commenter uses, with a call log."""
 
     def __init__(self, repo=REPO, run_id=99, head_sha=SHA, head_repo=REPO, prs=None, zipbytes=b"", comments=None,
-                 run_path=PROOF, artifacts="default"):
+                 run_path=PROOF, artifacts="default", conclusion="success"):
         self.repo, self.run_id, self.head_sha, self.head_repo = repo, run_id, head_sha, head_repo
         self.prs = {7: self.pr(7)} if prs is None else prs
         self.zipbytes, self.comments, self.run_path = zipbytes, comments if comments is not None else [], run_path
         self.artifacts = artifacts
+        self.conclusion = conclusion
         self.writes = []
         self.next_id = 1000
         self.fail_patch_404 = False
@@ -101,7 +111,7 @@ class FakeApi:
 
     def get(self, path):
         if path == f"repos/{self.repo}/actions/runs/{self.run_id}":
-            return {"event": "pull_request", "head_sha": self.head_sha, "status": "completed", "path": self.run_path + "@refs/pull/7/merge",
+            return {"event": "pull_request", "head_sha": self.head_sha, "status": "completed", "conclusion": self.conclusion, "path": self.run_path + "@refs/pull/7/merge",
                     "repository": {"full_name": self.repo}, "head_repository": {"full_name": self.head_repo}}
         if path.startswith(f"repos/{self.repo}/actions/runs/{self.run_id}/artifacts"):
             if self.artifacts != "default":
@@ -307,14 +317,14 @@ class Images(unittest.TestCase):
         jpeg = b"\xff\xd8\xff\xe0" + b"\0" * 100
         for name, data in {"jpeg": jpeg, "html": b"<html><script>alert(1)</script></html>" * 5, "empty": b"",
                            "sig only": pc.PNG_SIG, "no iend": png()[:-12], "text": b"hello" * 30,
-                           "huge dims": png()[:16] + struct.pack(">II", 99999, 5) + png()[24:],
-                           "zero dims": png()[:16] + struct.pack(">II", 0, 5) + png()[24:],
+                           "huge dims": png(ihdr=struct.pack(">IIBBBBB", 99999, 5, 8, 2, 0, 0, 0)),
+                           "zero dims": png(ihdr=struct.pack(">IIBBBBB", 0, 5, 8, 2, 0, 0, 0)),
                            "bad ihdr": png()[:12] + b"IDAT" + png()[16:]}.items():
             with self.subTest(name):
                 self.assertFalse(pc.valid_png(data))
 
     def test_an_oversize_png_fails(self):
-        self.assertFalse(pc.valid_png(png(extra=os.urandom(pc.MAX_IMAGE_BYTES + 10))))
+        self.assertFalse(pc.valid_png(png(400, 400, noise=True)))
 
     def test_a_non_image_inside_an_artifact_is_refused(self):
         files = artifact(images={"page.png": b"not an image at all" * 10})
@@ -452,7 +462,7 @@ class Sanitize(unittest.TestCase):
     def test_links_to_this_repository_survive_and_others_die(self):
         good = f"[run](https://github.com/{REPO}/actions/runs/123)"
         self.assertEqual(self.s(good), good)
-        self.assertEqual(self.s(f"[i](https://github.com/{REPO}/issues/5)"), f"[i](https://github.com/{REPO}/issues/5)")
+        self.assertEqual(self.s(f"[i](https://github.com/{REPO}/issues/5)", refs=[5]), f"[i](https://github.com/{REPO}/issues/5)")
         for url in ("https://evil.example/x", "http://github.com/" + REPO + "/issues/1", f"https://github.com/other/repo/issues/1",
                     f"https://github.com/{REPO}.evil.example/issues/1", f"https://github.com/{REPO}/issues/1)![x](https://evil.example/t.gif",
                     "javascript:alert(1)", f"https://github.com/{REPO}/actions/runs/1/../../x"):
@@ -472,7 +482,7 @@ class Sanitize(unittest.TestCase):
                 self.assertNotIn("](", out)
 
     def test_a_link_cannot_become_an_image(self):
-        out = self.s(f"![x](https://github.com/{REPO}/issues/5)")
+        out = self.s(f"![x](https://github.com/{REPO}/issues/5)", refs=[5])
         self.assertEqual(out, f"[x](https://github.com/{REPO}/issues/5)")
 
     def test_a_bare_allowed_url_stays_and_a_bare_foreign_one_is_defanged(self):
@@ -560,12 +570,12 @@ class Render(unittest.TestCase):
         self.assertLessEqual(pc.COMMENT_LIMIT, 65_000)
 
     def test_a_body_exactly_at_the_limit_is_untouched(self):
-        head = len(pc.MARKERS["perf-smoke"]) + 1
-        foot = len(f"\n\n<sub>Head `{SHA[:12]}`. Posted by the PR proof commenter.</sub>\n<!-- lh-proof-run: 42 {SHA} -->\n")
-        body = "x" * (pc.COMMENT_LIMIT - head - foot)
+        overhead = len(pc.render_comment("perf-smoke", "", images_published=True, **self.kw))
+        body = "x" * (pc.COMMENT_LIMIT - overhead)
         out = pc.render_comment("perf-smoke", body, images_published=True, **self.kw)
         self.assertEqual(len(out), pc.COMMENT_LIMIT)
         self.assertNotIn("truncated", out)
+        self.assertIn("truncated", pc.render_comment("perf-smoke", body + "y", images_published=True, **self.kw))
 
     def test_one_huge_line_and_multibyte_text_stay_under_the_limit(self):
         for body in ("y" * 200000, ("é" + "z") * 100000, "a\n" * 70000):
@@ -642,81 +652,93 @@ class Validate(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             gh_out = os.path.join(d, "out.txt")
             write_file(gh_out, "")
-            e = env_for(api, GITHUB_OUTPUT=gh_out, **(env or {}))
+            e = env_for(api, GITHUB_OUTPUT=gh_out, GITHUB_RUN_ID="4242", **(env or {}))
             bundle = os.path.join(d, "bundle")
             rc = pc.main(["validate", "--out", bundle], env=e, api=api)
             outputs = dict(line.split("=", 1) for line in read_file(gh_out).splitlines())
             files = sorted(os.listdir(bundle)) if os.path.isdir(bundle) else []
-            return rc, outputs, files
+            meta = json.loads(read_file(os.path.join(bundle, "meta.json"))) if "meta.json" in files else None
+            return rc, outputs, files, meta
+
+    def assert_skipped(self, api, env=None):
+        rc, out, files, _ = self.run_validate(api, env)
+        self.assertEqual((rc, out["proceed"], out["mode"], files), (0, "false", "", []))
+
+    def assert_stale(self, api, reason, env=None):
+        rc, out, files, meta = self.run_validate(api, env)
+        self.assertEqual((rc, out["proceed"], out["mode"], files), (0, "true", "stale", ["meta.json"]))
+        self.assertEqual((meta["reason"], meta["mode"]), (reason, "stale"))
+        return meta
 
     def test_a_valid_artifact_makes_a_bundle(self):
-        rc, out, files = self.run_validate(valid_api())
-        self.assertEqual((rc, out["proceed"], out["pr"], out["head_sha"], out["has_images"]), (0, "true", "7", SHA, "true"))
+        rc, out, files, meta = self.run_validate(valid_api())
+        self.assertEqual((rc, out["proceed"], out["mode"], out["pr"], out["head_sha"], out["has_images"]), (0, "true", "proof", "7", SHA, "true"))
         self.assertEqual(files, ["images", "meta.json", "perf-smoke.md", "visual-proof.md"])
+        self.assertEqual(meta["conclusion"], "success")
 
     def test_a_fork_pr_with_an_empty_payload_list_resolves_by_head_sha(self):
         api = valid_api(head_repo="someone/fork")
-        rc, out, _ = self.run_validate(api, env={"WR_PRS": "[]"})
-        self.assertEqual((rc, out["proceed"]), (0, "true"))
+        rc, out, _, _ = self.run_validate(api, env={"WR_PRS": "[]"})
+        self.assertEqual((rc, out["proceed"], out["mode"]), (0, "true", "proof"))
 
-    def test_the_wrong_pr_number_in_the_manifest_is_rejected(self):
-        api = valid_api(artifact(manifest(pr_number=8)))
-        rc, out, files = self.run_validate(api)
-        self.assertEqual((rc, out["proceed"], files), (1, "false", []))
+    def test_the_wrong_pr_number_in_the_manifest_marks_the_head_unproven(self):
+        meta = self.assert_stale(valid_api(artifact(manifest(pr_number=8))), "rejected")
+        self.assertEqual(meta["prs"], [7])  # the PR comes from the API, never from the manifest
 
-    def test_a_manifest_naming_another_open_pr_is_rejected(self):
+    def test_a_manifest_naming_another_open_pr_marks_the_head_unproven(self):
         api = valid_api(artifact(manifest(pr_number=8)))
         api.prs[8] = api.pr(8, sha=OTHER_SHA)  # another PR, with another head
-        self.assertEqual(self.run_validate(api)[0], 1)
+        self.assertEqual(self.assert_stale(api, "rejected")["prs"], [7])
 
     def test_two_prs_sharing_a_head_are_told_apart_by_the_manifest(self):
         api = valid_api(artifact(manifest(pr_number=8)), prs={7: FakeApi().pr(7), 8: FakeApi().pr(8)})
         self.assertEqual(self.run_validate(api, env={"WR_PRS": "[]"})[1]["pr"], "8")
 
-    def test_the_wrong_pr_number_is_rejected_even_when_the_event_lists_no_prs(self):
+    def test_the_wrong_pr_number_is_refused_even_when_the_event_lists_no_prs(self):
         api = valid_api(artifact(manifest(pr_number=8)), head_repo="someone/fork")
-        self.assertEqual(self.run_validate(api, env={"WR_PRS": "[]"})[:2][0], 1)
+        self.assert_stale(api, "rejected", env={"WR_PRS": "[]"})
 
-    def test_the_wrong_sha_in_the_manifest_is_rejected(self):
-        api = valid_api(artifact(manifest(head_sha=OTHER_SHA)))
-        self.assertEqual(self.run_validate(api)[0], 1)
+    def test_the_wrong_sha_in_the_manifest_marks_the_head_unproven(self):
+        self.assert_stale(valid_api(artifact(manifest(head_sha=OTHER_SHA))), "rejected")
 
-    def test_a_payload_that_does_not_list_the_manifest_pr_is_rejected(self):
-        self.assertEqual(self.run_validate(valid_api(), env={"WR_PRS": "[9]"})[0], 1)
+    def test_a_payload_that_does_not_list_the_manifest_pr_marks_the_head_unproven(self):
+        self.assert_stale(valid_api(), "rejected", env={"WR_PRS": "[9]"})
 
     def test_a_moved_head_or_closed_pr_skips_quietly(self):
         api = valid_api()
         api.prs = {7: api.pr(7, sha=OTHER_SHA)}
-        rc, out, files = self.run_validate(api)
-        self.assertEqual((rc, out["proceed"], files), (0, "false", []))
+        self.assert_skipped(api)
         api = valid_api()
         api.prs = {7: api.pr(7, state="closed")}
-        self.assertEqual(self.run_validate(api)[:2], (0, {"proceed": "false", "pr": "", "head_sha": "", "has_images": "false"}))
+        self.assert_skipped(api)
 
     def test_a_pr_from_another_repository_head_is_not_matched(self):
         api = valid_api()
         api.prs = {7: api.pr(7, head_repo="attacker/fork")}
-        self.assertEqual(self.run_validate(api)[1]["proceed"], "false")
+        self.assert_skipped(api)
 
-    def test_a_missing_artifact_posts_nothing(self):
-        api = FakeApi(artifacts=[])
-        self.assertEqual(self.run_validate(api)[:2], (0, {"proceed": "false", "pr": "", "head_sha": "", "has_images": "false"}))
+    def test_a_missing_artifact_marks_the_head_unproven(self):
+        meta = self.assert_stale(FakeApi(artifacts=[]), "no-artifact")
+        self.assertEqual((meta["kinds"], meta["prs"], meta["commenter_run"]), (["api-matrix", "perf-smoke", "visual-proof"], [7], 4242))
 
-    def test_an_artifact_of_another_run_is_rejected(self):
+    def test_a_pr_workflow_that_skips_the_upload_cannot_name_other_producers_kinds(self):
+        meta = self.assert_stale(FakeApi(artifacts=[], run_path=QUALITY), "no-artifact", env={"WR_PATH": QUALITY})
+        self.assertEqual(meta["kinds"], ["pr-quality"])
+
+    def test_an_artifact_of_another_run_marks_the_head_unproven(self):
         api = FakeApi(zipbytes=make_zip(artifact()), artifacts=[{"id": 5, "name": pc.ARTIFACT_NAME, "size_in_bytes": 10,
                                                                    "workflow_run": {"id": 1, "head_sha": SHA}}])
-        self.assertEqual(self.run_validate(api)[0], 1)
+        self.assert_stale(api, "rejected")
 
-    def test_two_artifacts_with_the_name_are_rejected(self):
+    def test_two_artifacts_with_the_name_mark_the_head_unproven(self):
         a = {"id": 5, "name": pc.ARTIFACT_NAME, "size_in_bytes": 10, "workflow_run": {"id": 99, "head_sha": SHA}}
-        self.assertEqual(self.run_validate(FakeApi(artifacts=[a, dict(a, id=6)]))[0], 1)
+        self.assert_stale(FakeApi(artifacts=[a, dict(a, id=6)]), "rejected")
 
     def test_runs_that_are_not_pull_request_runs_are_skipped(self):
-        for env in ({"WR_EVENT": "push"}, {"WR_EVENT": "workflow_dispatch"}, {"WR_CONCLUSION": "cancelled"},
+        for env in ({"WR_EVENT": "push"}, {"WR_EVENT": "workflow_dispatch"}, {"WR_CONCLUSION": "cancelled"}, {"WR_CONCLUSION": "skipped"},
                     {"WR_PATH": ".github/workflows/evil.yaml"}, {"WR_PATH": ".github/workflows/pr-proof.yaml.evil"}):
             with self.subTest(env=env):
-                rc, out, files = self.run_validate(valid_api(), env=env)
-                self.assertEqual((rc, out["proceed"], files), (0, "false", []))
+                self.assert_skipped(valid_api(), env=env)
 
     def test_an_event_that_disagrees_with_the_api_is_rejected(self):
         api = valid_api()
@@ -724,10 +746,17 @@ class Validate(unittest.TestCase):
         self.assertEqual(self.run_validate(api, env={"WR_PATH": PROOF})[0], 1)
         self.assertEqual(self.run_validate(valid_api(), env={"WR_HEAD_REPO": "other/repo"})[0], 1)
 
+    def test_a_run_that_is_not_completed_is_rejected(self):
+        api = valid_api()
+        orig = api.get
+        api.get = lambda path: dict(orig(path), status="in_progress") if path.endswith(f"/runs/{api.run_id}") else orig(path)
+        rc, out, files, _ = self.run_validate(api)
+        self.assertEqual((rc, out["proceed"], files), (1, "false", []))
+
     def test_a_pr_edited_workflow_cannot_post_another_producers_kind(self):
         files = artifact(manifest(comments=[{"kind": "pr-quality", "verdict": "pass"}], images=[]))
-        self.assertEqual(self.run_validate(valid_api(files))[0], 1)
-        self.assertEqual(self.run_validate(valid_api(files, run_path=QUALITY))[0], 0)
+        self.assert_stale(valid_api(files), "rejected")
+        self.assertEqual(self.run_validate(valid_api(files, run_path=QUALITY))[1]["mode"], "proof")
 
     def test_malformed_event_values_are_rejected_before_any_api_call(self):
         class NoApi:
@@ -749,8 +778,8 @@ class Validate(unittest.TestCase):
         }
         for name, z in bad.items():
             with self.subTest(name):
-                rc, out, files = self.run_validate(FakeApi(zipbytes=z))
-                self.assertEqual((rc, out["proceed"], files), (1, "false", []))
+                meta = self.assert_stale(FakeApi(zipbytes=z), "rejected")
+                self.assertEqual(set(meta), {"mode", "repo", "run_id", "head_sha", "prs", "kinds", "reason", "conclusion", "commenter_run"})
 
     def test_the_bundle_holds_sanitised_bodies_and_only_referenced_images(self):
         files = artifact(bodies={"perf-smoke": b"hi @someone #999 <b>x</b> ![s](image:page.png)"})
@@ -896,6 +925,275 @@ class DryRun(unittest.TestCase):
         self.assertEqual(self.run_cli("--source", str(ROOT / pc.FIXTURE_ROOT / "valid"), "--pr", "1")[0], 1)
 
 
+class StrictPng(unittest.TestCase):
+    """The hosted images are plain PNG and nothing else: no payload can ride in them."""
+
+    def test_valid_variants_pass(self):
+        self.assertTrue(pc.valid_png(png()))
+        self.assertTrue(pc.valid_png(png(40, 30)))
+        gray = png(5, 4, ctype=0, idat_raw=raw_rows(5, 4, bpp=1))
+        self.assertTrue(pc.valid_png(gray))
+        rgba = png(3, 3, ctype=6, idat_raw=raw_rows(3, 3, bpp=4))
+        self.assertTrue(pc.valid_png(rgba))
+        with_meta = png(extra_chunks=[(b"pHYs", struct.pack(">IIB", 2835, 2835, 1)), (b"sRGB", b"\x00"), (b"gAMA", struct.pack(">I", 45455))])
+        self.assertTrue(pc.valid_png(with_meta))
+        palette = png(4, 2, ctype=3, depth=8, extra_chunks=[(b"PLTE", b"\x00\x00\x00\xff\xff\xff")], idat_raw=raw_rows(4, 2, bpp=1))
+        self.assertTrue(pc.valid_png(palette))
+
+    def test_what_the_montage_tool_writes_passes(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed")
+        for colors in (2, 16, 256):
+            im = Image.frombytes("RGB", (60, 40), os.urandom(60 * 40 * 3))
+            buf = io.BytesIO()
+            im.quantize(colors=colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE).save(buf, "PNG", optimize=True)
+            self.assertTrue(pc.valid_png(buf.getvalue()), colors)
+
+    def test_a_text_chunk_is_refused(self):
+        for t in (b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"iCCP", b"tIME", b"prVt"):
+            with self.subTest(t=t):
+                self.assertFalse(pc.valid_png(png(extra_chunks=[(t, b"k\x00<html><script>alert(1)</script>")])))
+
+    def test_html_after_iend_and_an_appended_zip_are_refused(self):
+        self.assertFalse(pc.valid_png(png(trailing=b"<html><script>alert(1)</script></html>")))
+        exe = io.BytesIO()
+        with zipfile.ZipFile(exe, "w") as z:
+            z.writestr("payload.exe", b"MZ" + b"\0" * 100)
+        self.assertFalse(pc.valid_png(png(trailing=exe.getvalue())))
+
+    def test_a_bad_crc_is_refused(self):
+        data = bytearray(png())
+        data[16 + 3] ^= 0x01  # inside IHDR
+        self.assertFalse(pc.valid_png(bytes(data)))
+        data = bytearray(png())
+        data[-5] ^= 0xFF  # the CRC of IEND
+        self.assertFalse(pc.valid_png(bytes(data)))
+
+    def test_an_idat_stream_that_is_not_exactly_the_image_is_refused(self):
+        self.assertFalse(pc.valid_png(png(2, 2, idat_raw=raw_rows(2, 2) + b"<html>hidden</html>")))  # too long
+        self.assertFalse(pc.valid_png(png(2, 2, idat_raw=raw_rows(2, 1))))  # too short
+        self.assertFalse(pc.valid_png(png(2, 2, idat_raw=b"\x07" + raw_rows(2, 2)[1:])))  # filter byte 7
+        rows = bytearray(raw_rows(2, 2))
+        self.assertTrue(pc.valid_png(png(2, 2, idat_raw=bytes(rows))))
+
+    def test_data_after_the_zlib_stream_inside_idat_is_refused(self):
+        body = zlib.compress(raw_rows(2, 2)) + b"hidden payload"
+        data = pc.PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)) + chunk(b"IDAT", body) + chunk(b"IEND", b"")
+        self.assertFalse(pc.valid_png(data))
+
+    def test_a_dimension_bomb_is_refused(self):
+        big = struct.pack(">IIBBBBB", 8000, 8000, 8, 2, 0, 0, 0)  # 64 M pixels
+        self.assertFalse(pc.valid_png(png(ihdr=big, idat_raw=b"\x00" * (8000 * (1 + 24000)))))
+        wide = struct.pack(">IIBBBBB", 10000, 1, 8, 2, 0, 0, 0)
+        self.assertFalse(pc.valid_png(png(ihdr=wide, idat_raw=raw_rows(10000, 1))))
+
+    def test_interlace_and_odd_ihdr_fields_are_refused(self):
+        self.assertFalse(pc.valid_png(png(ihdr=struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 1))))
+        self.assertFalse(pc.valid_png(png(ihdr=struct.pack(">IIBBBBB", 2, 2, 8, 5, 0, 0, 0))))
+        self.assertFalse(pc.valid_png(png(ihdr=struct.pack(">IIBBBBB", 2, 2, 3, 2, 0, 0, 0))))
+        self.assertFalse(pc.valid_png(png(ihdr=struct.pack(">IIBBBBB", 2, 2, 8, 2, 1, 0, 0))))
+
+    def test_chunk_order_and_repeats_are_refused(self):
+        self.assertFalse(pc.valid_png(png(extra_chunks=[(b"sRGB", b"\x00"), (b"sRGB", b"\x00")])))
+        self.assertFalse(pc.valid_png(png(extra_chunks=[(b"sRGB", b"\x00" * 2)])))  # wrong length
+        self.assertFalse(pc.valid_png(png(ctype=3, depth=8, idat_raw=raw_rows(2, 2, bpp=1))))  # palette without PLTE
+        self.assertFalse(pc.valid_png(png()[:-12]))  # no IEND
+        data = png()
+        iend = data[-12:]
+        self.assertFalse(pc.valid_png(data + iend))  # a second IEND
+        self.assertFalse(pc.valid_png(pc.PNG_SIG + chunk(b"IEND", b"")))
+
+    def test_idat_chunks_must_be_consecutive_and_may_be_split(self):
+        z = zlib.compress(raw_rows(2, 2))
+        head = pc.PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+        self.assertTrue(pc.valid_png(head + chunk(b"IDAT", z[:5]) + chunk(b"IDAT", z[5:]) + chunk(b"IEND", b"")))
+        self.assertFalse(pc.valid_png(head + chunk(b"IDAT", z[:5]) + chunk(b"sRGB", b"\x00") + chunk(b"IDAT", z[5:]) + chunk(b"IEND", b"")))
+
+    def test_the_non_image_inputs_are_refused_without_a_traceback(self):
+        for data in (b"", b"\x89PNG", pc.PNG_SIG + b"\x00" * 100, os.urandom(500), b"GIF89a" * 30):
+            self.assertFalse(pc.valid_png(data))
+
+
+class StaleBanner(unittest.TestCase):
+    """A head without valid proof must not leave the previous head's verdict on screen."""
+
+    def comment_run(self, api, env=None):
+        with tempfile.TemporaryDirectory() as d:
+            e = env_for(api, GITHUB_RUN_ID="4242", **(env or {}))
+            self.assertEqual(pc.main(["validate", "--out", d], env=e, api=api), 0)
+            self.assertEqual(pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api), api=api), 0)
+        return api.writes
+
+    def old_pass_comments(self):
+        return [bot_comment(10 + i, k, run=5, sha=OTHER_SHA, body=f"{pc.MARKERS[k]}\n### PASS\nall good\n<!-- lh-proof-run: 5 {OTHER_SHA} -->\n")
+                for i, k in enumerate(("perf-smoke", "api-matrix", "visual-proof"))]
+
+    def test_no_artifact_replaces_the_older_pass_comments_with_a_banner(self):
+        api = FakeApi(artifacts=[], comments=self.old_pass_comments())
+        writes = self.comment_run(api)
+        self.assertEqual(sorted((m, p.rsplit("/", 1)[-1]) for m, p, _ in writes), [("PATCH", "10"), ("PATCH", "11"), ("PATCH", "12")])
+        for _, _, payload in writes:
+            body = payload["body"]
+            self.assertIn(f"No valid proof for head `{SHA[:12]}`", body)
+            self.assertIn("uploaded no `lh-proof-comment` artifact", body)
+            self.assertIn(f"actions/runs/{api.run_id}", body)
+            self.assertIn("runs/4242", body)
+            self.assertNotIn("PASS", body)
+            self.assertIn(f"<!-- lh-proof-run: {api.run_id} {SHA} -->", body)
+            self.assertLessEqual(len(body), pc.COMMENT_LIMIT)
+
+    def test_a_rejected_artifact_does_the_same(self):
+        api = FakeApi(zipbytes=make_zip(artifact(), extra=[("../../x", b"x")]), comments=self.old_pass_comments())
+        writes = self.comment_run(api)
+        self.assertEqual([m for m, *_ in writes], ["PATCH"] * 3)
+        self.assertIn("failed the commenter's validation", writes[0][2]["body"])
+
+    def test_a_pr_that_skips_the_upload_on_purpose_gets_the_banner_on_its_own_pr_only(self):
+        api = FakeApi(artifacts=[], comments=self.old_pass_comments(), prs={7: FakeApi().pr(7)})
+        writes = self.comment_run(api)
+        self.assertTrue(all("/issues/comments/" in p for _, p, _ in writes))
+
+    def test_no_existing_comment_means_nothing_is_created(self):
+        self.assertEqual(self.comment_run(FakeApi(artifacts=[], comments=[])), [])
+
+    def test_only_the_producers_own_kinds_are_touched(self):
+        comments = self.old_pass_comments() + [bot_comment(99, "pr-quality", run=5)]
+        writes = self.comment_run(FakeApi(artifacts=[], comments=comments))
+        self.assertNotIn("99", [p.rsplit("/", 1)[-1] for _, p, _ in writes])
+
+    def test_a_cancelled_run_or_a_closed_pr_makes_no_bundle_and_changes_nothing(self):
+        for env, prs in (({"WR_CONCLUSION": "cancelled"}, None), ({}, "closed")):
+            api = FakeApi(artifacts=[], comments=self.old_pass_comments())
+            if prs:
+                api.prs = {7: api.pr(7, state="closed")}
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, "b")
+                self.assertEqual(pc.main(["validate", "--out", out], env=env_for(api, **env), api=api), 0)
+                self.assertFalse(os.path.exists(out))
+            self.assertEqual(api.writes, [])
+
+    def test_a_newer_runs_comment_is_not_replaced_by_an_older_runs_banner(self):
+        comments = [bot_comment(10, "perf-smoke", run=900, sha=OTHER_SHA)]
+        self.assertEqual(self.comment_run(FakeApi(artifacts=[], comments=comments)), [])
+
+    def test_the_head_moving_before_the_write_stops_the_banner(self):
+        api = FakeApi(artifacts=[], comments=self.old_pass_comments())
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(api), api=api)
+            api.prs = {7: api.pr(7, sha=OTHER_SHA)}
+            pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api), api=api)
+        self.assertEqual(api.writes, [])
+
+    def test_a_tampered_stale_bundle_is_rejected(self):
+        api = FakeApi(artifacts=[])
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(api), api=api)
+            meta = json.loads(read_file(os.path.join(d, "meta.json")))
+            for change in ({"reason": "<script>"}, {"kinds": ["evil"]}, {"prs": []}, {"prs": ["7"]}, {"conclusion": "a b"}, {"mode": "x"}):
+                write_file(os.path.join(d, "meta.json"), json.dumps(dict(meta, **change)))
+                with self.assertRaises(pc.Reject, msg=str(change)):
+                    pc.read_bundle(d, REPO)
+            write_file(os.path.join(d, "meta.json"), json.dumps(meta))
+            write_file(os.path.join(d, "perf-smoke.md"), "x")
+            with self.assertRaises(pc.Reject):
+                pc.read_bundle(d, REPO)
+
+
+class Review(unittest.TestCase):
+    """Findings of the independent review, each with its failing-first test."""
+
+    def s(self, text, images=(), refs=()):
+        return pc.sanitize_body(text, repo=REPO, image_names=images, allowed_refs=refs)[0]
+
+    def test_full_issue_and_pull_urls_obey_the_issue_ref_cap(self):
+        urls = [f"https://github.com/{REPO}/{'issues' if i % 2 else 'pull'}/{i + 100}" for i in range(21)]
+        body = "\n".join(f"[t{i}]({u}) {u}" for i, u in enumerate(urls))
+        out = self.s(body, refs=[100, 101])
+        kept = re.findall(rf"https://github\.com/{REPO}/(?:issues|pull)/(\d+)", out)
+        self.assertEqual(sorted(set(kept)), ["100", "101"])
+        self.assertNotIn("(https://github.com", out.replace(f"(https://github.com/{REPO}/pull/100)", "").replace(f"(https://github.com/{REPO}/issues/101)", ""))
+        self.assertEqual(self.s(f"[x]({urls[0]})", refs=[]), "x")
+
+    def test_runs_and_commits_are_not_subject_to_the_issue_cap(self):
+        ok = f"[run](https://github.com/{REPO}/actions/runs/5) [c](https://github.com/{REPO}/commit/{'a' * 40})"
+        self.assertEqual(self.s(ok), ok)
+
+    def test_double_bang_before_a_link_cannot_become_an_image_and_is_idempotent(self):
+        once = self.s(f"!![x](https://github.com/{REPO}/issues/1)", refs=[1])
+        self.assertNotRegex(once, r"(?<!&#33;)!\[")
+        self.assertEqual(self.s(once, refs=[1]), once)
+        img = self.s("!![a](image:page.png)", images={"page.png"})
+        self.assertNotRegex(img, r"^!\[|[^;]!\[")
+        self.assertEqual(self.s(img, images={"page.png"}), img)
+
+    def test_dollar_math_cannot_hide_a_link(self):
+        out = self.s("$\\href{//evil.com}{x}$ and $a$")
+        self.assertNotIn("$", out)
+        self.assertEqual(self.s(out), out)
+
+    def test_digit_mentions_are_neutralised(self):
+        self.assertEqual(self.s("@1name"), "@" + ZW + "1name")
+
+    def test_unclosed_details_sub_summary_and_fence_cannot_hide_the_footer(self):
+        for body in ("<details><summary>x", "<sub>text", "```\ncode", "<details><sub>a<summary>b"):
+            out = pc.render_comment("perf-smoke", body, repo=REPO, pr=7, head_sha=SHA, run_id=3, images_published=True,
+                                    verdict="pass", conclusion="success")
+            head, foot = out.split("Posted by the PR proof commenter", 1)[0], out
+            before_footer = out.split("<sub>Head `", 1)[0]
+            self.assertEqual(before_footer.count("<details>"), before_footer.count("</details>"), body)
+            self.assertEqual(before_footer.count("<sub>"), before_footer.count("</sub>"), body)
+            self.assertEqual(before_footer.count("<summary>"), before_footer.count("</summary>"), body)
+            self.assertEqual(before_footer.count("```") % 2, 0, body)
+
+    def test_the_footer_shows_provenance_and_flags_a_pass_from_a_failed_run(self):
+        ok = pc.render_comment("perf-smoke", "x", repo=REPO, pr=7, head_sha=SHA, run_id=3, images_published=True, verdict="pass", conclusion="success")
+        self.assertIn(f"[run 3](https://github.com/{REPO}/actions/runs/3) concluded `success`", ok)
+        self.assertIn("Producer verdict `pass`", ok)
+        self.assertNotIn("read this report with care", ok)
+        bad = pc.render_comment("perf-smoke", "x", repo=REPO, pr=7, head_sha=SHA, run_id=3, images_published=True, verdict="pass", conclusion="failure")
+        self.assertIn("read this report with care", bad)
+
+    def test_the_run_conclusion_from_the_api_reaches_the_comment(self):
+        api = valid_api(conclusion="failure")
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(api), api=api)
+            pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api), api=api)
+        self.assertIn("concluded `failure`", api.writes[0][2]["body"])
+        self.assertIn("read this report with care", api.writes[0][2]["body"])
+
+    def test_schema_version_true_and_float_are_refused(self):
+        for v in (True, 1.0, "1"):
+            with self.assertRaises(pc.Reject, msg=repr(v)):
+                pc.parse_manifest(json.dumps(manifest(schema_version=v)).encode())
+
+    def test_an_older_run_among_duplicates_cannot_edit_or_delete_a_newer_runs_comment(self):
+        comments = [bot_comment(1, "perf-smoke", run=100), bot_comment(2, "perf-smoke", run=900)]
+        api = FakeApi(comments=comments)
+        out = pc.upsert(api, REPO, 7, "perf-smoke", pc.MARKERS["perf-smoke"] + "\nnew", 500, SHA)
+        self.assertIn("newer run 900", out)
+        self.assertEqual(api.writes, [])
+
+    def test_a_rerun_with_the_same_run_id_updates_the_comment(self):
+        api = FakeApi(comments=[bot_comment(1, "perf-smoke", run=500)])
+        self.assertEqual(pc.upsert(api, REPO, 7, "perf-smoke", pc.MARKERS["perf-smoke"] + "\nnew", 500, SHA), "updated")
+        self.assertEqual([m for m, *_ in api.writes], ["PATCH"])
+
+    def test_a_403_from_the_api_is_a_green_warning_and_posts_nothing(self):
+        api = valid_api()
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(api), api=api)
+            api.get_paged = lambda path: (_ for _ in ()).throw(pc.ApiError("HTTP 403: Resource not accessible by integration", 403))
+            self.assertEqual(pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api), api=api), 0)
+        self.assertEqual(api.writes, [])
+        api2 = valid_api()
+        api2.get_paged = lambda path: (_ for _ in ()).throw(pc.ApiError("HTTP 500", 500))
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(api2), api=api2)
+            self.assertEqual(pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api2), api=api2), 1)
+
+
 class WorkflowFile(unittest.TestCase):
     """Static properties of .github/workflows/pr-proof-comment.yaml that the review must not be able to lose."""
     PATH = ROOT / ".github/workflows/pr-proof-comment.yaml"
@@ -948,11 +1246,80 @@ class WorkflowFile(unittest.TestCase):
         step = next(s for s in self.jobs()["publish"]["steps"] if s.get("name") == "Publish the images")
         self.assertEqual(step["env"]["PR_NUMBER"], "${{ steps.check.outputs.pr }}")
 
+    def test_every_listed_workflow_name_matches_the_name_of_its_producer_file(self):
+        """A rename must not silently stop the comments: workflow_run matches `name:`, not the file name."""
+        listed = (self.doc.get("on") or self.doc.get(True))["workflow_run"]["workflows"]
+        by_path = {"PR Quality": ".github/workflows/pr-quality.yaml", "PR proof": ".github/workflows/pr-proof.yaml"}
+        self.assertEqual(sorted(listed), sorted(by_path))
+        self.assertEqual(sorted(by_path.values()), sorted(pc.PRODUCERS))
+        for name, path in by_path.items():
+            f = ROOT / path
+            if not f.exists():  # the producer has not landed yet: the commenter is inert for it until it does
+                continue
+            self.assertEqual(yaml.safe_load(f.read_text()).get("name"), name, f"{path} must be named {name!r} or its comments stop")
+
+    def test_no_other_workflow_is_named_like_a_listed_producer(self):
+        listed = (self.doc.get("on") or self.doc.get(True))["workflow_run"]["workflows"]
+        for f in sorted((ROOT / ".github/workflows").glob("*.y*ml")):
+            name = yaml.safe_load(f.read_text()).get("name")
+            if name in listed:
+                self.assertIn(f".github/workflows/{f.name}", pc.PRODUCERS, f"{f.name} is named {name!r} but is not an allowed producer path")
+
+    def test_the_write_token_files_are_gate_files_and_have_owners(self):
+        import pr_classify
+        owners = (ROOT / ".github/CODEOWNERS").read_text()
+        for f in (".github/workflows/pr-proof-comment.yaml", ".github/workflows/pr-visuals-prune.yaml", "scripts/proof/visual/publish.py",
+                  "scripts/ci/proof_comment.py"):
+            self.assertTrue(pr_classify.GATE_FILES_RE.match(f), f)
+        for f in (".github/workflows/pr-proof-comment.yaml", ".github/workflows/pr-visuals-prune.yaml", "scripts/proof/visual/publish.py"):
+            self.assertRegex(owners, rf"(?m)^{re.escape(f)}\s+@szibis$")  # scripts/ci/ and .github/ are owned by directory rules
+
+    def test_the_comment_job_takes_published_from_the_publish_step_not_from_the_job_result(self):
+        env = next(s for s in self.jobs()["comment"]["steps"] if s.get("name") == "Post the comments")["env"]
+        self.assertIn("needs.publish.outputs.published", env["IMAGES_PUBLISHED"])
+        self.assertNotIn("result", env["IMAGES_PUBLISHED"])
+        self.assertIn("published", self.jobs()["publish"]["outputs"])
+        step = next(s for s in self.jobs()["publish"]["steps"] if s.get("id") == "publish")
+        self.assertIn('echo "published=true" >> "$GITHUB_OUTPUT"', step["run"])
+
+    def test_publish_and_the_prune_serialise_on_one_group(self):
+        prune = yaml.safe_load((ROOT / ".github/workflows/pr-visuals-prune.yaml").read_text())
+        self.assertEqual(self.jobs()["publish"]["concurrency"]["group"], prune["jobs"]["prune"]["concurrency"]["group"])
+        self.assertIs(self.jobs()["publish"]["concurrency"]["cancel-in-progress"], False)
+
+
     def test_job_ifs_gate_on_the_event(self):
         jobs = self.jobs()
         self.assertEqual(jobs["dry-run"]["if"], "github.event_name == 'workflow_dispatch'")
         for j in ("validate", "publish", "comment"):
             self.assertIn("workflow_run", jobs[j]["if"])
+
+
+
+class PruneWorkflow(unittest.TestCase):
+    PATH = ROOT / ".github/workflows/pr-visuals-prune.yaml"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = cls.PATH.read_text()
+        cls.doc = yaml.safe_load(cls.text)
+
+    def test_only_a_schedule_and_a_manual_run_start_it(self):
+        self.assertEqual(set(self.doc.get("on") or self.doc.get(True)), {"schedule", "workflow_dispatch"})
+
+    def test_permissions_are_exactly_the_reviewed_ones(self):
+        self.assertEqual(self.doc["permissions"], {})
+        self.assertEqual(self.doc["jobs"]["prune"]["permissions"], {"contents": "write", "pull-requests": "read"})
+
+    def test_it_runs_no_pull_request_code_and_expands_nothing_in_run(self):
+        for step in self.doc["jobs"]["prune"]["steps"]:
+            self.assertNotIn("${{", step.get("run", ""))
+            if str(step.get("uses", "")).startswith("actions/checkout@"):
+                self.assertEqual(set(step["with"]), {"persist-credentials", "sparse-checkout", "sparse-checkout-cone-mode"})
+                self.assertIs(step["with"]["persist-credentials"], False)
+        run = self.doc["jobs"]["prune"]["steps"][-1]["run"]
+        self.assertIn("set -euo pipefail", run)  # a failed listing must not become an empty keep list
+        self.assertIn("python3 -I scripts/proof/visual/publish.py prune --keep", run)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,9 @@ name: PR proof comment
 #     producing run, the open PRs with that head, the artifact's own run). The manifest's values are claims that must
 #     match.
 #   * No job checks out pull request code (the checkouts below are the default branch, sparse, no credentials).
+#   * A head without valid proof (no artifact, or an artifact that fails validation) replaces the producer's older
+#     comments with a "no valid proof for head <sha>" banner built from API data only, so a previous head's verdict
+#     never stays on screen. A cancelled run, a closed PR or a moved head change nothing.
 #   * Token scopes are per job, so the three jobs that can write are separate: `validate` reads, `publish` can push
 #     (only to the data branch pr-visuals, only validated PNG files), `comment` can write PR comments.
 #   * Never use `${{ github.event.* }}` text, a job output or an input inside `run:`; pass it through `env:`.
@@ -53,6 +56,7 @@ jobs:
       pull-requests: read
     outputs:
       proceed: ${{ steps.validate.outputs.proceed }}
+      mode: ${{ steps.validate.outputs.mode }}
       has_images: ${{ steps.validate.outputs.has_images }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,6 +96,12 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
+    # One writer to the data branch at a time, together with the weekly prune (pr-visuals-prune.yaml).
+    concurrency:
+      group: pr-visuals-write
+      cancel-in-progress: false
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,6 +123,7 @@ jobs:
         run: python3 -I scripts/ci/proof_comment.py check-bundle --bundle "$RUNNER_TEMP/bundle"
 
       - name: Publish the images
+        id: publish
         if: steps.check.outputs.current == 'true'
         env:
           PUBLISH_TOKEN: ${{ github.token }}
@@ -121,6 +132,7 @@ jobs:
           python3 -I scripts/proof/visual/publish.py publish \
             --montage "$RUNNER_TEMP/bundle/images" --pr "$PR_NUMBER" \
             --remote "https://github.com/${GITHUB_REPOSITORY}.git"
+          echo "published=true" >> "$GITHUB_OUTPUT"
 
   # Upserts the sticky comments. Runs after publish so the image URLs exist; without images it still comments.
   comment:
@@ -146,7 +158,7 @@ jobs:
       - name: Post the comments
         env:
           GH_TOKEN: ${{ github.token }}
-          IMAGES_PUBLISHED: ${{ needs.publish.result == 'success' && 'true' || 'false' }}
+          IMAGES_PUBLISHED: ${{ needs.publish.outputs.published == 'true' && 'true' || 'false' }}
         run: python3 -I scripts/ci/proof_comment.py comment --bundle "$RUNNER_TEMP/bundle" --images-published "$IMAGES_PUBLISHED"
 
   # Manual dry run of the whole validate-and-render path on a committed fixture. Cannot post or publish.

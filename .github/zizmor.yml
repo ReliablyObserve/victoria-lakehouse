@@ -40,7 +40,7 @@ rules:
   dangerous-triggers:
     ignore:
       - badges.yaml:3
-      - pr-proof-comment.yaml:23
+      - pr-proof-comment.yaml:26
       - registry-gate-base.yaml:20
 
   # Image build cache of the external-reader matrix; no release artifact is built from it.

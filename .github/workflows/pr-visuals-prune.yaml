@@ -1,0 +1,43 @@
+name: PR visuals prune
+
+# Removes the image folders (pr-<N>/) of the data-only branch `pr-visuals` that belong to pull requests which are no longer
+# open, so the branch stays bounded (each open PR holds at most 80 files of 300 KB). The images are published by
+# pr-proof-comment.yaml (job `publish`); both serialise on the concurrency group `pr-visuals-write`.
+#
+# Only a schedule and a manual run start it: no pull request event can run it, it checks out one script of the default
+# branch and runs no pull request code. The token can push to branches (`contents: write`) and read pull requests.
+# A pull request that opens between the listing and the prune loses its folder until its next head is proven.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    concurrency:
+      group: pr-visuals-write
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/proof/visual/publish.py
+          sparse-checkout-cone-mode: false
+
+      - name: Remove the folders of pull requests that are not open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          keep="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 --json number --jq 'map(.number) | join(",")')"
+          python3 -I scripts/proof/visual/publish.py prune --keep "$keep" \
+            --remote "https://github.com/${GITHUB_REPOSITORY}.git"

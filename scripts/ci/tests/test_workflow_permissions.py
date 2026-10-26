@@ -19,7 +19,8 @@ see, and may consume that pull request's artifacts. It is held to a stricter con
   run-top-level   the workflow-level `permissions:` is not exactly `{}`
   run-unlisted    the workflow is not in WORKFLOW_RUN_JOB_PERMISSIONS, or a job is not listed for it
   run-job-perms   a job's `permissions:` is not exactly the reviewed entry (any new scope, or any widening, fails)
-  run-checkout    an `actions/checkout` step has `ref`, `repository` or `token` (it could fetch pull request code)
+  run-checkout    an `actions/checkout` step has `ref`, `repository` or `token` (it could fetch pull request code), or does
+                  not set `persist-credentials: false` (the token would stay in the checkout)
 
 Every WORKFLOW_RUN_JOB_PERMISSIONS entry must still match a workflow, a job and its permissions, so the list cannot rot.
 
@@ -53,10 +54,12 @@ WORKFLOW_RUN_JOB_PERMISSIONS = {
 }
 
 
-# `workflow_run` workflows that exist for the default branch only (`branches: [main]`), consume no pull request
-# artifact and were reviewed before this contract. They keep their own permissions; a new entry needs a reason here.
+# `workflow_run` workflows that were reviewed before this contract, consume no pull request artifact and read only the
+# default branch's checkout. They keep their own permissions; a new entry needs a reason here. NOTE: `branches: [main]`
+# filters on the head branch NAME of the triggering run, so a run from a fork branch that is called `main` matches too;
+# these workflows are listed because they do not use anything the run produced, not because the filter excludes forks.
 WORKFLOW_RUN_MAIN_ONLY = {
-    "badges.yaml": "follows the CI run on main only (workflow_run branches: [main]) and commits the generated badges; no pull request data",
+    "badges.yaml": "filters on branch name main and commits the generated badges from its own checkout of the default branch; reads nothing the triggering run produced",
 }
 
 
@@ -117,8 +120,10 @@ def check_workflow_run(name: str, doc: dict) -> list:
         elif job.get("permissions") != reviewed[job_id]:
             found.append(("run-job-perms", f"{name}: job `{job_id}` has permissions {job.get('permissions')!r}, reviewed {reviewed[job_id]!r}"))
         for step in job.get("steps") or []:
-            if str(step.get("uses", "")).startswith("actions/checkout@") and set(step.get("with") or {}) & {"ref", "repository", "token"}:
-                found.append(("run-checkout", f"{name}: job `{job_id}` checks out with ref/repository/token"))
+            if str(step.get("uses", "")).startswith("actions/checkout@"):
+                w = step.get("with") or {}
+                if set(w) & {"ref", "repository", "token"} or w.get("persist-credentials") is not False:
+                    found.append(("run-checkout", f"{name}: job `{job_id}` checks out with ref/repository/token or without persist-credentials: false"))
     return found
 
 
@@ -217,8 +222,19 @@ class WorkflowRunFixtures(unittest.TestCase):
     def test_a_checkout_of_another_ref_is_rejected(self):
         for key in ("ref", "repository", "token"):
             d = self.doc()
-            d["jobs"]["validate"]["steps"] = [{"uses": "actions/checkout@" + "0" * 40, "with": {key: "x"}}]
+            d["jobs"]["validate"]["steps"] = [{"uses": "actions/checkout@" + "0" * 40, "with": {key: "x", "persist-credentials": False}}]
             self.assertEqual(self.rules(d), ["run-checkout"], key)
+
+    def test_a_checkout_that_keeps_credentials_is_rejected(self):
+        for w in ({}, {"persist-credentials": True}, {"fetch-depth": 1}):
+            d = self.doc()
+            d["jobs"]["validate"]["steps"] = [{"uses": "actions/checkout@" + "0" * 40, "with": w}]
+            self.assertEqual(self.rules(d), ["run-checkout"], w)
+        d = self.doc()
+        d["jobs"]["validate"]["steps"] = [{"uses": "actions/checkout@" + "0" * 40}]
+        self.assertEqual(self.rules(d), ["run-checkout"])
+        d["jobs"]["validate"]["steps"] = [{"uses": "actions/checkout@" + "0" * 40, "with": {"persist-credentials": False, "sparse-checkout": "x"}}]
+        self.assertEqual(self.rules(d), [])
 
     def test_a_workflow_without_workflow_run_is_not_affected(self):
         self.assertEqual(self.rules({"on": {"pull_request": None}, "permissions": {"contents": "read"}, "jobs": {}}, name="x.yaml"), [])
@@ -264,7 +280,10 @@ class RepositoryWorkflows(unittest.TestCase):
             self.assertTrue(reason.strip())
             self.assertIn(name, docs)
             on = docs[name].get("on", docs[name].get(True))
-            self.assertEqual(on["workflow_run"].get("branches"), ["main"], f"{name} must only follow runs of main")
+            self.assertEqual(on["workflow_run"].get("branches"), ["main"], f"{name} must keep its branch-name filter")
+            for job in (docs[name].get("jobs") or {}).values():
+                for step in job.get("steps") or []:
+                    self.assertNotIn("github.event.workflow_run.head", str(step), f"{name} must not use data of the triggering run")
 
     def test_every_allowlist_entry_has_a_reason(self):
         self.assertTrue(all(reason.strip() for reason in ID_TOKEN_ALLOWED.values()))
