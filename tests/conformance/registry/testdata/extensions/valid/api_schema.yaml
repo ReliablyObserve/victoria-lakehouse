@@ -1,8 +1,8 @@
-# Example api-schema rows: Lakehouse-only APIs with a committed JSON contract.
+# Example contract rows: schema-compare rows of Lakehouse-only APIs with a committed JSON contract.
 - id: lh.api.stats_overview.contract
   title: "/lakehouse/api/v1/stats/overview contract"
   surface: lh
-  kind: api-schema
+  kind: admin
   origin: lh-addition
   expect: pass
   targets: [cold]
@@ -15,7 +15,7 @@
 - id: lh.api.info.contract
   title: "/lakehouse/info contract"
   surface: lh
-  kind: api-schema
+  kind: admin
   origin: lh-addition
   expect: pass
   targets: [cold]
@@ -28,7 +28,7 @@
 - id: lh.api.compaction_status.contract
   title: "/lakehouse/api/v1/compaction/status contract"
   surface: lh
-  kind: api-schema
+  kind: admin
   origin: lh-addition
   expect: pass
   targets: [cold]
