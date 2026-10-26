@@ -4,135 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
-
-	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
 )
-
-// recordingStore captures the tenant list and the global-read marker each
-// handler passed down, so the tests can assert the scope a request was answered
-// with instead of guessing from the response body.
-type recordingStore struct {
-	mockStore
-
-	mu         sync.Mutex
-	tenantIDs  [][]logstorage.TenantID
-	globalRead []bool
-}
-
-func (r *recordingStore) record(ctx context.Context, ids []logstorage.TenantID) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.tenantIDs = append(r.tenantIDs, ids)
-	r.globalRead = append(r.globalRead, storage.IsGlobalRead(ctx))
-}
-
-func (r *recordingStore) calls() ([][]logstorage.TenantID, []bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.tenantIDs, r.globalRead
-}
-
-func (r *recordingStore) GetFieldValues(ctx context.Context, ids []logstorage.TenantID, _ *logstorage.Query, _ string, _ uint64) ([]logstorage.ValueWithHits, error) {
-	r.record(ctx, ids)
-	return nil, nil
-}
-
-func (r *recordingStore) RunQuery(ctx context.Context, ids []logstorage.TenantID, _ *logstorage.Query, _ logstorage.WriteDataBlockFunc) error {
-	r.record(ctx, ids)
-	return nil
-}
-
-func tracesHandler(t *testing.T, store storage.Storage, mutate func(*config.Config)) *Handler {
-	t.Helper()
-	cfg := config.Default()
-	cfg.Mode = config.ModeTraces
-	if mutate != nil {
-		mutate(cfg)
-	}
-	return NewHandler(store, cfg)
-}
-
-// The Jaeger handlers used to pass a nil tenant list, which the storage layer
-// read as "no scope" and answered from every tenant's data. They must derive
-// the tenant from the request exactly like every other select endpoint.
-func TestJaeger_DerivesTenantFromRequest(t *testing.T) {
-	paths := []struct {
-		name    string
-		path    string
-		headers map[string]string
-		want    logstorage.TenantID
-	}{
-		{"services, no headers", "/select/jaeger/api/services", nil, logstorage.TenantID{}},
-		{"services, scoped", "/select/jaeger/api/services", map[string]string{"AccountID": "1001", "ProjectID": "0"}, logstorage.TenantID{AccountID: 1001}},
-		{"operations, scoped", "/select/jaeger/api/services/svc/operations", map[string]string{"AccountID": "2002", "ProjectID": "7"}, logstorage.TenantID{AccountID: 2002, ProjectID: 7}},
-		{"trace, scoped", "/select/jaeger/api/traces/abc", map[string]string{"AccountID": "1001", "ProjectID": "3"}, logstorage.TenantID{AccountID: 1001, ProjectID: 3}},
-		{"search, scoped", "/select/jaeger/api/traces?service=svc", map[string]string{"AccountID": "5", "ProjectID": "0"}, logstorage.TenantID{AccountID: 5}},
-	}
-
-	for _, tc := range paths {
-		t.Run(tc.name, func(t *testing.T) {
-			store := &recordingStore{}
-			h := tracesHandler(t, store, nil)
-			mux := http.NewServeMux()
-			h.Register(mux)
-
-			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
-			for k, v := range tc.headers {
-				req.Header.Set(k, v)
-			}
-			mux.ServeHTTP(httptest.NewRecorder(), req)
-
-			ids, _ := store.calls()
-			if len(ids) == 0 {
-				t.Fatal("handler never reached the storage layer")
-			}
-			for _, got := range ids {
-				if len(got) != 1 {
-					t.Fatalf("handler passed %d tenants, want exactly 1 (a nil list reads as unscoped)", len(got))
-				}
-				if got[0] != tc.want {
-					t.Errorf("handler passed tenant %+v, want %+v", got[0], tc.want)
-				}
-			}
-		})
-	}
-}
-
-func TestJaeger_RejectsMalformedTenantHeader(t *testing.T) {
-	paths := []string{
-		"/select/jaeger/api/services",
-		"/select/jaeger/api/services/svc/operations",
-		"/select/jaeger/api/traces/abc",
-		"/select/jaeger/api/traces?service=svc",
-	}
-	for _, path := range paths {
-		for _, header := range []string{"AccountID", "ProjectID"} {
-			t.Run(path+"/"+header, func(t *testing.T) {
-				store := &recordingStore{}
-				h := tracesHandler(t, store, nil)
-				mux := http.NewServeMux()
-				h.Register(mux)
-
-				req := httptest.NewRequest(http.MethodGet, path, nil)
-				req.Header.Set(header, "not-a-number")
-				rec := httptest.NewRecorder()
-				mux.ServeHTTP(rec, req)
-
-				if rec.Code != http.StatusBadRequest {
-					t.Errorf("status = %d, want 400 — a malformed tenant header must be rejected, not silently downgraded to 0:0", rec.Code)
-				}
-				if ids, _ := store.calls(); len(ids) != 0 {
-					t.Error("a request with a malformed tenant header must not reach the storage layer")
-				}
-			})
-		}
-	}
-}
 
 // A query is answered across tenants only when the configured global-read
 // credential validates. No credential configured, a wrong value, or a missing
@@ -162,23 +38,31 @@ func TestGlobalRead_WidensOnlyWithTheCredential(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &recordingStore{}
-			h := tracesHandler(t, store, tc.mutate)
-			mux := http.NewServeMux()
-			h.Register(mux)
+			cfg := config.Default()
+			cfg.Mode = config.ModeLogs
+			if tc.mutate != nil {
+				tc.mutate(cfg)
+			}
+			h := NewHandler(mockStore{}, cfg)
 
-			req := httptest.NewRequest(http.MethodGet, "/select/jaeger/api/services", nil)
+			called := false
+			var global bool
+			wrapped := h.wrapVL(func(ctx context.Context, _ http.ResponseWriter, _ *http.Request) {
+				called = true
+				global = storage.IsGlobalRead(ctx)
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/select/logsql/field_values", nil)
 			for k, v := range tc.headers {
 				req.Header.Set(k, v)
 			}
-			mux.ServeHTTP(httptest.NewRecorder(), req)
+			wrapped(httptest.NewRecorder(), req)
 
-			_, global := store.calls()
-			if len(global) == 0 {
-				t.Fatal("handler never reached the storage layer")
+			if !called {
+				t.Fatal("the wrapped handler never ran")
 			}
-			if global[0] != tc.want {
-				t.Errorf("global read = %v, want %v", global[0], tc.want)
+			if global != tc.want {
+				t.Errorf("global read = %v, want %v", global, tc.want)
 			}
 		})
 	}

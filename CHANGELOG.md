@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.13] - 2026-10-24
+
+### Changed
+
+- **The `test-traces` and traces `test-parquets3-heavy` CI jobs balance their parquets3 test shards by measured test cost instead of test count (#788, #599).** Six weighted shards (was three hash-placed) bring the slowest `-race` shard from 408-480 s of its 480 s budget to about half of it, so the time-budget guard no longer fails otherwise green PRs; the guard, the budgets and the required check names are unchanged, and every test still runs in exactly one shard.
+
+### Removed
+
+- **The logs module's unserved Jaeger shim is deleted (#734).** `internal/selectapi` carried Jaeger handlers (`jaeger.go`) that were only registered when the handler ran in traces mode, and `lakehouse-logs` always loads its configuration in logs mode, so they were never served; upstream VictoriaLogs has no Jaeger endpoints (Jaeger is VictoriaTraces' API, served by `lakehouse-traces` through VictoriaTraces' own handlers, which this change does not touch). `lakehouse-logs` answers `/select/jaeger/*` and `/api/traces|services|dependencies` as before (no route), and `internal/selectapi` no longer branches on the mode.
+
 ## [0.167.12] - 2026-10-23
 
 ### Changed

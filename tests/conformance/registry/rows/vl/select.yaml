@@ -313,6 +313,21 @@
   pending: true
   notes: "501, not 404: internal/selectapi/handler.go routes tail and returns StatusNotImplemented; 404 would mean the path itself was unrouted."
 
+- id: vl.select.jaeger.absent
+  title: "/select/jaeger/api/services — absent upstream (Jaeger is VictoriaTraces' API), must stay absent on the logs binary"
+  surface: vl
+  kind: select
+  origin: native
+  expect: absent
+  targets: [hot, cold]
+  upstream: { route: /select/jaeger/api/services }
+  request: { method: GET, path: /select/jaeger/api/services, params: {} }
+  compare: { type: absent }
+  layers: [api]
+  pending: true
+  refs: { tests: [cmd/lakehouse-logs/jaeger_unserved_test.go#TestLogsBinary_DoesNotServeJaeger, internal/selectapi/verify_test.go#TestVerify_LogsMode_NoJaegerEndpoints, internal/selectapi/verify_test.go#TestVerify_TracesMode_NoJaegerEndpoints] }
+  notes: "Measured 2026-10-23: hot VictoriaLogs v1.53.0 answers 400 `unsupported path requested`; lakehouse-logs answers the mux default 404, as it does for every unrouted path (known difference of the unrouted-path answer, not Jaeger-specific). lakehouse-traces serves Jaeger through VictoriaTraces' own handlers (vt.jaeger.* rows)."
+
 - id: vl.select.tail.native
   title: "/select/logsql/tail — hot streaming tail works unchanged"
   surface: vl

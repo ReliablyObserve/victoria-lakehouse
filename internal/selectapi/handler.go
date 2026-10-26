@@ -71,19 +71,6 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/select/logsql/stats_query_range", h.wrapVL(logsql.ProcessStatsQueryRangeRequest))
 	mux.HandleFunc("/select/logsql/tail", h.handleTailNoop)
 	mux.HandleFunc("/select/tenant_ids", h.wrapVL(logsql.ProcessTenantIDsRequest))
-
-	if h.cfg.Mode == config.ModeTraces {
-		mux.HandleFunc("/select/jaeger/api/traces/", h.handleJaegerTrace)
-		mux.HandleFunc("/select/jaeger/api/traces", h.handleJaegerSearch)
-		mux.HandleFunc("/select/jaeger/api/services", h.handleJaegerServices)
-		mux.HandleFunc("/select/jaeger/api/services/", h.handleJaegerOperations)
-		mux.HandleFunc("/select/jaeger/api/dependencies", h.handleJaegerDependencies)
-		mux.HandleFunc("/api/traces/", h.handleJaegerTrace)
-		mux.HandleFunc("/api/traces", h.handleJaegerSearch)
-		mux.HandleFunc("/api/services", h.handleJaegerServices)
-		mux.HandleFunc("/api/services/", h.handleJaegerOperations)
-		mux.HandleFunc("/api/dependencies", h.handleJaegerDependencies)
-	}
 }
 
 func (h *Handler) wrapVLTimestampOnly(fn func(ctx context.Context, w http.ResponseWriter, r *http.Request)) http.HandlerFunc {
