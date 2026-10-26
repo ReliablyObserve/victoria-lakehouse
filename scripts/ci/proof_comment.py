@@ -196,7 +196,8 @@ _PNG_DEPTHS = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: 
 _PNG_CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
 # Critical chunks plus colour-space chunks that carry a few fixed bytes. No text, profile, time or private chunk:
 # those can hold arbitrary data, and the file is hosted on raw.githubusercontent.com.
-_PNG_ANCILLARY = {b"pHYs": 9, b"sRGB": 1, b"gAMA": 4, b"cHRM": 32, b"tRNS": None}
+_PNG_ANCILLARY = {b"pHYs": 9, b"sRGB": 1, b"gAMA": 4, b"cHRM": 32}
+_TRNS_LEN = {0: 2, 2: 6}  # colour type 3 takes up to one byte per palette entry; types 4 and 6 have an alpha channel and no tRNS
 MAX_PIXELS = 16_000_000
 
 
@@ -204,7 +205,10 @@ def valid_png(data: bytes) -> bool:
     """A plain, non-interlaced PNG and nothing else.
 
     Every chunk is walked and its CRC checked; only IHDR, PLTE, IDAT, IEND and pHYs, sRGB, gAMA, cHRM, tRNS are allowed, in
-    a legal order, with their exact lengths; nothing may follow IEND; the IDAT stream must inflate to exactly the size the
+    a legal order, with their exact lengths (tRNS: 2 bytes on grey, 6 on truecolour, at most one byte per palette entry after
+    PLTE on palette images, never on types 4 and 6). PLTE is accepted on palette images only, even though the specification
+    also allows it as a suggested palette on truecolour: that is up to 768 bytes nothing reads, so it is refused. Ancillary
+    chunks must precede the first IDAT. Nothing may follow IEND; the IDAT stream must inflate to exactly the size the
     IHDR implies (so it carries no hidden payload) and every row's filter byte must be 0..4. Width and height are at most
     8192 and the picture at most 16 million pixels.
     """
@@ -217,7 +221,7 @@ def valid_png(data: bytes) -> bool:
 def _check_png(data: bytes) -> bool:
     if len(data) < 8 + 25 + 12 or len(data) > MAX_IMAGE_BYTES or not data.startswith(PNG_SIG):
         return False
-    pos, first, seen, idat, ended, plte = 8, True, set(), [], False, False
+    pos, first, seen, idat, ended, plte = 8, True, set(), [], False, 0
     ihdr = None
     last_was_idat = False
     while pos < len(data):
@@ -250,12 +254,22 @@ def _check_png(data: bytes) -> bool:
                     return False
                 ended = True
             elif ctype == b"PLTE":
-                if ctype in seen or idat or length == 0 or length % 3 or length > 768 or ihdr[3] in (0, 4):
+                if (ctype in seen or idat or length == 0 or length % 3 or ihdr[3] != 3
+                        or length // 3 > min(256, 1 << ihdr[2])):
                     return False
-                plte = True
+                plte = len(body) // 3
+            elif ctype == b"tRNS":
+                if ctype in seen or idat:
+                    return False
+                if ihdr[3] == 3:
+                    if not plte or not 1 <= length <= plte:
+                        return False
+                elif length != _TRNS_LEN.get(ihdr[3]):
+                    return False
             elif ctype in _PNG_ANCILLARY:
-                want = _PNG_ANCILLARY[ctype]
-                if ctype in seen or idat or (want is not None and length != want) or (want is None and length > 256):
+                if ctype in seen or idat or length != _PNG_ANCILLARY[ctype]:
+                    return False
+                if (ctype == b"sRGB" and body[0] > 3) or (ctype == b"pHYs" and body[8] > 1):
                     return False
             else:
                 return False
@@ -435,7 +449,7 @@ def sanitize_body(text: str, *, repo: str, image_names, allowed_refs) -> tuple:
 
     def url_ok(url: str) -> bool:
         """Issue and pull URLs create cross references like `#N`: only the numbers the manifest allows."""
-        n = re.search(r"/(?:issues|pull)/(\d+)$", url)
+        n = re.search(r"/(?:issues|pull)/(\d+)$", url, re.I)
         return not n or int(n.group(1)) in allowed_refs
 
     def link(m):
@@ -613,6 +627,7 @@ def event_from_env(env) -> dict:
         "event": get("WR_EVENT", r"[a-z_]{1,40}"),
         "path": get("WR_PATH", r"[A-Za-z0-9_./@:\-]{1,200}"),
         "conclusion": env.get("WR_CONCLUSION", ""),
+        "run_attempt": int(env.get("WR_RUN_ATTEMPT", "1")) if re.fullmatch(r"\d{1,4}", env.get("WR_RUN_ATTEMPT", "1")) else 1,
         "payload_prs": nums,
     }
 
@@ -661,12 +676,10 @@ def open_prs_for_head(api, ev: dict) -> dict:
 
 def fetch_artifact(api, ev: dict) -> bytes:
     arts = api.get(f"repos/{ev['repo']}/actions/runs/{ev['run_id']}/artifacts?per_page=100").get("artifacts", [])
-    named = [a for a in arts if a.get("name") == ARTIFACT_NAME and not a.get("expired")]
+    named = [a for a in arts if a.get("name") == ARTIFACT_NAME and not a.get("expired") and _is_int(a.get("id"))]
     if not named:
         raise NoArtifact(f"run {ev['run_id']} has no {ARTIFACT_NAME} artifact")
-    if len(named) > 1:
-        raise Reject(f"run {ev['run_id']} has {len(named)} artifacts named {ARTIFACT_NAME}")
-    a = named[0]
+    a = max(named, key=lambda x: x["id"])  # the artifacts of every attempt of the run are listed: the newest one is the last attempt's
     wr = a.get("workflow_run") or {}
     if wr.get("id") != ev["run_id"] or wr.get("head_sha") != ev["head_sha"]:
         raise Reject("the artifact does not belong to the producing run")
@@ -706,7 +719,7 @@ def build_bundle(files: dict, m: dict, ev: dict, out: str, conclusion: str = "un
         with open(os.path.join(out, "images", published_name(m["head_sha"], name)), "wb") as f:
             f.write(files[f"images/{name}"])
     meta = {"mode": "proof", "repo": ev["repo"], "run_id": ev["run_id"], "pr_number": m["pr_number"], "head_sha": m["head_sha"],
-            "conclusion": conclusion, "comments": m["comments"], "images": sorted(used_all)}
+            "conclusion": conclusion, "run_attempt": ev["run_attempt"], "comments": m["comments"], "images": sorted(used_all)}
     with open(os.path.join(out, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, sort_keys=True)
     return meta
@@ -716,7 +729,8 @@ def build_stale(out: str, ev: dict, path: str, conclusion: str, prs, reason: str
     """The bundle of a head with no valid proof. It holds API facts only, nothing from the artifact."""
     os.makedirs(out, exist_ok=True)
     meta = {"mode": "stale", "repo": ev["repo"], "run_id": ev["run_id"], "head_sha": ev["head_sha"], "prs": sorted(prs),
-            "kinds": sorted(PRODUCERS[path]), "reason": reason, "conclusion": conclusion, "commenter_run": commenter_run}
+            "kinds": sorted(PRODUCERS[path]), "reason": reason, "conclusion": conclusion, "commenter_run": commenter_run,
+            "run_attempt": ev["run_attempt"]}
     with open(os.path.join(out, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, sort_keys=True)
     return meta
@@ -731,7 +745,8 @@ def read_bundle(bundle: str, repo: str) -> dict:
         raise Reject("bundle meta.json is missing or malformed") from None
     if (not isinstance(meta, dict) or meta.get("repo") != repo or not _is_int(meta.get("run_id"))
             or not isinstance(meta.get("head_sha"), str) or not SHA_RE.fullmatch(meta["head_sha"])
-            or not isinstance(meta.get("conclusion"), str) or not CONCLUSION_RE.fullmatch(meta["conclusion"])):
+            or not isinstance(meta.get("conclusion"), str) or not CONCLUSION_RE.fullmatch(meta["conclusion"])
+            or not _is_int(meta.get("run_attempt"))):
         raise Reject("bundle meta.json does not match the expected shape")
     names = set(os.listdir(bundle))
     if meta.get("mode") == "stale":
@@ -788,12 +803,16 @@ def current_pr(api, repo: str, pr: int, head_sha: str) -> dict:
 # ---------------------------------------------------------------------------------------------------------------
 # The upsert
 # ---------------------------------------------------------------------------------------------------------------
-def upsert(api, repo: str, pr: int, kind: str, body: str, run_id: int, head_sha: str, create: bool = True) -> str:
+def upsert(api, repo: str, pr: int, kind: str, body: str, run_id: int, head_sha: str, create: bool = True,
+           ceiling: int = 0) -> str:
+    """Create or edit the bot's comment of `kind`. `ceiling` is the id of the running commenter: a run id in an existing
+    comment above it cannot be a real run (a same-repository workflow can write any hidden text as the bot) and is ignored."""
     marker = MARKERS[kind]
     mine = sorted((c for c in api.get_paged(f"repos/{repo}/issues/{pr}/comments")
                    if (c.get("user") or {}).get("login") == BOT_LOGIN and (c.get("user") or {}).get("type") == "Bot"
                    and isinstance(c.get("body"), str) and c["body"].lstrip().startswith(marker)), key=lambda c: c["id"])
-    newest = max((int(m.group(1)) for m in (META_RE.search(c["body"]) for c in mine) if m), default=0)
+    ids = (int(m.group(1)) for m in (META_RE.search(c["body"]) for c in mine) if m)
+    newest = max((i for i in ids if not ceiling or i <= ceiling), default=0)
     if newest > run_id:  # the newest run id over ALL duplicates: an older run never edits or deletes anything
         return f"kept (a newer run {newest} already posted)"
     if not mine and not create:
@@ -890,13 +909,14 @@ def cmd_comment(args, env, api) -> int:
     if not REPO_RE.fullmatch(repo):
         raise Reject("GITHUB_REPOSITORY is malformed")
     meta = read_bundle(args.bundle, repo)
+    ceiling = int(env["GITHUB_RUN_ID"]) if re.fullmatch(r"\d{1,20}", env.get("GITHUB_RUN_ID", "")) else 0
     if meta["mode"] == "stale":
         for pr in meta["prs"]:
             for kind in meta["kinds"]:
                 body = render_stale(kind, repo=repo, head_sha=meta["head_sha"], run_id=meta["run_id"], conclusion=meta["conclusion"],
                                     reason=meta["reason"], commenter_run=meta["commenter_run"])
                 try:
-                    log("notice", f"PR {pr} {kind}: {upsert(api, repo, pr, kind, body, meta['run_id'], meta['head_sha'], create=False)}")
+                    log("notice", f"PR {pr} {kind}: {upsert(api, repo, pr, kind, body, meta['run_id'], meta['head_sha'], create=False, ceiling=ceiling)}")
                 except Skip as sk:
                     log("notice", f"PR {pr} {kind}: skipped, {sk}")
         return 0
@@ -906,7 +926,7 @@ def cmd_comment(args, env, api) -> int:
         body = render_comment(kind, meta["bodies"][kind], repo=repo, pr=meta["pr_number"], head_sha=meta["head_sha"],
                               run_id=meta["run_id"], images_published=published, verdict=c["verdict"], conclusion=meta["conclusion"])
         try:
-            log("notice", f"{kind}: {upsert(api, repo, meta['pr_number'], kind, body, meta['run_id'], meta['head_sha'])}")
+            log("notice", f"{kind}: {upsert(api, repo, meta['pr_number'], kind, body, meta['run_id'], meta['head_sha'], ceiling=ceiling)}")
         except Skip as sk:
             log("notice", f"{kind}: skipped, {sk}")
     return 0
@@ -966,7 +986,8 @@ def main(argv=None, env=None, api=None) -> int:
         log("notice", f"nothing to do: {s}")
         return 0
     except ApiError as e:
-        if e.status == 403:  # e.g. a read-only token (Dependabot): post nothing, do not fail the run
+        # Only the read-only-token answer is benign (Dependabot): a rate limit or an abuse block is also a 403 and must not hide a banner.
+        if e.status == 403 and "Resource not accessible by integration" in str(e):
             log("warning", f"the GitHub API refused the request (403); nothing is posted. {e}")
             return 0
         log("error", str(e))

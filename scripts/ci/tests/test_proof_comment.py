@@ -102,6 +102,7 @@ class FakeApi:
         self.artifacts = artifacts
         self.conclusion = conclusion
         self.writes = []
+        self.zips = {}  # artifact id -> bytes, for runs with several attempts
         self.next_id = 1000
         self.fail_patch_404 = False
 
@@ -133,8 +134,9 @@ class FakeApi:
         raise AssertionError(f"unexpected paged GET {path}")
 
     def get_bytes(self, path):
-        assert path == f"repos/{self.repo}/actions/artifacts/5/zip", path
-        return self.zipbytes
+        m = re.fullmatch(rf"repos/{self.repo}/actions/artifacts/(\d+)/zip", path)
+        assert m, path
+        return self.zips.get(int(m.group(1)), self.zipbytes)
 
     def send(self, method, path, payload=None):
         self.writes.append((method, path, payload))
@@ -730,9 +732,21 @@ class Validate(unittest.TestCase):
                                                                    "workflow_run": {"id": 1, "head_sha": SHA}}])
         self.assert_stale(api, "rejected")
 
-    def test_two_artifacts_with_the_name_mark_the_head_unproven(self):
+    def test_a_rerun_lists_the_artifacts_of_both_attempts_and_the_newest_wins(self):
         a = {"id": 5, "name": pc.ARTIFACT_NAME, "size_in_bytes": 10, "workflow_run": {"id": 99, "head_sha": SHA}}
-        self.assert_stale(FakeApi(artifacts=[a, dict(a, id=6)]), "rejected")
+        api = FakeApi(artifacts=[a, dict(a, id=6)], zipbytes=make_zip(artifact(), extra=[("../../x", b"x")]))  # attempt 1: invalid
+        api.zips[6] = make_zip(artifact())  # attempt 2: valid
+        rc, out, files, meta = self.run_validate(api, env={"WR_RUN_ATTEMPT": "2"})
+        self.assertEqual((rc, out["mode"], meta["run_attempt"]), (0, "proof", 2))
+        api = FakeApi(artifacts=[dict(a, id=6), a], zipbytes=make_zip(artifact()))  # listing order does not matter
+        api.zips[5] = make_zip(artifact(), extra=[("../../x", b"x")])
+        self.assertEqual(self.run_validate(api)[1]["mode"], "proof")
+
+    def test_an_expired_attempt_is_ignored_and_a_bad_attempt_value_defaults_to_one(self):
+        a = {"id": 5, "name": pc.ARTIFACT_NAME, "size_in_bytes": 10, "workflow_run": {"id": 99, "head_sha": SHA}}
+        api = FakeApi(artifacts=[a, dict(a, id=6, expired=True)], zipbytes=make_zip(artifact()))
+        rc, out, _, meta = self.run_validate(api, env={"WR_RUN_ATTEMPT": "x"})
+        self.assertEqual((out["mode"], meta["run_attempt"]), ("proof", 1))
 
     def test_runs_that_are_not_pull_request_runs_are_skipped(self):
         for env in ({"WR_EVENT": "push"}, {"WR_EVENT": "workflow_dispatch"}, {"WR_CONCLUSION": "cancelled"}, {"WR_CONCLUSION": "skipped"},
@@ -779,7 +793,7 @@ class Validate(unittest.TestCase):
         for name, z in bad.items():
             with self.subTest(name):
                 meta = self.assert_stale(FakeApi(zipbytes=z), "rejected")
-                self.assertEqual(set(meta), {"mode", "repo", "run_id", "head_sha", "prs", "kinds", "reason", "conclusion", "commenter_run"})
+                self.assertEqual(set(meta), {"mode", "repo", "run_id", "head_sha", "prs", "kinds", "reason", "conclusion", "commenter_run", "run_attempt"})
 
     def test_the_bundle_holds_sanitised_bodies_and_only_referenced_images(self):
         files = artifact(bodies={"perf-smoke": b"hi @someone #999 <b>x</b> ![s](image:page.png)"})
@@ -956,6 +970,54 @@ class StrictPng(unittest.TestCase):
             with self.subTest(t=t):
                 self.assertFalse(pc.valid_png(png(extra_chunks=[(t, b"k\x00<html><script>alert(1)</script>")])))
 
+    def test_trns_is_exact_per_colour_type_and_never_free_form(self):
+        grey = lambda n: png(5, 4, ctype=0, idat_raw=raw_rows(5, 4, bpp=1), extra_chunks=[(b"tRNS", b"\x00" * n)])
+        self.assertTrue(pc.valid_png(grey(2)))
+        for n in (0, 1, 3, 256, 300):
+            self.assertFalse(pc.valid_png(grey(n)), n)
+        rgb = lambda n: png(extra_chunks=[(b"tRNS", b"\x00" * n)])
+        self.assertTrue(pc.valid_png(rgb(6)))
+        for n in (2, 7, 257, 400):
+            self.assertFalse(pc.valid_png(rgb(n)), n)
+        rgba = png(3, 3, ctype=6, idat_raw=raw_rows(3, 3, bpp=4), extra_chunks=[(b"tRNS", b"\x00" * 6)])
+        self.assertFalse(pc.valid_png(rgba))
+        gray_alpha = png(3, 3, ctype=4, idat_raw=raw_rows(3, 3, bpp=2), extra_chunks=[(b"tRNS", b"\x00" * 2)])
+        self.assertFalse(pc.valid_png(gray_alpha))
+
+    def test_trns_on_a_palette_image_follows_plte_and_has_at_most_one_byte_per_entry(self):
+        plte = (b"PLTE", b"\x00\x00\x00\xff\xff\xff")  # two entries
+        pal = lambda *chunks: png(4, 2, ctype=3, depth=8, extra_chunks=list(chunks), idat_raw=raw_rows(4, 2, bpp=1))
+        self.assertTrue(pc.valid_png(pal(plte, (b"tRNS", b"\x80\xff"))))
+        self.assertTrue(pc.valid_png(pal(plte, (b"tRNS", b"\x80"))))
+        self.assertFalse(pc.valid_png(pal(plte, (b"tRNS", b"\x80\xff\x00"))))  # longer than the palette
+        self.assertFalse(pc.valid_png(pal((b"tRNS", b"\x80"), plte)))  # before PLTE
+        self.assertFalse(pc.valid_png(pal((b"tRNS", b"\x80"))))  # without PLTE
+        self.assertFalse(pc.valid_png(pal(plte, (b"tRNS", b""))))
+        big = (b"PLTE", b"\x01\x02\x03" * 256)
+        self.assertTrue(pc.valid_png(pal(big)))
+        self.assertFalse(pc.valid_png(pal((b"PLTE", b"\x01\x02\x03" * 257))))
+        self.assertFalse(pc.valid_png(pal((b"PLTE", b"\x01\x02\x03" * 300), (b"tRNS", b"\x00" * 300))))  # also > 256 bytes
+
+    def test_a_palette_chunk_is_only_for_palette_images(self):
+        free_bytes = (b"PLTE", os.urandom(768))
+        for ctype, bpp in ((0, 1), (2, 3), (4, 2), (6, 4)):
+            with self.subTest(ctype=ctype):
+                self.assertFalse(pc.valid_png(png(3, 3, ctype=ctype, idat_raw=raw_rows(3, 3, bpp=bpp), extra_chunks=[free_bytes])))
+        self.assertFalse(pc.valid_png(png(3, 3, ctype=3, depth=1, idat_raw=raw_rows(3, 1, bpp=1)[:0] + (b"\x00\x00") * 3,
+                                          extra_chunks=[(b"PLTE", b"\x01\x02\x03" * 3)])))  # 3 entries do not fit 1 bit
+
+    def test_an_ancillary_chunk_after_the_last_idat_is_refused(self):
+        z = zlib.compress(raw_rows(2, 2))
+        head = pc.PNG_SIG + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0))
+        self.assertTrue(pc.valid_png(head + chunk(b"IDAT", z) + chunk(b"IEND", b"")))
+        for t, d in ((b"sRGB", b"\x00"), (b"gAMA", b"\x00" * 4), (b"pHYs", b"\x00" * 8 + b"\x01"), (b"tRNS", b"\x00" * 6)):
+            self.assertFalse(pc.valid_png(head + chunk(b"IDAT", z) + chunk(t, d) + chunk(b"IEND", b"")), t)
+
+    def test_fixed_chunks_carry_only_their_defined_values(self):
+        self.assertFalse(pc.valid_png(png(extra_chunks=[(b"sRGB", b"\x09")])))
+        self.assertTrue(pc.valid_png(png(extra_chunks=[(b"sRGB", b"\x03")])))
+        self.assertFalse(pc.valid_png(png(extra_chunks=[(b"pHYs", struct.pack(">IIB", 1, 1, 5))])))
+
     def test_html_after_iend_and_an_appended_zip_are_refused(self):
         self.assertFalse(pc.valid_png(png(trailing=b"<html><script>alert(1)</script></html>")))
         exe = io.BytesIO()
@@ -968,13 +1030,21 @@ class StrictPng(unittest.TestCase):
         data[16 + 3] ^= 0x01  # inside IHDR
         self.assertFalse(pc.valid_png(bytes(data)))
         data = bytearray(png())
-        data[-5] ^= 0xFF  # the CRC of IEND
+        data[-1] ^= 0xFF  # the last byte of the CRC of IEND
+        self.assertFalse(pc.valid_png(bytes(data)))
+        data = bytearray(png())
+        data[-12 - 1] ^= 0xFF  # the last byte of the CRC of IDAT
         self.assertFalse(pc.valid_png(bytes(data)))
 
     def test_an_idat_stream_that_is_not_exactly_the_image_is_refused(self):
         self.assertFalse(pc.valid_png(png(2, 2, idat_raw=raw_rows(2, 2) + b"<html>hidden</html>")))  # too long
         self.assertFalse(pc.valid_png(png(2, 2, idat_raw=raw_rows(2, 1))))  # too short
         self.assertFalse(pc.valid_png(png(2, 2, idat_raw=b"\x07" + raw_rows(2, 2)[1:])))  # filter byte 7
+        self.assertFalse(pc.valid_png(png(2, 2, idat_raw=b"\x05" + raw_rows(2, 2)[1:])))  # filter byte 5: the first invalid one
+        self.assertTrue(pc.valid_png(png(2, 2, idat_raw=b"\x04" + raw_rows(2, 2)[1:])))  # filter byte 4: the last valid one
+        second_row = bytearray(raw_rows(2, 2))
+        second_row[1 + 6] = 0x09  # the filter byte of the SECOND row
+        self.assertFalse(pc.valid_png(png(2, 2, idat_raw=bytes(second_row))))
         rows = bytearray(raw_rows(2, 2))
         self.assertTrue(pc.valid_png(png(2, 2, idat_raw=bytes(rows))))
 
@@ -1116,6 +1186,15 @@ class Review(unittest.TestCase):
         self.assertNotIn("(https://github.com", out.replace(f"(https://github.com/{REPO}/pull/100)", "").replace(f"(https://github.com/{REPO}/issues/101)", ""))
         self.assertEqual(self.s(f"[x]({urls[0]})", refs=[]), "x")
 
+    def test_the_issue_cap_is_not_case_sensitive(self):
+        for seg in ("Issues", "ISSUES", "PULL", "Pull"):
+            u = f"https://github.com/{REPO}/{seg}/99"
+            for body in (f"[t]({u})", u):
+                out = self.s(body, refs=[])
+                self.assertNotIn("://", out, (seg, body))  # defanged: no autolink
+                self.assertNotIn("](", out, (seg, body))
+            self.assertIn(u, self.s(f"[t]({u})", refs=[99]))
+
     def test_runs_and_commits_are_not_subject_to_the_issue_cap(self):
         ok = f"[run](https://github.com/{REPO}/actions/runs/5) [c](https://github.com/{REPO}/commit/{'a' * 40})"
         self.assertEqual(self.s(ok), ok)
@@ -1178,6 +1257,44 @@ class Review(unittest.TestCase):
         api = FakeApi(comments=[bot_comment(1, "perf-smoke", run=500)])
         self.assertEqual(pc.upsert(api, REPO, 7, "perf-smoke", pc.MARKERS["perf-smoke"] + "\nnew", 500, SHA), "updated")
         self.assertEqual([m for m, *_ in api.writes], ["PATCH"])
+
+    def test_a_forged_run_id_above_the_running_commenter_cannot_freeze_a_comment(self):
+        forged = bot_comment(1, "perf-smoke", run=99999999999)
+        api = FakeApi(comments=[forged])
+        out = pc.upsert(api, REPO, 7, "perf-smoke", pc.MARKERS["perf-smoke"] + "\nnew", 500, SHA, ceiling=4242)
+        self.assertEqual(out, "updated")
+        self.assertEqual([m for m, *_ in api.writes], ["PATCH"])
+        # a real newer run (below the ceiling) still wins, and with no ceiling nothing changes
+        api = FakeApi(comments=[bot_comment(1, "perf-smoke", run=900)])
+        self.assertIn("newer run 900", pc.upsert(api, REPO, 7, "perf-smoke", "x", 500, SHA, ceiling=4242))
+        api = FakeApi(comments=[forged])
+        self.assertIn("newer run", pc.upsert(api, REPO, 7, "perf-smoke", "x", 500, SHA))
+
+    def test_the_forged_id_is_ignored_end_to_end_with_the_commenters_run_id(self):
+        api = valid_api(comments=[bot_comment(1, "perf-smoke", run=99999999999), bot_comment(2, "visual-proof", run=99999999999)])
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(api, GITHUB_RUN_ID="4242"), api=api)
+            pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api, GITHUB_RUN_ID="4242"), api=api)
+        self.assertEqual(sorted(p.rsplit("/", 1)[-1] for m, p, _ in api.writes if m == "PATCH"), ["1", "2"])
+        stale = FakeApi(artifacts=[], comments=[bot_comment(1, "perf-smoke", run=99999999999)])
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(stale, GITHUB_RUN_ID="4242"), api=stale)
+            pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(stale, GITHUB_RUN_ID="4242"), api=stale)
+        self.assertEqual([m for m, *_ in stale.writes], ["PATCH"])  # the banner replaces the forged comment
+
+    def test_a_403_that_is_not_the_read_only_token_answer_is_an_error(self):
+        for msg in ("HTTP 403: API rate limit exceeded for installation", "HTTP 403: You have exceeded a secondary rate limit",
+                    "HTTP 403: abuse detection mechanism", "HTTP 403: Forbidden"):
+            api = valid_api()
+            with tempfile.TemporaryDirectory() as d:
+                pc.main(["validate", "--out", d], env=env_for(api), api=api)
+                api.get_paged = lambda path, m=msg: (_ for _ in ()).throw(pc.ApiError(m, 403))
+                self.assertEqual(pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api), api=api), 1, msg)
+        api = valid_api()
+        with tempfile.TemporaryDirectory() as d:
+            pc.main(["validate", "--out", d], env=env_for(api), api=api)
+            api.get_paged = lambda path: (_ for _ in ()).throw(pc.ApiError("HTTP 403: Resource not accessible by integration", 403))
+            self.assertEqual(pc.main(["comment", "--bundle", d, "--images-published", "false"], env=env_for(api), api=api), 0)
 
     def test_a_403_from_the_api_is_a_green_warning_and_posts_nothing(self):
         api = valid_api()
@@ -1281,10 +1398,21 @@ class WorkflowFile(unittest.TestCase):
         step = next(s for s in self.jobs()["publish"]["steps"] if s.get("id") == "publish")
         self.assertIn('echo "published=true" >> "$GITHUB_OUTPUT"', step["run"])
 
-    def test_publish_and_the_prune_serialise_on_one_group(self):
+    def test_publish_and_the_prune_use_no_concurrency_group(self):
+        """GitHub keeps one running and one pending job per group and cancels the pending one when another is queued, so a group
+        would drop publishes (`queue: max` is not in the workflow schema). publish.py's lease and rebuild keep the branch correct."""
         prune = yaml.safe_load((ROOT / ".github/workflows/pr-visuals-prune.yaml").read_text())
-        self.assertEqual(self.jobs()["publish"]["concurrency"]["group"], prune["jobs"]["prune"]["concurrency"]["group"])
-        self.assertIs(self.jobs()["publish"]["concurrency"]["cancel-in-progress"], False)
+        self.assertNotIn("concurrency", self.jobs()["publish"])
+        self.assertNotIn("concurrency", prune)
+        self.assertNotIn("concurrency", prune["jobs"]["prune"])
+        self.assertNotIn("pr-visuals-write", self.text)
+        self.assertNotIn("queue:", self.text)
+
+    def test_the_trigger_carries_an_inline_zizmor_ignore_with_its_reason_and_the_config_has_no_line_entry(self):
+        line = next(ln for ln in self.text.splitlines() if ln.startswith("  workflow_run:"))
+        self.assertRegex(line, r"# zizmor: ignore\[dangerous-triggers\] \S")
+        self.assertNotIn("pr-proof-comment", (ROOT / ".github/zizmor.yml").read_text().replace("`pr-proof-comment.yaml` carries an inline", ""))
+
 
 
     def test_job_ifs_gate_on_the_event(self):
@@ -1319,6 +1447,95 @@ class PruneWorkflow(unittest.TestCase):
         run = self.doc["jobs"]["prune"]["steps"][-1]["run"]
         self.assertIn("set -euo pipefail", run)  # a failed listing must not become an empty keep list
         self.assertIn("python3 -I scripts/proof/visual/publish.py prune --keep", run)
+
+
+class PruneScript(unittest.TestCase):
+    """The shell of pr-visuals-prune.yaml, run against a stub `gh` and a stub publish.py: it must fail closed."""
+
+    @classmethod
+    def setUpClass(cls):
+        doc = yaml.safe_load((ROOT / ".github/workflows/pr-visuals-prune.yaml").read_text())
+        cls.script = doc["jobs"]["prune"]["steps"][-1]["run"]
+
+    def run_script(self, gh_out="", gh_fail=False):
+        import shutil
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "bin"))
+            os.makedirs(os.path.join(d, "scripts/proof/visual"))
+            write_file(os.path.join(d, "bin/gh"), "#!/bin/sh\nif [ -n \"$FAKE_GH_FAIL\" ]; then echo boom >&2; exit 1; fi\nprintf '%s' \"$FAKE_GH_OUT\"\n")
+            os.chmod(os.path.join(d, "bin/gh"), 0o755)
+            write_file(os.path.join(d, "scripts/proof/visual/publish.py"),
+                       "import sys\nopen('called.txt', 'w').write(' '.join(sys.argv[1:]))\n")
+            env = dict(os.environ, PATH=os.path.join(d, "bin") + os.pathsep + os.environ["PATH"], GITHUB_REPOSITORY=REPO,
+                       FAKE_GH_OUT=gh_out, FAKE_GH_FAIL="1" if gh_fail else "")
+            r = subprocess.run(["bash", "-c", self.script], cwd=d, env=env, capture_output=True, text=True)
+            called = read_file(os.path.join(d, "called.txt")) if os.path.exists(os.path.join(d, "called.txt")) else None
+            shutil.rmtree(os.path.join(d, "bin"))
+            return r.returncode, called, r.stdout + r.stderr
+
+    def test_the_open_pull_requests_become_the_keep_list(self):
+        rc, called, _ = self.run_script("7\n12\n295\n")
+        self.assertEqual(rc, 0)
+        self.assertIn("prune --keep 7,12,295 --remote https://github.com/" + REPO + ".git", called)
+
+    def test_no_open_pull_request_is_an_empty_keep_list(self):
+        rc, called, _ = self.run_script("")
+        self.assertEqual(rc, 0)
+        self.assertIn("prune --keep  --remote", called)
+
+    def test_a_failed_listing_never_becomes_an_empty_keep_list(self):
+        rc, called, out = self.run_script("", gh_fail=True)
+        self.assertNotEqual(rc, 0)
+        self.assertIsNone(called)
+
+    def test_anything_that_is_not_a_number_stops_the_prune(self):
+        for bad in ("7\nabc\n", "7\n\n12\n", "7 8\n", "7\n-3\n", "<html>\n"):
+            with self.subTest(bad=bad):
+                rc, called, _ = self.run_script(bad)
+                self.assertNotEqual(rc, 0)
+                self.assertIsNone(called)
+
+    def test_the_listing_is_paginated_without_a_limit(self):
+        self.assertIn("--paginate", self.script)
+        self.assertNotIn("--limit", self.script)
+
+
+class PublishPruneOnlyTouchesPrFolders(unittest.TestCase):
+    """scripts/proof/visual/publish.py prune against a real git remote that also holds other files."""
+
+    def load(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("publish_under_test", ROOT / "scripts/proof/visual/publish.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def git(self, *args, cwd):
+        import subprocess
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", *args],
+                              cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+    def test_prune_removes_only_closed_pr_folders_and_keeps_readme_and_other_files(self):
+        pub = self.load()
+        with tempfile.TemporaryDirectory() as d:
+            remote = os.path.join(d, "remote.git")
+            self.git("init", "--bare", "-q", remote, cwd=d)
+            work = os.path.join(d, "work")
+            self.git("init", "-q", work, cwd=d)
+            self.git("checkout", "-q", "--orphan", "pr-visuals", cwd=work)
+            for rel in ("README.md", "docs/notes.txt", "pr-1/a.png", "pr-2/a.png", "pr-295/a.png", "pr-x/a.png", "pr-12abc/a.png", "prefix-pr-3/a.png", "pr-/a.png"):
+                path = os.path.join(work, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                write_file(path, b"x")
+            self.git("add", "-A", cwd=work)
+            self.git("commit", "-q", "-m", "seed", cwd=work)
+            url = "file://" + remote
+            self.git("push", "-q", url, "pr-visuals:pr-visuals", cwd=work)
+            pub.remove(set(), url, "pr-visuals", keep={"2"})
+            files = self.git("ls-tree", "-r", "--name-only", "pr-visuals", cwd=remote).split()
+            self.assertEqual(sorted(files), sorted(["README.md", "docs/notes.txt", "pr-2/a.png", "pr-x/a.png", "pr-12abc/a.png", "prefix-pr-3/a.png", "pr-/a.png"]))
+            self.assertEqual(len(self.git("rev-list", "pr-visuals", cwd=remote).split()), 1)  # one parentless commit
 
 
 if __name__ == "__main__":

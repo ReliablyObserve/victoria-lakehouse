@@ -23,7 +23,7 @@ name: PR proof comment
 #     scripts/ci/tests/test_proof_comment.py and test_workflow_permissions.py hold these rules.
 
 on:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers] base-branch code only, artifact is validated data, see the trust model above
     workflows: [PR Quality, PR proof]
     types: [completed]
   workflow_dispatch:
@@ -39,7 +39,8 @@ on:
 
 permissions: {}
 
-# One commenter at a time per producer run and head, never cancelled (a cancelled run is a comment that never lands).
+# One commenter at a time per producer and head, never cancelled while running. A newer run of the same producer and head
+# replaces a pending older one, which is intended: it carries the newer run id and the same head.
 concurrency:
   group: pr-proof-comment-${{ github.event.workflow_run.workflow_id || github.run_id }}-${{ github.event.workflow_run.head_sha || github.run_id }}
   cancel-in-progress: false
@@ -75,6 +76,7 @@ jobs:
           WR_EVENT: ${{ github.event.workflow_run.event }}
           WR_PATH: ${{ github.event.workflow_run.path }}
           WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           WR_PRS: ${{ toJSON(github.event.workflow_run.pull_requests.*.number) }}
         run: python3 -I scripts/ci/proof_comment.py validate --out "$RUNNER_TEMP/bundle"
 
@@ -96,10 +98,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
-    # One writer to the data branch at a time, together with the weekly prune (pr-visuals-prune.yaml).
-    concurrency:
-      group: pr-visuals-write
-      cancel-in-progress: false
+    # No concurrency group on purpose: GitHub keeps one running and one pending job per group and cancels the pending one
+    # when another is queued, which would drop publishes. publish.py rebuilds on the new tip and pushes with a lease
+    # (4 attempts), so concurrent publishes and the weekly prune stay correct without a group.
     outputs:
       published: ${{ steps.publish.outputs.published }}
     steps:

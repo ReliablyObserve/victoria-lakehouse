@@ -2,7 +2,8 @@ name: PR visuals prune
 
 # Removes the image folders (pr-<N>/) of the data-only branch `pr-visuals` that belong to pull requests which are no longer
 # open, so the branch stays bounded (each open PR holds at most 80 files of 300 KB). The images are published by
-# pr-proof-comment.yaml (job `publish`); both serialise on the concurrency group `pr-visuals-write`.
+# pr-proof-comment.yaml (job `publish`). Neither job uses a concurrency group (GitHub would cancel a pending job when a third
+# is queued): publish.py rebuilds on the new tip and pushes with a lease, so a prune and a publish cannot clobber each other.
 #
 # Only a schedule and a manual run start it: no pull request event can run it, it checks out one script of the default
 # branch and runs no pull request code. The token can push to branches (`contents: write`) and read pull requests.
@@ -22,9 +23,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: read
-    concurrency:
-      group: pr-visuals-write
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -38,6 +36,16 @@ jobs:
           PUBLISH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          keep="$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --limit 1000 --json number --jq 'map(.number) | join(",")')"
+          # All open pull requests, fully paginated: a truncated list would delete the folders of open PRs.
+          numbers="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" --jq '.[].number')"
+          if printf '%s' "$numbers" | grep -qvE '^[0-9]+$'; then
+            echo "::error::the list of open pull requests holds something that is not a number"
+            exit 1
+          fi
+          keep="$(printf '%s' "$numbers" | paste -sd, -)"
+          if ! [[ "$keep" =~ ^([0-9]+(,[0-9]+)*)?$ ]]; then
+            echo "::error::the keep list is malformed"
+            exit 1
+          fi
           python3 -I scripts/proof/visual/publish.py prune --keep "$keep" \
             --remote "https://github.com/${GITHUB_REPOSITORY}.git"

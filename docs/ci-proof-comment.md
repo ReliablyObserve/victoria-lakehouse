@@ -90,8 +90,11 @@ are closed, and a note says it was cut.
 ### Images
 
 The files are hosted on `raw.githubusercontent.com`, so an image must carry nothing but pixels. The commenter walks every
-chunk and checks its CRC. Allowed: `IHDR`, `PLTE`, `IDAT`, `IEND` and the fixed-size `pHYs`, `sRGB`, `gAMA`, `cHRM`
-and `tRNS`, each at most once and in a legal order, `IDAT` chunks consecutive. Refused: every other chunk (`tEXt`, `iTXt`,
+chunk and checks its CRC. Allowed: `IHDR`, `PLTE`, `IDAT`, `IEND` and the fixed-size `pHYs` (9 bytes, unit 0 or 1), `sRGB`
+(1 byte, 0..3), `gAMA` (4) and `cHRM` (32), each at most once, before the first `IDAT`, `IDAT` chunks consecutive.
+`PLTE` only on palette images (the specification also allows a suggested palette on truecolour; up to 768 bytes nothing
+reads is refused here). `tRNS` is exact: 2 bytes on grey, 6 on truecolour, and on palette images after `PLTE` with at most
+one byte per palette entry; never on images that have an alpha channel. Refused: every other chunk (`tEXt`, `iTXt`,
 `zTXt`, `eXIf`, `iCCP`, `tIME` and private chunks can hold arbitrary data), interlacing, any byte after `IEND`, and any
 `IDAT` stream that does not inflate to exactly `height * (1 + ceil(width * bits per pixel / 8))` bytes (so nothing hides
 behind the zlib stream), with every row's filter byte in 0..4. Width and height are at most 8192 and the picture at most
@@ -112,8 +115,9 @@ accepted.
    (`commits/{sha}/pulls`, then the newest open pull requests as a fallback). It does not use `workflow_run.pull_requests`
    to find the PR (it is empty for forks). No such PR (closed, or the head moved on) is a quiet skip. Two pull requests can
    share a head; both are "the PR" for the notices below, and the manifest picks one for a normal report.
-5. Lists the artifacts of that run: none named `lh-proof-comment` means **no proof**; two, one of another run or head,
-   or one over 20 MiB is rejected.
+5. Lists the artifacts of that run (a re-run lists those of every attempt): none named `lh-proof-comment` means **no
+   proof**; otherwise the artifact with the highest id (the last attempt's) is used, and it must belong to that run and head
+   and be at most 20 MiB or it is rejected. The event's `run_attempt` is recorded in the bundle.
 6. Downloads the zip with `gh api` (which drops the token on a cross-host redirect) and reads it **in memory, never
    extracting**: at most 120 entries, only the allowlisted names above, no directories except `images/`, no symlink or
    special file, no absolute path, `..`, backslash or duplicate, no encrypted entry, per-entry and total caps enforced on
@@ -152,8 +156,11 @@ one parentless commit on the data-only branch `pr-visuals`, folder `pr-<N>/`, pu
 * a deleted comment between find and edit falls back to creating one.
 
 Closed pull request, moved head, cancelled run: nothing is posted and the job succeeds with a notice. A mismatch between the
-event and the GitHub API (wrong run, repository, head repository, status or path) fails the job and posts nothing. A 403 from
-the API (for example a read-only token) is a warning and the job stays green: nothing is posted.
+event and the GitHub API (wrong run, repository, head repository, status or path) fails the job and posts nothing. Only the 403 answer
+"Resource not accessible by integration" (a read-only token, as for Dependabot) is a warning that leaves the job green with
+nothing posted; any other 403 (rate limit, abuse detection) fails the job, so a banner is never silently dropped. A run id
+in an existing comment's hidden metadata that is above the running commenter's own run id cannot be real and is ignored (a
+same-repository workflow can write any hidden text as the bot), so a forged id cannot freeze a comment.
 
 Every comment ends with a footer that names the head, the producer's verdict and a link to the producing run with the
 conclusion the API reports; a producer verdict `pass` on a run that concluded anything but `success` or `neutral` is flagged.
@@ -184,8 +191,12 @@ rule for a branch that carries no code. Every change is one parentless commit, s
 Per pull request the folder is replaced with each new head (at most 80 files of 300 KB), and the files are named with the head
 SHA, so a comment never shows another head's screenshot. Folders of pull requests that are no longer open are removed by
 `.github/workflows/pr-visuals-prune.yaml` (weekly and on demand; it runs `publish.py prune` with the list of open pull
-requests, never on a pull request event). Both jobs serialise on the concurrency group `pr-visuals-write`. Nothing may
-require the branch to be fast-forward only: `publish.py` pushes a parentless commit with a lease.
+requests, never on a pull request event). The listing is fully paginated, a failed call or a non-numeric entry stops the job, and
+`publish.py prune` removes only directories named `pr-<digits>` that are not in the list. Neither `publish` nor `prune` uses a
+concurrency group: GitHub keeps one running and one pending job per group and cancels the pending one when another is queued
+(`queue: max` is not part of the workflow syntax), which would drop publishes. `publish.py` rebuilds on the new tip and pushes
+with a lease (4 attempts), which keeps concurrent publishes and the prune correct. Nothing may require the branch to be
+fast-forward only: `publish.py` pushes a parentless commit with a lease.
 
 **Image hosting risk.** A fork pull request can cause up to 80 files of 300 KB to be hosted on `raw.githubusercontent.com`
 under this repository's name. The strict PNG check (above) is what limits this to pictures: no text, profile or private
@@ -207,6 +218,12 @@ until the file is merged the unit tests are the evidence.
 ## Limits and open points
 
 * `workflow_run` only starts workflows that exist on the default branch. The first real run is after merge.
+* **Obligation of the producer pull requests.** When `pr-proof.yaml` lands (the perf-smoke, api-matrix and visual-proof
+  producers), the same pull request must carry a contract test that builds the artifact from the real renderers and passes
+  it through `scripts/ci/proof_comment.py` (manifest, bodies, images, `allowed_issue_refs`), so a change in a renderer
+  cannot silently turn the comments into "no valid proof" banners. The same holds for `PR Quality`.
+* The `dangerous-triggers` audit of the pinned `zizmor` is silenced by an inline comment on the `workflow_run:` line, with the
+  reason, not by a line number in `.github/zizmor.yml`.
 * `workflow_run.workflows` matches the producer's `name:`. A test fails when a producer file that exists is not named `PR Quality`
   or `PR proof`, so a rename cannot silently disable the comments. Until the producers are merged under those names the
   commenter is inert for them.
