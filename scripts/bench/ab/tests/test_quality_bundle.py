@@ -182,7 +182,7 @@ def test_md_helpers_are_idempotent_and_stable_under_the_commenters_sanitiser():
     pc = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(pc)
     for t in samples:
-        for fn in (qb.md_safe, lambda x: qb.md_code(x)):
+        for fn in (qb.md_safe, qb.md_code):
             body = fn(t)
             assert pc.sanitize_body(body, repo="ReliablyObserve/victoria-lakehouse", image_names=(), allowed_refs=[])[0] == body, (t, body)
     pr = snap(lint={"root": {"new": 1, "findings": [{"file": samples[0], "line": 1, "linter": samples[0], "text": samples[0]}]}})
