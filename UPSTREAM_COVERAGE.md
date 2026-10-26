@@ -660,5 +660,6 @@ Representative protocol payloads sent unchanged to the pinned hot binary and Lak
 
 | Row | Since | Expect | Note |
 |---|---|---|---|
+| `vl.select.jaeger.absent` | — | absent | Measured 2026-10-23: hot VictoriaLogs v1.53.0 answers 400 `unsupported path requested`; lakehouse-logs answers the mux default 404, as it does for every unrouted path (known difference of the unrouted-path answer, not Jaeger-specific). lakehouse-traces serves Jaeger through VictoriaTraces' own handlers (vt.jaeger.* rows). |
 | `vt.tempo.metrics_instant.absent` | — | absent |  |
 | `vt.tempo.search_v2.absent` | — | absent |  |

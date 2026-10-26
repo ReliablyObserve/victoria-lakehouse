@@ -34,7 +34,7 @@ var logsqlEndpoints = []string{
 	"/select/tenant_ids",
 }
 
-// jaegerEndpoints lists Jaeger-specific paths registered only in traces mode.
+// jaegerEndpoints lists Jaeger paths this package must not serve in any mode.
 var jaegerEndpoints = []string{
 	"/select/jaeger/api/traces",
 	"/select/jaeger/api/services",
@@ -150,9 +150,10 @@ func TestVerify_LogsMode_NoJaegerEndpoints(t *testing.T) {
 	}
 }
 
-// TestVerify_TracesMode_HasJaegerEndpoints verifies that Jaeger paths are
-// registered (return non-404) when the handler is in traces mode.
-func TestVerify_TracesMode_HasJaegerEndpoints(t *testing.T) {
+// TestVerify_TracesMode_NoJaegerEndpoints verifies that the handler does not
+// serve Jaeger in traces mode either: Jaeger is VictoriaTraces' API, served by
+// the traces binary through its own handlers, never by this package.
+func TestVerify_TracesMode_NoJaegerEndpoints(t *testing.T) {
 	cfg := testConfig(config.ModeTraces)
 	h := NewHandler(mockStore{}, cfg)
 	mux := http.NewServeMux()
@@ -163,8 +164,8 @@ func TestVerify_TracesMode_HasJaegerEndpoints(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest("GET", path, nil)
 			mux.ServeHTTP(rec, req)
-			if rec.Code == http.StatusNotFound {
-				t.Errorf("jaeger path %s returned 404 in traces mode; expected it to be registered", path)
+			if rec.Code != http.StatusNotFound {
+				t.Errorf("jaeger path %s should be 404, got %d", path, rec.Code)
 			}
 		})
 	}
