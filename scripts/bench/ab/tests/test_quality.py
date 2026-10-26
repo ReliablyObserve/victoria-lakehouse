@@ -204,3 +204,16 @@ def test_floor_applies_matches_check_coverage_sh(module, rel, want, tmp_path):
     line = f"ok  \tgithub.com/x/y/{rel}\t0.1s\tcoverage: 10.0% of statements\n"
     rc = subprocess.run(["bash", os.path.join(ROOT, "scripts", "ci", "check_coverage.sh"), "-t", "90", *args], input=line, text=True, capture_output=True).returncode
     assert (rc == 1) is want
+
+
+def test_packages_prints_nothing_for_an_empty_group_so_the_workflow_never_measures_the_module_root(tmp_path, capsys):
+    """A blank line in the list became `./` in the workflow: the module root package, which has no Go files in the root module."""
+    files = tmp_path / "files.txt"
+    files.write_text("internal/a/x.go\n")
+    for module, group, want in (("root", "short", "internal/a\n"), ("root", "full", ""), ("lakehouse-traces", "short", ""), ("lakehouse-traces", "full", "")):
+        assert quality.main(["packages", "--files-from", str(files), "--module", module, "--group", group]) == 0
+        assert capsys.readouterr().out == want, (module, group)
+    assert quality.main(["packages", "--files-from", str(files), "--module", "lakehouse-traces"]) == 0
+    assert capsys.readouterr().out == ""
+    assert quality.main(["packages", "--files-from", str(files), "--module", "root", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"measured": ["internal/a"], "left_out": [], "dependency_change": False}

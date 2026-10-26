@@ -347,7 +347,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     k = sub.add_parser("packages")
-    k.add_argument("--base-ref", required=True)
+    k.add_argument("--base-ref", default="", help="the merge base (required unless --files-from)")
     k.add_argument("--head-ref", default="HEAD")
     k.add_argument("--module", required=True, choices=sorted(MODULES))
     k.add_argument("--files-from", default="", help="read the changed files (one per line) instead of asking git")
@@ -390,17 +390,21 @@ def main(argv=None) -> int:
     if a.cmd == "packages":
         if a.files_from:
             files = [x for x in open(a.files_from, encoding="utf-8").read().splitlines() if x]
-        else:
+        elif a.base_ref:
             files = git_changed_files(a.base_ref, a.head_ref)
+        else:
+            ap.error("packages needs --base-ref or --files-from")
         measured, left = qi.changed_packages(files, a.module)
         if a.exists_in:
             measured = [p for p in measured if qi.has_go_files(a.exists_in, a.module, p)]
         gomod = [x for x in files if x.endswith(("go.mod", "go.sum")) and (x.startswith("lakehouse-traces/") == (a.module == "lakehouse-traces"))]
         out = {"measured": measured, "left_out": left, "dependency_change": bool(gomod)}
         if a.group:
-            print("\n".join(p for p in measured if (qi.go_test_flags(p) == ["-short"]) == (a.group == "short")))
+            print("".join(p + "\n" for p in measured if (qi.go_test_flags(p) == ["-short"]) == (a.group == "short")), end="")
+        elif a.json:
+            print(json.dumps(out))
         else:
-            print(json.dumps(out) if a.json else "\n".join(measured))
+            print("".join(p + "\n" for p in measured), end="")
         return 0
     if a.cmd == "collect":
         snap = collect(a.tree, dict(x.split("=", 1) for x in a.gotest), dict(x.split("=", 1) for x in a.module_path), a.parity_results,

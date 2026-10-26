@@ -162,7 +162,7 @@ jobs:
               : > "$Q/$2-$m.json"
               for g in short full; do
                 flags=(); [ "$g" = short ] && flags=(-short)
-                mapfile -t pk < <(sed 's#^#./#' "$Q/pkgs-$m-$g-$2.txt")
+                mapfile -t pk < <(sed -n 's#^\(.\+\)$#./\1#p' "$Q/pkgs-$m-$g-$2.txt")
                 [ "${#pk[@]}" -gt 0 ] || continue
                 (cd "$dir" && go test "${flags[@]}" -cover -count=1 -timeout=10m -json "${pk[@]}") >> "$Q/$2-$m.json" 2>> "$Q/$2-$m.err"
               done
@@ -186,7 +186,7 @@ jobs:
           set +e
           for m in root lakehouse-traces; do
             dir=.; [ "$m" = lakehouse-traces ] && dir=lakehouse-traces
-            mapfile -t pk < <(cat "$Q/pkgs-$m-short-pr.txt" "$Q/pkgs-$m-full-pr.txt" | sed 's#^#./#')
+            mapfile -t pk < <(cat "$Q/pkgs-$m-short-pr.txt" "$Q/pkgs-$m-full-pr.txt" | sed -n 's#^\(.\+\)$#./\1#p')
             [ "${#pk[@]}" -gt 0 ] || continue
             (cd "$dir" && golangci-lint run --new-from-rev="$MB" --output.json.path="$Q/lint-$m.json" "${pk[@]}")
             rc=$?
