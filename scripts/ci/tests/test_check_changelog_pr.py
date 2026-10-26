@@ -13,8 +13,6 @@ from scripts.ci.check_changelog_pr import (
     comparison_base,
     run_git,
     extract_unreleased_section,
-    has_genuinely_new_unreleased_entries,
-    has_meaningful_changelog_content,
     has_new_versioned_entries,
     is_dependency_only_pr,
     is_release_commit,
@@ -49,11 +47,6 @@ class CheckChangelogPRTests(unittest.TestCase):
             extract_unreleased_section(text),
             "### Features\n\n- add thing",
         )
-
-    def test_has_meaningful_changelog_content(self):
-        self.assertFalse(has_meaningful_changelog_content(""))
-        self.assertFalse(has_meaningful_changelog_content("### Features"))
-        self.assertTrue(has_meaningful_changelog_content("### Features\n\n- add thing"))
 
     def test_should_require_changelog_for_release_commits(self):
         self.assertTrue(should_require_changelog(["feat: add delete mode"], ["docs/readme.md"]))
@@ -168,36 +161,6 @@ class CheckChangelogPRTests(unittest.TestCase):
                 ["website/src/pages/index.tsx", "website/docusaurus.config.ts"],
             )
         )
-
-    def test_has_genuinely_new_unreleased_entries_detects_new(self):
-        base_changelog = "## [0.12.0]\n\n- fix: old bug\n"
-        head_unreleased = "- fix: brand new fix\n"
-        self.assertTrue(has_genuinely_new_unreleased_entries(head_unreleased, base_changelog))
-
-    def test_has_genuinely_new_unreleased_entries_rejects_stale_branch(self):
-        base_changelog = (
-            "## [Unreleased]\n\n"
-            "## [0.12.0] - 2026-05-05\n\n"
-            "- feat: cost-aware deletion\n"
-            "- feat: tombstone persistence\n"
-        )
-        head_unreleased = (
-            "### Added\n\n"
-            "- feat: cost-aware deletion\n"
-            "- feat: tombstone persistence\n"
-        )
-        self.assertFalse(has_genuinely_new_unreleased_entries(head_unreleased, base_changelog))
-
-    def test_has_genuinely_new_unreleased_entries_mixed(self):
-        base_changelog = (
-            "## [0.12.0] - 2026-05-05\n\n"
-            "- feat: old feature\n"
-        )
-        head_unreleased = (
-            "- feat: old feature\n"
-            "- feat: traces delete support\n"
-        )
-        self.assertTrue(has_genuinely_new_unreleased_entries(head_unreleased, base_changelog))
 
     def test_dependency_only_pr_go_modules(self):
         self.assertTrue(
@@ -715,7 +678,7 @@ def _uses(action, sha, version):
 class DependabotExemptionTests(unittest.TestCase):
     """A Dependabot PR that only bumps dependency files of tooling/test trees needs no CHANGELOG entry."""
 
-    CHANGELOG = "# C\n\n## [Unreleased]\n\n- **A.** t\n\n## [0.1.0] - 2026-01-01\n\n- **O.** t\n"
+    CHANGELOG = "# C\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n\n- **A.** t\n\n- **O.** t\n"
 
     def run_gate(self, base_files, head_files, *, message="chore(deps): bump x from 1 to 2",
                  login=BOT, head_repo=REPO, base_repo=REPO, deleted=(), renamed=()):
@@ -915,7 +878,7 @@ class DependabotExemptionTests(unittest.TestCase):
     def test_bot_pr_that_does_add_a_changelog_entry_passes_the_normal_way(self):
         rc, out, _ = self.run_gate(
             {"go.mod": "a\n"},
-            {"go.mod": "b\n", "CHANGELOG.md": self.CHANGELOG.replace("- **A.** t", "- **A.** t\n- **B.** new")},
+            {"go.mod": "b\n", "changelog.d/7.fixed.md": "- **B.** new\n"},
         )
         self.assertEqual(rc, 0)
         self.assertNotIn(EXEMPT_LINE, out)

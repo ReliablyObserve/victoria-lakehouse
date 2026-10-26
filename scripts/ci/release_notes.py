@@ -24,9 +24,6 @@ Rules that keep it safe to run in the release job:
   subsection is kept (bullets under FEATURE, prose right after "Released at").
 * A bullet is one line, as upstream: wrapped lines are joined. Nested bullets and
   further paragraphs of a bullet stay under it.
-* With --after-tag TAG the bullets that the [Unreleased] section already had at TAG
-  are left out: they were released by TAG even if the release-metadata pull request
-  that moves them under their version has not merged yet.
 * `#123` becomes a link to the issue or pull request of this repository. Code
   spans, existing links, URLs and references to other repositories are left alone.
 * The bold lead-in of a bullet stays its first words. Removed and deprecated
@@ -36,7 +33,6 @@ Rules that keep it safe to run in the release job:
 import argparse
 import datetime
 import re
-import subprocess
 import sys
 
 REPO_URL = "https://github.com/ReliablyObserve/victoria-lakehouse"
@@ -220,23 +216,8 @@ def parse_section(body, version):
     return prose, notes, groups, warnings
 
 
-def bullet_keys(changelog_text, version="Unreleased"):
-    """Whitespace-normalised text of every bullet of a section; empty if it has none."""
-    lines = changelog_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    try:
-        _, body = find_section(lines, version)
-    except ReleaseNotesError:
-        return set()
-    _, notes, groups, _ = parse_section(body, version)
-    bullets = notes + [bullet for items in groups.values() for bullet, _ in items]
-    return {" ".join(bullet.flat().split()) for bullet in bullets}
-
-
-def render(changelog_text, version, date=None, already_released=None):
-    """Return (notes markdown, warnings) for `## [version]` of the changelog text.
-
-    `already_released` is the bullet keys (see bullet_keys) to leave out.
-    """
+def render(changelog_text, version, date=None):
+    """Return (notes markdown, warnings) for `## [version]` of the changelog text."""
     version = version[1:] if re.match(r"^v\d", version) else version
     lines = changelog_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     section_date, body = find_section(lines, version)
@@ -251,14 +232,6 @@ def render(changelog_text, version, date=None, already_released=None):
         raise ReleaseNotesError(f"date '{date}' is not a calendar date") from err
 
     prose, notes, groups, warnings = parse_section(body, version)
-    if already_released:
-
-        def fresh(bullet):
-            return " ".join(bullet.flat().split()) not in already_released
-
-        notes = [note for note in notes if fresh(note)]
-        groups = {prefix: [(b, label) for b, label in items if fresh(b)] for prefix, items in groups.items()}
-
     blocks = [f"Released at {date}"]
     blocks.extend(link_refs(paragraph) for paragraph in prose)
     for number, note in enumerate(notes, 1):
@@ -275,22 +248,6 @@ def render(changelog_text, version, date=None, already_released=None):
     return "\n\n".join(blocks) + "\n", warnings
 
 
-def released_by_tag(tag, path):
-    """Bullet keys of the [Unreleased] section of `path` at git tag `tag`, and warnings.
-
-    A tag that cannot be read is not an error: every entry is then rendered, which
-    can repeat entries of the previous release but never loses one.
-    """
-    try:
-        shown = subprocess.run(
-            ["git", "show", f"{tag}:./{path}"], capture_output=True, text=True, check=True
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as err:
-        detail = (getattr(err, "stderr", "") or str(err)).strip()
-        return set(), [f"cannot read {path} at {tag} ({detail}); entries of the previous release may be repeated"]
-    return bullet_keys(shown), []
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--changelog", default="CHANGELOG.md")
@@ -298,11 +255,6 @@ def main(argv=None):
     parser.add_argument(
         "--date",
         help="YYYY-MM-DD; default: the date in the section heading, or today (UTC) for Unreleased",
-    )
-    parser.add_argument(
-        "--after-tag",
-        default="",
-        help="git tag of the previous release: bullets its [Unreleased] section had are left out",
     )
     args = parser.parse_args(argv)
 
@@ -312,11 +264,7 @@ def main(argv=None):
     try:
         with open(args.changelog, encoding="utf-8") as handle:
             text = handle.read()
-        already_released, warnings = set(), []
-        if args.after_tag:
-            already_released, warnings = released_by_tag(args.after_tag, args.changelog)
-        notes, more = render(text, args.version, date, already_released)
-        warnings += more
+        notes, warnings = render(text, args.version, date)
     except (OSError, ReleaseNotesError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1

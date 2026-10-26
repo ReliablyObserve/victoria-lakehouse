@@ -37,8 +37,9 @@ An `added` fragment's bold lead-in is what the feature catalog matches (`changel
   release (the gate refuses it); add a new fragment for a correction. A fragment whose bold lead-in is already
   in a released section of `CHANGELOG.md` is refused: the change would be released twice.
 - A fragment is at most 16 KiB, a regular file, with no unclosed `<!--`.
-- `CHANGELOG.md` is not edited by hand: `## [Unreleased]` stays empty. (Until the first release that
-  contains this directory, a hand-written `[Unreleased]` bullet is still accepted.)
+- `CHANGELOG.md` is not edited by hand: `## [Unreleased]` stays empty, and a bullet filed by hand under a
+  released section is refused, except the bullet of a fragment the same pull request deletes (how a fragment
+  whose metadata pull request could not merge is cleared). `changelog.d/README.md` stays a regular file.
 - A fragment is never edited after it was released; the release removes it.
 - Check locally: `python3 scripts/ci/changelog_fragments.py check`.
 
@@ -49,3 +50,17 @@ releases the fragments present there, except those the previous release tag alre
 under the Keep a Changelog headings in file-name order, and lists them for the metadata job, which
 deletes them in the release-metadata pull request. A fragment merged after the release commit is
 not in that release and lands in the next one.
+
+## Recovery
+
+Two situations wedge a release until a fragment is removed, and both are fixed by a small pull request that
+only deletes the file (use a `docs:` or `chore:` subject: a `feat:`, `fix:` or `perf:` subject asks for a new
+fragment):
+
+- **The same bold lead-in in two pull requests**, or a stale branch that re-adds the lead-in of a change a
+  later release already took. The gate refuses the second one when it can see the first; when both were
+  merged in parallel, the release stops with the two file names. Delete the duplicate (or reword its lead-in).
+- **A fragment left behind**: its release section exists in `CHANGELOG.md` but the file is still here, or the
+  release-metadata pull request was closed and never merged. Delete the file when the section holds its bullet,
+  or file the bullet by hand under the section of the release that took it and delete the file in the same
+  pull request. The gate allows exactly that, and nothing else, under a released section.

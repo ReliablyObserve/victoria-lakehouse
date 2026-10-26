@@ -659,7 +659,7 @@ def release_metadata(files: list[str], base: str, head: str, author: str, approv
         if b_readme is None or h_readme is None or SEMVER.sub("VER", b_readme) != SEMVER.sub("VER", h_readme):
             return False
     tags = git("tag", "-l", "v*").split()
-    return not tags or f"v{new}" in tags
+    return cc.release_tag_ok(new, tags)
 
 
 # ------------------------------------------------------------- CI scope --

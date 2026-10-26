@@ -375,95 +375,6 @@ class Cli(unittest.TestCase):
         self.assertRegex(out, r"^Released at \d{4}-\d{2}-\d{2}\n\nNo user-visible changes\.\n$")
 
 
-class AfterTag(unittest.TestCase):
-    """Entries the previous release already carried in [Unreleased] are not repeated."""
-
-    PREVIOUS = changelog("## [Unreleased]\n\n### Fixed\n\n- **Old fix.** was\n  wrapped (#1)\n\n### Update notes\n\n- old note\n")
-    CURRENT = changelog(
-        "## [Unreleased]\n\n### Fixed\n\n- **Old fix.** was wrapped (#1)\n- **New fix.** (#2)\n\n"
-        "### Update notes\n\n- old note\n- new note\n\n## [1.0.0] - 2026-01-02\n"
-    )
-
-    def test_bullet_keys_ignore_wrapping(self):
-        self.assertEqual(
-            rn.bullet_keys(self.PREVIOUS),
-            {"**Old fix.** was wrapped (#1)", "old note"},
-        )
-
-    def test_old_entries_left_out(self):
-        body, _ = rn.render(self.CURRENT, "Unreleased", "2026-02-03", rn.bullet_keys(self.PREVIOUS))
-        self.assertEqual(
-            body,
-            "Released at 2026-02-03\n\n**Update note:** new note\n\n"
-            f"* BUGFIX: **New fix.** ([#2]({ISSUES}2))\n",
-        )
-
-    def test_everything_old_means_no_changes(self):
-        body, _ = rn.render(self.PREVIOUS, "Unreleased", "2026-02-03", rn.bullet_keys(self.PREVIOUS))
-        self.assertEqual(body, "Released at 2026-02-03\n\nNo user-visible changes.\n")
-
-    def test_no_previous_unreleased_section(self):
-        self.assertEqual(rn.bullet_keys(FIXTURE, "9.9.9"), set())
-        self.assertEqual(rn.bullet_keys(changelog("## [1.0.0] - 2026-01-01\n\n- x\n")), set())
-
-    def git(self, cwd, *args):
-        subprocess.run(
-            ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
-            cwd=cwd, check=True, capture_output=True,
-        )
-
-    def run_in(self, cwd, *argv):
-        old = os.getcwd()
-        out, err = io.StringIO(), io.StringIO()
-        os.chdir(cwd)
-        try:
-            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                code = rn.main(list(argv))
-        finally:
-            os.chdir(old)
-        return code, out.getvalue(), err.getvalue()
-
-    def test_cli_reads_the_previous_tag_from_git(self):
-        with tempfile.TemporaryDirectory() as repo:
-            self.git(repo, "init", "-q")
-            with open(os.path.join(repo, "CHANGELOG.md"), "w", encoding="utf-8") as f:
-                f.write(self.PREVIOUS)
-            self.git(repo, "add", "CHANGELOG.md")
-            self.git(repo, "commit", "-q", "-m", "previous")
-            self.git(repo, "tag", "v1.0.0")
-            with open(os.path.join(repo, "CHANGELOG.md"), "w", encoding="utf-8") as f:
-                f.write(self.CURRENT)
-            code, out, err = self.run_in(
-                repo, "--version", "Unreleased", "--date", "2026-02-03", "--after-tag", "v1.0.0"
-            )
-        self.assertEqual(code, 0, err)
-        self.assertEqual(err, "")
-        self.assertIn("**New fix.**", out)
-        self.assertNotIn("Old fix", out)
-        self.assertNotIn("old note", out)
-
-    def test_unreadable_tag_renders_everything_with_a_warning(self):
-        with tempfile.TemporaryDirectory() as repo:
-            self.git(repo, "init", "-q")
-            with open(os.path.join(repo, "CHANGELOG.md"), "w", encoding="utf-8") as f:
-                f.write(self.CURRENT)
-            code, out, err = self.run_in(
-                repo, "--version", "Unreleased", "--date", "2026-02-03", "--after-tag", "v9.9.9"
-            )
-        self.assertEqual(code, 0)
-        self.assertIn("Old fix", out)
-        self.assertIn("**New fix.**", out)
-        self.assertIn("warning: cannot read CHANGELOG.md at v9.9.9", err)
-
-    def test_empty_tag_is_ignored(self):
-        code, out, err = self.run_in(
-            DATA, "--changelog", "changelog_fixture.md", "--version", "0.157.0", "--after-tag", ""
-        )
-        self.assertEqual(code, 0)
-        self.assertEqual(err, "")
-        self.assertEqual(out, read(os.path.join(DATA, "0.157.0.golden.md")))
-
-
 class WorkflowWiring(unittest.TestCase):
     """The build job puts the generated notes in front of the artifacts section."""
 
@@ -476,7 +387,7 @@ class WorkflowWiring(unittest.TestCase):
         step = self.step()
         self.assertIn("scripts/ci/release_notes.py", step)
         self.assertIn('--version "${VERSION#v}"', step)
-        self.assertIn('--after-tag "$(python3 scripts/ci/changelog_fragments.py previous-tag --rev "$VERSION^"', step)
+        self.assertNotIn("--after-tag", step)  # the section holds this release's fragments only
         self.assertNotIn("extract_changelog_section.sh", step)
 
     def test_notes_precede_the_artifacts_section(self):

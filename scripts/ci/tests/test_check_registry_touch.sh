@@ -205,11 +205,22 @@ rewrite() {
   awk "$program" "$file" > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
-# materialize_release <version>: the release workflow's CHANGELOG step, the very script
-# .github/workflows/auto-release.yaml runs (scripts/ci/changelog_fragments.py assemble): it
-# turns `## [Unreleased]` into an empty [Unreleased] followed by `## [<version>]`, with the
-# bullets still under [Unreleased] and the changelog.d fragments of the fixture repo in it.
+# materialize_release <version>: the shape a release gives CHANGELOG.md, modelled on a fixture that still
+# has bullets under [Unreleased]: `## [Unreleased]` stays, empty, and the same text sits under
+# `## [<version>]`. (The release itself no longer takes text from [Unreleased]; see release_fragments for
+# the real assembly of changelog.d fragments. This case family pins that MOVING text is no feature signal.)
 materialize_release() {
+  rewrite CHANGELOG.md '{ print } /^## \[Unreleased\]$/ { print ""; print "## ['"$1"'] - 2026-01-01" }'
+}
+
+# release_fragments <version>: the real release step. The base has an added fragment and an empty
+# [Unreleased]; the head is what scripts/ci/changelog_fragments.py assemble leaves: the bullet under the
+# new version, the fragment gone.
+release_fragments() {
+  printf '# Changelog\n\n## [Unreleased]\n\n## [1.0.0]\n\n### Added\n\n- **Existing thing.** text.\n' > CHANGELOG.md
+  mkdir -p changelog.d
+  printf -- '- **Fragment shipped.** text.\n' > changelog.d/9.added.md
+  git add -A && git commit -q -m prepare && git branch -f base HEAD
   python3 "$ASSEMBLE" --root . assemble --version "$1" --date 2026-01-01 >/dev/null
 }
 
@@ -319,6 +330,9 @@ run_case "an edited bullet body under an unchanged lead-in is not a feature sign
 PRECONDITION='grep -q "^## \[9\.9\.9\] - " CHANGELOG.md && grep -q "^## \[Unreleased\]$" CHANGELOG.md' \
   run_case "the release workflow's materialization of [Unreleased] is not a feature signal" ok "registry-touch check OK" \
   materialize_release 9.9.9
+PRECONDITION='grep -q "^## \[9\.9\.9\] - " CHANGELOG.md && grep -q "Fragment shipped" CHANGELOG.md && ! test -e changelog.d/9.added.md' \
+  run_case "the real release step: an added fragment moved under the new version is not a feature signal" ok "registry-touch check OK" \
+  release_fragments 9.9.9
 PRECONDITION='git diff base...HEAD -- CHANGELOG.md | grep -q "^+- \*\*"' \
   run_case "bullets re-emitted under a new version heading, [Unreleased] emptied, are not a feature signal" ok "registry-touch check OK" \
   reassemble_release 9.9.9
@@ -1027,11 +1041,13 @@ run_unreleased_bullet_case() {
        - $what"
     fi
   }
-  local bullet='{ print } /^## \[Unreleased\]$/ { print ""; print "### Added"; print ""; print "- **Touch-check release fixture.** Added by scripts/ci/tests/test_check_registry_touch.sh." }'
 
   (
     cd "$tmp/repo" || exit 1
-    rewrite CHANGELOG.md "$bullet"
+    mkdir -p changelog.d
+    printf -- '- **Touch-check released fixture.** Released by the fixture release.\n' > changelog.d/9997.fixed.md
+    git add -A && git commit -q -m "release commit" && git -c tag.gpgsign=false tag v99.0.0
+    printf -- '- **Touch-check release fixture.** Added by scripts/ci/tests/test_check_registry_touch.sh.\n' > changelog.d/9998.added.md
     cat >> tests/conformance/registry/features/ops.yaml <<'FIXTURE'
 
 - id: lh.feature.ops.touch_check_release_fixture
@@ -1052,15 +1068,15 @@ FIXTURE
     git add -A
     git commit -q -m "feature merged"
     git branch -q base
-    # The release commit materializes the heading; the fixture bullet then
-    # lands again under [Unreleased] (a PR merged after the release commit).
-    # The release cut the heading; the fixture bullet (merged after the release
-    # commit) stays under [Unreleased]: only the heading is inserted.
-    rewrite CHANGELOG.md '/^## \[[0-9]/ && !done { print "## [99.0.0] - 2026-01-01"; print ""; done = 1 } { print }'
+    # The release assembles the fragments present at its commit into [99.0.0] and the metadata PR removes
+    # them; the feature fragment (9998) was merged after the release commit, so it stays: the feature is
+    # still unreleased. (The assembly runs with 9998 set aside, as if it were not there yet.)
+    mv changelog.d/9998.added.md "$tmp/9998.added.md"
+    python3 scripts/ci/changelog_fragments.py assemble --version 99.0.0 --date 2026-01-01 >/dev/null
+    mv "$tmp/9998.added.md" changelog.d/9998.added.md
     sed -i.bak -E 's/^version: .*/version: 99.0.0/; s/^appVersion: .*/appVersion: "99.0.0"/' charts/victoria-lakehouse/Chart.yaml && rm -f charts/victoria-lakehouse/Chart.yaml.bak
-    git add CHANGELOG.md charts/victoria-lakehouse/Chart.yaml
+    git add -A
     git commit -q -m "chore: release metadata for v99.0.0 [skip release]"
-    git -c tag.gpgsign=false tag v99.0.0
   ) >>"$log" 2>&1
 
   expect_fail "confgen -check reports docs/features.md stale on the metadata commit" \
@@ -1069,7 +1085,7 @@ FIXTURE
   check_step "regeneration changes docs/features.md" bash -c '! git diff --quiet -- docs/features.md'
   check_step "the regenerated file is committed" bash -c 'git add docs/features.md UPSTREAM_COVERAGE.md README.md && git commit -q -m "regenerate"'
   check_step "only CHANGELOG.md, Chart.yaml and generated documents differ from base" \
-    bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|charts/victoria-lakehouse/Chart.yaml|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
+    bash -c '! git diff --name-only base HEAD | grep -vxE "CHANGELOG.md|changelog.d/[a-z0-9._-]+|charts/victoria-lakehouse/Chart.yaml|docs/features.md|UPSTREAM_COVERAGE.md|README.md"'
   check_step "the registry gate passes" env SKIP_CONFGEN_CHECK= PR_AUTHOR=szibis bash "$CHECKER" base
   check_step "the registry gate reports a release-metadata PR" \
     bash -c 'out=$(python3 scripts/ci/pr_classify.py --base base --head HEAD --author szibis --approvers .github/release-metadata-approvers); echo "$out"; git diff --stat base HEAD; git diff base HEAD -- docs/features.md | grep "^[-+]" | head -20; grep -qx "exempt=release-metadata" <<<"$out"'

@@ -15,17 +15,18 @@ A change is documented by one file, changelog.d/<PR-or-slug>.<kind>.md, that hol
   bytes) already present at --after-tag (the previous release): those were released by it even when its
   release-metadata pull request has not merged yet, so a fragment is released exactly once. A fragment merged after the
   release commit is not in this checkout and lands in the next release.
-* `## [Unreleased]` is kept, empty, and the new `## [VERSION] - DATE` section follows it, built from
-  the bullets still hand-written under `[Unreleased]` (the transition, see
-  check_changelog_pr.legacy_unreleased_window_open) and then the fragments, grouped under the
-  Keep a Changelog headings (Added, Changed, Deprecated, Removed, Fixed, Security, then any other
-  heading the legacy text used), each group in file-name order.
+* `## [Unreleased]` is kept, empty, and the new `## [VERSION] - DATE` section follows it, built from the
+  fragments only, grouped under the Keep a Changelog headings (Added, Changed, Deprecated, Removed,
+  Fixed, Security), each group in file-name order. Text under `[Unreleased]` stops the release (it
+  would be filed twice or not at all), as does a fragment that repeats the lead-in of a released
+  section, a fragment a released section already describes that is still in the directory (left
+  behind), and a section too large for a GitHub release body.
 * The released fragments are removed from the working tree, so the tree is the one the release
   metadata pull request leaves behind, and their paths are written to --consumed-out, one per line,
   for the metadata job, which removes them from git.
 
-Anything it cannot place (an invalid fragment, text under [Unreleased] that is not a bullet below a
-heading, a version that is already a section) is an error; nothing is dropped.
+Anything it cannot place (an invalid fragment, text under [Unreleased], a version that is already a
+section) is an error; nothing is dropped and nothing is changed.
 """
 from __future__ import annotations
 
@@ -44,6 +45,8 @@ import check_changelog_pr as cc  # noqa: E402
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$")
 KNOWN_HEADINGS = tuple(k.capitalize() for k in cc.FRAGMENT_KINDS)
+# The release notes are the section plus the artifacts block, in a body GitHub limits to about 125000 characters.
+SECTION_MAX_BYTES = 100_000
 
 
 class AssembleError(Exception):
@@ -107,48 +110,11 @@ def split_unreleased(text: str) -> tuple[str, str, str]:
     return "\n".join(lines[: start + 1]), "\n".join(lines[start + 1 : end]), "\n".join(lines[end:])
 
 
-def legacy_groups(body: str) -> dict[str, list[str]]:
-    """heading -> bullet blocks (their own text) of the hand-written [Unreleased] body."""
+def section_body(fragments: list[cc.Fragment]) -> str:
     groups: dict[str, list[str]] = {}
-    heading = None
-    block: list[str] = []
-
-    def flush() -> None:
-        nonlocal block
-        while block and not block[-1].strip():
-            block.pop()
-        if block:
-            groups[heading].append("\n".join(block))
-        block = []
-
-    for line in body.split("\n"):
-        m = re.match(r"^### +(.+?)\s*$", line)
-        if m:
-            flush()
-            heading = m.group(1)
-            groups.setdefault(heading, [])
-        elif line.startswith("- "):
-            if heading is None:
-                raise AssembleError("a bullet under [Unreleased] is outside any '### ' heading")
-            flush()
-            block = [line]
-        elif not line.strip():
-            if block:
-                block.append("")
-        elif block and line.startswith(" "):
-            block.append(line)
-        else:
-            raise AssembleError(f"text under [Unreleased] that is not a bullet below a heading: {line[:60]!r}")
-    flush()
-    return {h: b for h, b in groups.items() if b}
-
-
-def section_body(legacy_body: str, fragments: list[cc.Fragment]) -> str:
-    groups = legacy_groups(legacy_body)
     for fr in sorted(fragments, key=lambda f: f.path):
         groups.setdefault(fr.kind.capitalize(), []).append("\n".join(fr.lines))
-    order = [h for h in KNOWN_HEADINGS if h in groups] + [h for h in groups if h not in KNOWN_HEADINGS]
-    return "\n\n".join(f"### {h}\n\n" + "\n\n".join(groups[h]) for h in order)
+    return "\n\n".join(f"### {h}\n\n" + "\n\n".join(groups[h]) for h in KNOWN_HEADINGS if h in groups)
 
 
 def assemble(text: str, fragments: list[cc.Fragment], version: str, date: str) -> str:
@@ -162,14 +128,31 @@ def assemble(text: str, fragments: list[cc.Fragment], version: str, date: str) -
     if re.search(r"^## \[" + re.escape(version) + r"\]", text, re.MULTILINE):
         raise AssembleError(f"the changelog already has a section for {version}")
     head, body, rest = split_unreleased(text)
+    if body.strip():
+        raise AssembleError(
+            "text under '## [Unreleased]' in CHANGELOG.md: changes are documented by fragments in changelog.d/ and "
+            "[Unreleased] stays empty. Convert each bullet into changelog.d/<PR-or-slug>.<kind>.md "
+            "(or delete it if a release already took it)"
+        )
     section = f"## [{version}] - {date}\n\n"
-    content = section_body(body, fragments)
+    content = section_body(fragments)
+    if len(content.encode("utf-8")) > SECTION_MAX_BYTES:
+        sizes = ", ".join(
+            f"{fr.path} ({len(chr(10).join(fr.lines).encode('utf-8'))} bytes)"
+            for fr in sorted(fragments, key=lambda f: -len("\n".join(f.lines).encode("utf-8")))
+        )
+        raise AssembleError(
+            f"the section would be {len(content.encode('utf-8'))} bytes; a GitHub release body holds about 125000 "
+            f"characters, so a section is at most {SECTION_MAX_BYTES} bytes. Shorten the fragments, largest first: {sizes}"
+        )
     if content:
         section += content + "\n\n"
     return head + "\n\n" + section + rest
 
 
-def run(root: pathlib.Path, version: str, date: str, after_tag: str, consumed_out: pathlib.Path | None) -> list[str]:
+def run(
+    root: pathlib.Path, version: str, date: str, after_tag: str, consumed_out: pathlib.Path | None, dry_run: bool = False
+) -> list[str]:
     fragments, problems = load_fragments(root / cc.FRAGMENT_DIR)
     if problems:
         raise AssembleError("cannot release these fragments:\n  " + "\n  ".join(problems))
@@ -179,17 +162,41 @@ def run(root: pathlib.Path, version: str, date: str, after_tag: str, consumed_ou
     chosen = [fr for fr in fragments if already.get(fr.path) != blob_id(root / fr.path)]
     changelog = root / "CHANGELOG.md"
     text = changelog.read_text(encoding="utf-8")
+    # A fragment the previous release took is skipped, because that release's metadata pull request
+    # removes it. If the CHANGELOG.md already has that release's section, the pull request merged and the
+    # file was left behind: it would be skipped for ever, so it stops the release instead.
+    left: list[str] = []
+    in_section = cc.released_lead_in_versions(text)
+    for fr in fragments:
+        if fr not in chosen:
+            first = cc.first_release_tag_with_blob(after_tag, fr.path, already[fr.path], cwd=root)
+            if first and re.search(r"^## \[" + re.escape(first[1:]) + r"\]", text, re.MULTILINE):
+                holds = first[1:] in in_section.get(fr.lead_key, set())
+                left.append(
+                    f"{fr.path} (released in {first}; "
+                    + ("its bullet is in the section: delete the file" if holds
+                       else f"its bullet is NOT in the section: file it under [{first[1:]}] and delete the file")
+                    + ")"
+                )
+    if left:
+        raise AssembleError(
+            "these fragments were released by a release whose section is already in CHANGELOG.md, but the files are "
+            "still in changelog.d/. Clear each in a pull request with a docs: or chore: subject (a delete-only pull "
+            "request is refused when the bullet is not in the section): " + "; ".join(left)
+        )
     # A change that a released section already describes is released once: a fragment that repeats
     # its lead-in (a re-added copy, a rebase onto a release that took the change) stops the release
     # instead of publishing the change twice. The gate rejects such a PR; this is the backstop.
     released = cc.released_lead_ins(text)
-    twice = [fr.path for fr in chosen if fr.lead_in in released]
+    twice = [fr.path for fr in chosen if fr.lead_key in released]
     if twice:
         raise AssembleError(
             "these fragments repeat the bold lead-in of a released CHANGELOG.md section; remove them "
             "(the change is already released): " + ", ".join(twice)
         )
     result = assemble(text, chosen, version, date)
+    if dry_run:
+        return [fr.path for fr in chosen]
     changelog.write_text(result, encoding="utf-8")
     for fr in chosen:
         (root / fr.path).unlink()
@@ -211,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     asm.add_argument("--date", help="YYYY-MM-DD (default: today, UTC)")
     asm.add_argument("--after-tag", default="", help="previous release tag: its fragments are not released again")
     asm.add_argument("--consumed-out", help="file that receives the released fragment paths, one per line")
+    asm.add_argument("--dry-run", action="store_true", help="run every check and change nothing")
     args = parser.parse_args(argv)
     root = pathlib.Path(args.root)
     try:
@@ -225,8 +233,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         date = args.date or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         out = pathlib.Path(args.consumed_out) if args.consumed_out else None
-        consumed = run(root, args.version, date, args.after_tag, out)
-        print(f"assembled [{args.version}] - {date} from {len(consumed)} fragment(s)")
+        consumed = run(root, args.version, date, args.after_tag, out, args.dry_run)
+        print(f"{'checked' if args.dry_run else 'assembled'} [{args.version}] - {date} from {len(consumed)} fragment(s)")
     except (AssembleError, OSError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
