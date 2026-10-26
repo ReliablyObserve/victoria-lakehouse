@@ -813,6 +813,9 @@ Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheF
    A drain that keeps running out of memory keeps its recorded rows per group after a
    restart too: raise the pod's memory limit until the segment commits; lowering
    `insert.target_file_size` only applies to the segments drained after it.
+   Residual: the tenant key prefix (`prefixForTenant`, the tenancy layout) is not part of the
+   record. Changing it in the middle of a drain gives the groups new keys, so the HEAD of the
+   restart misses and the group is uploaded again: duplicates, not loss (as before this fix).
 3. **Resuming without rewriting.** The segment being drained is found again; each
    group is settled by its mark, the manifest or a HEAD (§2.1); only absent groups
    are uploaded. Objects are never rewritten, so re-draining loses nothing and
