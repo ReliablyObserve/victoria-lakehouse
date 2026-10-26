@@ -389,7 +389,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.cmd == "packages":
         if a.files_from:
-            files = [x for x in open(a.files_from, encoding="utf-8").read().splitlines() if x]
+            with open(a.files_from, encoding="utf-8") as f:
+                files = [x for x in f.read().splitlines() if x]
         elif a.base_ref:
             files = git_changed_files(a.base_ref, a.head_ref)
         else:

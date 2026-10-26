@@ -106,7 +106,8 @@ def validate_manifest(doc) -> list[str]:
 
 # ------------------------------------------------------------------------------------------------ the artifact
 def sha256_file(path: str) -> dict:
-    data = open(path, "rb").read()
+    with open(path, "rb") as f:
+        data = f.read()
     return {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
 
 
@@ -130,8 +131,10 @@ def verify_bundle(directory: str) -> list[str]:
         if os.path.getsize(p) > MAX_FILE_BYTES:
             return [f"{n} is larger than {MAX_FILE_BYTES} bytes"]
     try:
-        manifest = json.load(open(os.path.join(directory, MANIFEST_FILE), encoding="utf-8"))
-        quality = json.load(open(os.path.join(directory, QUALITY_FILE), encoding="utf-8"))
+        with open(os.path.join(directory, MANIFEST_FILE), encoding="utf-8") as f:
+            manifest = json.load(f)
+        with open(os.path.join(directory, QUALITY_FILE), encoding="utf-8") as f:
+            quality = json.load(f)
     except (OSError, ValueError) as e:
         return [f"unreadable JSON: {e}"]
     errs += [f"manifest {e}" for e in validate_manifest(manifest)] + [f"quality {e}" for e in validate_quality(quality)]

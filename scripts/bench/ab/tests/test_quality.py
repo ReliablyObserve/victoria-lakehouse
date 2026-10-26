@@ -181,7 +181,8 @@ def test_collect_reads_gotest_and_lint_files(tmp_path):
 
 def test_cover_exclusions_equal_the_ci_coverage_steps():
     """COVER_EXCLUDE must be the `-x` arguments the CI test jobs pass to scripts/ci/check_coverage.sh."""
-    wf = yaml.safe_load(open(os.path.join(ROOT, ".github", "workflows", "ci.yaml"), encoding="utf-8"))
+    with open(os.path.join(ROOT, ".github", "workflows", "ci.yaml"), encoding="utf-8") as f:
+        wf = yaml.safe_load(f)
     found = {}
     for job, module in (("test-logs", "root"), ("test-traces", "lakehouse-traces")):
         runs = [s["run"] for s in wf["jobs"][job]["steps"] if "check_coverage.sh" in s.get("run", "")]

@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import pathlib
 
 import pytest
 
@@ -73,28 +74,28 @@ def test_verify_bundle_accepts_a_good_artifact_and_rejects_every_tampering(tmp_p
     assert qb.verify_bundle(out) == []
     # edited report
     p = os.path.join(out, qb.REPORT_FILE)
-    orig = open(p).read()
-    open(p, "w").write(orig + "<!-- injected -->")
+    orig = pathlib.Path(p).read_text()
+    pathlib.Path(p).write_text(orig + "<!-- injected -->")
     assert any("does not match its manifest" in e for e in qb.verify_bundle(out))
-    open(p, "w").write(orig)
+    pathlib.Path(p).write_text(orig)
     # edited data (valid schema, wrong digest)
     q = os.path.join(out, qb.QUALITY_FILE)
-    data = json.load(open(q))
+    data = json.loads(pathlib.Path(q).read_text())
     data["notes"] = ["changed"]
-    json.dump(data, open(q, "w"))
+    pathlib.Path(q).write_text(json.dumps(data))
     assert any("does not match its manifest" in e for e in qb.verify_bundle(out))
     # schema-invalid data
     data["schema_version"] = 9
-    json.dump(data, open(q, "w"))
+    pathlib.Path(q).write_text(json.dumps(data))
     assert any("quality" in e for e in qb.verify_bundle(out))
     # malformed JSON
-    open(q, "w").write("{not json")
+    pathlib.Path(q).write_text("{not json")
     assert any("unreadable JSON" in e for e in qb.verify_bundle(out))
 
 
 def test_verify_bundle_rejects_extra_files_symlinks_and_oversize(tmp_path):
     out = write_bundle(tmp_path)
-    open(os.path.join(out, "evil.sh"), "w").write("x")
+    pathlib.Path(out, "evil.sh").write_text("x")
     assert "expected exactly" in qb.verify_bundle(out)[0]
     os.remove(os.path.join(out, "evil.sh"))
     os.remove(os.path.join(out, qb.REPORT_FILE))
@@ -109,9 +110,9 @@ def test_verify_bundle_rejects_extra_files_symlinks_and_oversize(tmp_path):
 def test_verify_bundle_rejects_a_manifest_verdict_that_differs(tmp_path):
     out = write_bundle(tmp_path, lint={"root": {"new": 2, "findings": []}})
     m = os.path.join(out, qb.MANIFEST_FILE)
-    data = json.load(open(m))
+    data = json.loads(pathlib.Path(m).read_text())
     data["verdict"] = {"failed": False, "gates": 0}
-    json.dump(data, open(m, "w"))
+    pathlib.Path(m).write_text(json.dumps(data))
     assert any("verdict differs" in e for e in qb.verify_bundle(out))
 
 

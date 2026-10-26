@@ -36,7 +36,8 @@ def test_it_runs_on_pull_requests_only_and_holds_no_token_by_default(wf):
 def test_no_job_can_write_and_the_report_job_reads_only_what_it_needs(wf):
     assert wf["jobs"]["scope"]["permissions"] == {"contents": "read"}
     assert wf["jobs"]["report"]["permissions"] == {"contents": "read", "actions": "read"}
-    text = open(os.path.join(WF, "pr-quality.yaml"), encoding="utf-8").read()
+    with open(os.path.join(WF, "pr-quality.yaml"), encoding="utf-8") as f:
+        text = f.read()
     assert not re.search(r"^\s*[\w-]+:\s*write\b", text, re.M) and "write-all" not in text
     assert "secrets." not in text
 
@@ -46,7 +47,8 @@ def test_the_job_is_gated_by_the_ci_scope_in_the_canonical_form_and_is_not_requi
     assert job["needs"] == "scope"
     assert job["if"] == ("${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || "
                          "contains(format(',{0},', needs.scope.outputs.force), ',pr-quality.yaml:report,')) }}")
-    required = open(os.path.join(ROOT, "scripts", "ci", "tests", "testdata", "required_checks.txt"), encoding="utf-8").read().split("\n")
+    with open(os.path.join(ROOT, "scripts", "ci", "tests", "testdata", "required_checks.txt"), encoding="utf-8") as f:
+        required = f.read().split("\n")
     assert job["name"] == "pr-quality" and "pr-quality" not in required and "report" not in required
 
 
