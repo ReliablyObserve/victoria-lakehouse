@@ -203,9 +203,11 @@ registry's known-difference rows cite an issue and how many do not.
 
 ## Quality report
 
-The `pr-quality` workflow (`.github/workflows/pr-quality.yaml`) computes this report for every product PR and uploads it as the artifact
-`pr-quality`. It is informational: it is not a required check, it holds a read-only token (`contents: read`, `actions: read`) and cannot
-comment. Product PRs only: the `scope` job is the one `ci.yaml` uses, so docs, release-metadata and other non-product PRs skip it.
+The `pr-quality` workflow (`.github/workflows/pr-quality.yaml`, name `PR Quality`) computes this report for every pull request and uploads
+it as artifacts. It is informational: it is not a required check, it holds a read-only token (`contents: read`, `actions: read`) and cannot
+comment. It is not gated by the CI scope (the scope can only skip a job, and a skipped job leaves the previous head's comment on the pull
+request): a PR that changes no Go package pays for the checkout and the static counts only, and its comment says "skipped" when nothing the
+report counts moved.
 
 What it measures, base (the merge base) vs PR, for both modules:
 
@@ -225,35 +227,28 @@ Measured on `ubuntu-latest`: 1.4 minutes of job time for a PR that changes two s
 figure that was not collected is shown as "not collected", never as zero. The report puts the verdict first, lists only the rows that
 changed, regressed or fall below the floor, and collapses the rest into a count.
 
-### The artifact
+### The artifacts
 
-`pr-quality` holds exactly three files. The two schemas are `scripts/bench/ab/schemas/pr-quality-manifest.schema.json` and
-`scripts/bench/ab/schemas/pr-quality.schema.json` (`schema_version` 1; a change of shape bumps it).
+| Artifact | Files | For |
+|---|---|---|
+| `lh-proof-comment` | `manifest.json`, `pr-quality.md` | the commenter workflow, which runs the base branch's code, treats the artifact as untrusted data, sanitises the body again and posts the sticky comment |
+| `pr-quality-data` | `quality.json` (schema `scripts/bench/ab/schemas/pr-quality.schema.json`, `schema_version` 1) | the data behind the body, for a later trend |
 
-| File | Content |
-|---|---|
-| `manifest.json` | schema version, PR number, head, base and merge-base SHA, run id and attempt, size and sha256 of the other two files, the verdict (failed, number of gates) |
-| `quality.json` | the data: the base and PR snapshots, the packages measured per module, the flaky-test watch, the verdict with its gate messages |
-| `pr-quality.md` | the comment body, marker `<!-- lh-pr-quality -->`, rendered by the PR's own code as a preview |
-
-Every string in it (test names, file paths, lint text) comes from the PR and is untrusted. A consumer that holds a write token (the
-`workflow_run` commenter) runs the base branch's code and follows this order:
-
-1. `quality_bundle.verify_bundle(dir)`: exactly the three regular files, each at most 5 MB, both JSON files valid against their
-   schema, the manifest digests equal to the files, the manifest verdict equal to `quality.json`;
-2. resolve the PR from the head SHA of the triggering run and check it equals `manifest.head_sha` (the PR number of the manifest is never
-   the source);
-3. render with `quality.render_doc(doc)` (not the shipped `pr-quality.md`): every string goes through `md_safe` / `md_code` (no mention,
-   link, autolink, issue reference, HTML or table break) and the body is capped at 60000 characters with a note.
-
-`python3 scripts/bench/ab/quality.py verify <dir>` runs step 1. A figure the schema marks nullable or an empty object is "not collected".
+`lh-proof-comment` is the commenter's contract: `manifest.json` has `schema_version`, `pr_number`, `head_sha`, one comment `{kind: pr-quality,
+verdict}` (`pass`, `fail`, `skipped` or `incomplete`), no image, and `allowed_issue_refs` (the issue numbers the body writes as `#N`). The body
+starts with the marker `<!-- lh-pr-quality -->` and uses only text, tables, code spans, attribute-free `<details>`, `<summary>` and `<sub>`,
+links to this repository's runs and issues, and `#N` for the allowed numbers. It is uploaded on every run, also when the job failed (verdict
+`incomplete`), so a stale verdict never stays. Every string that comes from the PR (test names, file paths, lint text) goes through `md_safe` /
+`md_code` in `quality_bundle.py`, which defuse it the way the commenter's sanitiser does (so the sanitiser leaves it unchanged), and the
+body is capped at 60000 characters with a note. `quality.py verify <dir>` checks a directory against these rules, and the tests hold the
+body to them.
 
 ### Run it by hand
 
 ```bash
 python3 scripts/bench/ab/quality.py packages --base-ref origin/main --module root          # what would be measured
 python3 scripts/bench/ab/quality.py collect --tree . --out pr.json --gotest root=go-test.json --module-path root=github.com/ReliablyObserve/victoria-lakehouse
-python3 scripts/bench/ab/quality.py bundle --base base.json --pr pr.json --out-dir pr-quality ...   # see the module docstring
+python3 scripts/bench/ab/quality.py bundle --base base.json --pr pr.json --out-dir lh-proof-comment --data-dir pr-quality-data --pr-number N --head-sha SHA
 python3 -m pytest scripts/bench/ab/tests/test_quality*.py -q
 ```
 

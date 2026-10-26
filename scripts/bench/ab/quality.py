@@ -6,9 +6,10 @@ tests and test time, base vs PR.
   quality.py collect  --tree DIR --out snapshot.json [--gotest MODULE=go-test.json --module-path MODULE=IMPORT/PATH]...
                       [--parity-results go-test.json] [--lint MODULE=golangci.json]...
   quality.py flaky    --repo OWNER/NAME --sha SHA --out flaky.json              # needs `gh` and a token with actions: read
-  quality.py bundle   --base base.json --pr pr.json --out-dir DIR --pr-number N --head-sha S --base-sha S --merge-base-sha S
-                      --run-id ID --run-attempt N [--changed changed.json] [--flaky flaky.json] [--note TEXT]...
-  quality.py verify   DIR                                                   # validate a downloaded pr-quality artifact
+  quality.py bundle   --base base.json --pr pr.json --out-dir DIR --data-dir DIR --pr-number N --head-sha S
+                      [--changed changed.json] [--flaky flaky.json] [--note TEXT]...    # lh-proof-comment + pr-quality-data
+  quality.py placeholder --out-dir DIR --pr-number N --head-sha S --verdict skipped|incomplete --reason TEXT [--repo O/R --run-id ID]
+  quality.py verify   DIR                                                   # check an lh-proof-comment directory against the commenter's contract
   quality.py report   --base base.json --pr pr.json [--out pr-quality.md] [--verdict verdict.json]
 
 `collect` computes the cheap parts from the tree alone: the number of Go tests and fuzz targets per module (a static count of
@@ -16,7 +17,8 @@ tests and test time, base vs PR.
 many cite a GitHub issue). The measured parts come from files the CI job produced and are left out of the snapshot when not given: the
 `go test -cover -json` stream of the changed packages (coverage and test time per package, see quality_inputs.py), the parity suite's
 `go test -json` stream (parsed with scripts/ci/parity_ratchet.py; without it the parity section shows the allowlist of the tree only)
-and a golangci-lint JSON report of the findings new since the merge base. `bundle` joins two snapshots into the artifact (quality_bundle.py).
+and a golangci-lint JSON report of the findings new since the merge base. `bundle` joins two snapshots into the two artifacts (quality_bundle.py):
+`lh-proof-comment` for the commenter and `pr-quality-data` (quality.json).
 
 Gates (the check fails on): a measured package under internal/ below the 90 % floor (the same exclusions as the CI coverage step) or down by
 more than 0.2 points, fewer Go tests than the base, more registry rows `differ`/`unsupported`/`absent` than the base without more rows overall,
@@ -187,9 +189,20 @@ def gates(base: dict, pr: dict) -> list[str]:
 
 
 def issue_link(ref: str) -> str:
-    """`repo#123` as a link to that issue of the organisation (the schema pattern guarantees the shape; anything else is shown as text)."""
+    """`victoria-lakehouse#123` as `#123` (the commenter links the numbers in allowed_issue_refs to this repository); an issue of another repository as text."""
     m = re.fullmatch(r"([A-Za-z0-9_.-]+)#([0-9]+)", ref)
-    return f"[{ref}](https://github.com/{abreg.ORG}/{m.group(1)}/issues/{m.group(2)})" if m else qb.md_code(ref)
+    return f"#{m.group(2)}" if m and m.group(1) == "victoria-lakehouse" else qb.md_code(ref, 60)
+
+
+def allowed_refs(snap: dict) -> list[int]:
+    """The issue numbers the body writes as `#N` (what the manifest lists in allowed_issue_refs)."""
+    out = []
+    for e in ((snap.get("parity") or {}).get("known") or [])[:10]:
+        for ref in e["issues"]:
+            m = re.fullmatch(r"victoria-lakehouse#([0-9]+)", ref)
+            if m and int(m.group(1)) not in out and int(m.group(1)) <= 9999999:
+                out.append(int(m.group(1)))
+    return out[:20]
 
 
 def _cover_rows(base: dict, pr: dict) -> tuple[list[str], int]:
@@ -333,6 +346,23 @@ def render_doc(doc: dict) -> tuple[str, dict]:
     return render(doc["base"], doc["pr"], doc["changed"], doc["flaky"], doc.get("notes"))
 
 
+PLACEHOLDER_PREFIX = f"{MARKER}\n### PR quality: "
+
+
+def placeholder_body(verdict: str, reason: str) -> str:
+    """The short body of a run that has nothing to report (skipped) or did not complete (incomplete): it replaces a stale verdict."""
+    head = "SKIPPED" if verdict == "skipped" else "INCOMPLETE, the job did not finish"
+    return f"{PLACEHOLDER_PREFIX}{head}\n\n{qb.md_safe(reason, 300)}\n"
+
+
+def unchanged_static(base: dict, pr: dict, changed: dict) -> bool:
+    """True when nothing was measured and nothing the report counts moved: the comment would repeat the merge base."""
+    if any(v["measured"] or v["left_out"] for v in changed.values()):
+        return False
+    keys = ("go", "registry", "parity")
+    return all(base[k] == pr[k] for k in keys)
+
+
 def git_changed_files(base_ref: str, head_ref: str) -> list[str]:
     out = subprocess.run(["git", "diff", "--no-renames", "--name-only", "-z", base_ref, head_ref], cwd=abreg.ROOT, check=True, capture_output=True).stdout
     return [f for f in out.decode("utf-8", "replace").split("\0") if f]
@@ -368,16 +398,21 @@ def main(argv=None) -> int:
     b = sub.add_parser("bundle")
     b.add_argument("--base", required=True)
     b.add_argument("--pr", required=True)
-    b.add_argument("--out-dir", required=True)
+    b.add_argument("--out-dir", required=True, help="the lh-proof-comment artifact: manifest.json and pr-quality.md")
+    b.add_argument("--data-dir", required=True, help="the pr-quality-data artifact: quality.json")
     b.add_argument("--pr-number", type=int, required=True)
     b.add_argument("--head-sha", required=True)
-    b.add_argument("--base-sha", required=True)
-    b.add_argument("--merge-base-sha", required=True)
-    b.add_argument("--run-id", required=True)
-    b.add_argument("--run-attempt", type=int, required=True)
     b.add_argument("--changed", default="")
     b.add_argument("--flaky", default="")
     b.add_argument("--note", action="append", default=[])
+    ph = sub.add_parser("placeholder")
+    ph.add_argument("--out-dir", required=True)
+    ph.add_argument("--pr-number", type=int, required=True)
+    ph.add_argument("--head-sha", required=True)
+    ph.add_argument("--verdict", required=True, choices=("skipped", "incomplete"))
+    ph.add_argument("--reason", required=True)
+    ph.add_argument("--repo", default="")
+    ph.add_argument("--run-id", default="")
     v = sub.add_parser("verify")
     v.add_argument("dir")
     r = sub.add_parser("report")
@@ -425,31 +460,42 @@ def main(argv=None) -> int:
     if a.cmd == "bundle":
         base, pr = abreg.load_json(a.base), abreg.load_json(a.pr)
         changed = abreg.load_json(a.changed) if a.changed else {}
+        flaky = abreg.load_json(a.flaky) if a.flaky and os.path.exists(a.flaky) else None
         notes = list(a.note) + [f"go.mod or go.sum of {m} changed: every package of it is affected, coverage is measured only for the packages with changed files."
                                 for m, v in sorted(changed.items()) if m in MODULES and v.get("dependency_change")]
-        flaky = abreg.load_json(a.flaky) if a.flaky and os.path.exists(a.flaky) else None
         doc = build_doc(base, pr, {m: v for m, v in changed.items() if m in MODULES}, flaky, notes)
         errs = qb.validate_quality(doc)
         if errs:
             print("quality.json does not match its schema:\n  " + "\n  ".join(errs[:20]), file=sys.stderr)
             return 2
-        text, _v = render_doc(doc)
-        abreg.dump_json(os.path.join(a.out_dir, qb.QUALITY_FILE), doc)
-        abreg.write_text(os.path.join(a.out_dir, qb.REPORT_FILE), text)
-        manifest = qb.manifest_for(a.out_dir, a.pr_number, a.head_sha, a.base_sha, a.merge_base_sha, a.run_id, a.run_attempt, doc["verdict"])
-        errs = qb.validate_manifest(manifest)
-        if errs:
-            print("manifest does not match its schema:\n  " + "\n  ".join(errs), file=sys.stderr)
-            return 2
-        abreg.dump_json(os.path.join(a.out_dir, qb.MANIFEST_FILE), manifest)
-        problems = qb.verify_bundle(a.out_dir)
-        if problems:
-            print("the artifact does not verify:\n  " + "\n  ".join(problems), file=sys.stderr)
+        abreg.dump_json(os.path.join(a.data_dir, qb.QUALITY_FILE), doc)
+        skipped = unchanged_static(base, pr, doc["changed"])
+        if skipped:
+            text = placeholder_body("skipped", "no Go package changed and the test, fuzz-target, registry and parity figures are the same as at the merge base.")
+            verdict = {"failed": False, "exit": 0}
+            refs: list[int] = []
+        else:
+            text, verdict = render_doc(doc)
+            refs = allowed_refs(pr)
+        manifest = qb.proof_manifest(a.pr_number, a.head_sha, "fail" if verdict["failed"] else ("skipped" if skipped else "pass"), refs)
+        try:
+            qb.write_comment_artifact(a.out_dir, manifest, text)
+        except ValueError as e:
+            print(f"the comment artifact breaks the commenter's contract: {e}", file=sys.stderr)
             return 2
         print(text)
-        return doc["verdict"]["exit"]
+        return verdict["exit"]
+    if a.cmd == "placeholder":
+        run = f" [This run](https://github.com/{a.repo}/actions/runs/{a.run_id})." if a.repo and a.run_id.isdigit() else ""
+        manifest = qb.proof_manifest(a.pr_number, a.head_sha, a.verdict, [])
+        try:
+            qb.write_comment_artifact(a.out_dir, manifest, placeholder_body(a.verdict, a.reason) .rstrip("\n") + run + "\n")
+        except ValueError as e:
+            print(f"the placeholder breaks the commenter's contract: {e}", file=sys.stderr)
+            return 2
+        return 0
     if a.cmd == "verify":
-        problems = qb.verify_bundle(a.dir)
+        problems = qb.verify_comment_artifact(a.dir)
         print("\n".join(problems) if problems else "ok")
         return 1 if problems else 0
     base, pr = abreg.load_json(a.base), abreg.load_json(a.pr)

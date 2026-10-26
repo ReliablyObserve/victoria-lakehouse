@@ -105,14 +105,13 @@ def test_report_untrusted_strings_cannot_mention_link_or_break_the_table():
     evil = "@everyone [x](http://evil.example) <img src=x onerror=1> www.evil.example #1 | `x"
     pr = snap(lint={"root": {"new": 1, "findings": [{"file": evil, "line": 1, "linter": evil, "text": evil}]}})
     pr["tests_failed"] = {"root": [evil]}
-    pr["parity"]["known"] = [{"test": evil, "reason": evil, "issues": ["victoria-lakehouse#12"]}]
+    pr["parity"]["known"] = [{"test": evil, "reason": evil, "issues": ["victoria-lakehouse#12", "other-repo#5"]}]
     flaky = {"runs_seen": 1, "reran_runs": 1, "items": [{"workflow": evil, "job": evil, "failed_attempt": 1, "passed_attempt": 2, "tests": [evil]}]}
     text, _ = quality.render(snap(), pr, {"root": {"measured": [evil], "left_out": [evil]}}, flaky, [evil])
-    link = "[victoria-lakehouse#12](https://github.com/ReliablyObserve/victoria-lakehouse/issues/12)"
-    body = re.sub(r"`[^`]*`", "", text.replace(link, ""))  # code spans render literally; the one link is ours
+    body = re.sub(r"`[^`]*`", "", text.replace(" #12", ""))  # code spans render literally; the one issue number is ours
     for bad in ("@everyone", "<img", "](http", "www.evil", "http://evil"):
         assert bad not in body, bad
-    assert link in text
+    assert " #12" in text and "(https://github.com" not in text
     assert all(not ln.startswith("|") for ln in text.split("**New lint")[1].split("**Flaky")[0].splitlines())  # nothing in the lint list can start a table row
 
 
@@ -218,3 +217,49 @@ def test_packages_prints_nothing_for_an_empty_group_so_the_workflow_never_measur
     assert capsys.readouterr().out == ""
     assert quality.main(["packages", "--files-from", str(files), "--module", "root", "--json"]) == 0
     assert json.loads(capsys.readouterr().out) == {"measured": ["internal/a"], "left_out": [], "dependency_change": False}
+
+
+def run_bundle(tmp_path, base, pr, changed, capsys):
+    paths = {}
+    for name, doc in (("base", base), ("pr", pr), ("changed", changed)):
+        paths[name] = tmp_path / f"{name}.json"
+        paths[name].write_text(json.dumps(doc))
+    rc = quality.main(["bundle", "--base", str(paths["base"]), "--pr", str(paths["pr"]), "--changed", str(paths["changed"]), "--out-dir", str(tmp_path / "c"),
+                       "--data-dir", str(tmp_path / "d"), "--pr-number", "7", "--head-sha", "a" * 40])
+    capsys.readouterr()
+    manifest = json.loads((tmp_path / "c" / "manifest.json").read_text())
+    return rc, manifest, (tmp_path / "c" / "pr-quality.md").read_text()
+
+
+def test_bundle_writes_the_two_artifacts_for_each_outcome(tmp_path, capsys):
+    changed = {"root": {"measured": ["internal/a"], "left_out": []}, "lakehouse-traces": {"measured": [], "left_out": []}}
+    (tmp_path / "pass").mkdir()
+    rc, m, body = run_bundle(tmp_path / "pass", snap(), snap(), changed, capsys)
+    assert rc == 0 and m["comments"] == [{"kind": "pr-quality", "verdict": "pass"}] and m["pr_number"] == 7 and body.startswith(quality.MARKER)
+    assert qb.verify_comment_artifact(str(tmp_path / "pass" / "c")) == [] and qb.validate_quality(json.loads((tmp_path / "pass" / "d" / "quality.json").read_text())) == []
+    assert sorted(os.listdir(tmp_path / "pass" / "c")) == ["manifest.json", "pr-quality.md"] and os.listdir(tmp_path / "pass" / "d") == ["quality.json"]
+    (tmp_path / "fail").mkdir()
+    rc, m, body = run_bundle(tmp_path / "fail", snap(), snap(tests=9), changed, capsys)
+    assert rc == 1 and m["comments"][0]["verdict"] == "fail" and "RED" in body
+    (tmp_path / "skip").mkdir()
+    nothing = {"root": {"measured": [], "left_out": []}, "lakehouse-traces": {"measured": [], "left_out": []}}
+    rc, m, body = run_bundle(tmp_path / "skip", snap(), snap(), nothing, capsys)
+    assert rc == 0 and m["comments"][0]["verdict"] == "skipped" and "SKIPPED" in body and len(body) < 400
+    (tmp_path / "moved").mkdir()  # nothing measured but the registry moved: the full report
+    rc, m, body = run_bundle(tmp_path / "moved", snap(), snap(rows=101), nothing, capsys)
+    assert m["comments"][0]["verdict"] == "pass" and "Conformance registry" in body
+
+
+def test_placeholder_for_a_run_that_did_not_finish(tmp_path, capsys):
+    out = tmp_path / "p"
+    assert quality.main(["placeholder", "--out-dir", str(out), "--pr-number", "7", "--head-sha", "b" * 40, "--verdict", "incomplete",
+                         "--reason", "the job failed @team", "--repo", "ReliablyObserve/victoria-lakehouse", "--run-id", "123"]) == 0
+    m = json.loads((out / "manifest.json").read_text())
+    body = (out / "pr-quality.md").read_text()
+    assert m["comments"] == [{"kind": "pr-quality", "verdict": "incomplete"}] and "INCOMPLETE" in body
+    assert "[This run](https://github.com/ReliablyObserve/victoria-lakehouse/actions/runs/123)" in body and "@team" not in body
+    assert qb.verify_comment_artifact(str(out)) == [] and quality.main(["verify", str(out)]) == 0
+    capsys.readouterr()
+    assert quality.main(["placeholder", "--out-dir", str(tmp_path / "q"), "--pr-number", "7", "--head-sha", "b" * 40, "--verdict", "skipped", "--reason", "x",
+                         "--repo", "o/r", "--run-id", "12x"]) == 0
+    assert "This run" not in (tmp_path / "q" / "pr-quality.md").read_text()  # a run id that is not digits makes no link

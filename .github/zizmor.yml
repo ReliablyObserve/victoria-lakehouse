@@ -51,4 +51,3 @@ rules:
     ignore:
       - ci.yaml
       - fuzz-stress-memleak.yaml
-      - pr-quality.yaml

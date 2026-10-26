@@ -1,6 +1,7 @@
 """The shape of .github/workflows/pr-quality.yaml: read-only, informational, product PRs only, in step with ci.yaml and quality.py."""
 
 import os
+import pathlib
 import re
 
 import pytest
@@ -33,8 +34,8 @@ def test_it_runs_on_pull_requests_only_and_holds_no_token_by_default(wf):
     assert wf["permissions"] == {}
 
 
-def test_no_job_can_write_and_the_report_job_reads_only_what_it_needs(wf):
-    assert wf["jobs"]["scope"]["permissions"] == {"contents": "read"}
+def test_the_job_reads_only_what_it_needs_and_nothing_can_write(wf):
+    assert list(wf["jobs"]) == ["report"]
     assert wf["jobs"]["report"]["permissions"] == {"contents": "read", "actions": "read"}
     with open(os.path.join(WF, "pr-quality.yaml"), encoding="utf-8") as f:
         text = f.read()
@@ -42,13 +43,15 @@ def test_no_job_can_write_and_the_report_job_reads_only_what_it_needs(wf):
     assert "secrets." not in text
 
 
-def test_the_job_is_gated_by_the_ci_scope_in_the_canonical_form_and_is_not_required(wf):
+def test_the_job_always_runs_so_a_stale_verdict_cannot_stay_and_is_not_required(wf):
+    """The CI scope can only skip a job, and a skipped job leaves the previous head's comment: the heavy steps are gated by the plan instead."""
     job = wf["jobs"]["report"]
-    assert job["needs"] == "scope"
-    assert job["if"] == ("${{ !cancelled() && (needs.scope.outputs.skip_go != 'true' || "
-                         "contains(format(',{0},', needs.scope.outputs.force), ',pr-quality.yaml:report,')) }}")
-    with open(os.path.join(ROOT, "scripts", "ci", "tests", "testdata", "required_checks.txt"), encoding="utf-8") as f:
-        required = f.read().split("\n")
+    assert "if" not in job and "needs" not in job
+    gated = [s["name"] if "name" in s else s.get("uses") for s in steps(job) if "steps.plan.outputs.go" in str(s.get("if", ""))]
+    assert len(gated) >= 7
+    for s in steps(job):
+        assert "needs.scope" not in str(s) and "skip_go" not in str(s)
+    required = pathlib.Path(ROOT, "scripts", "ci", "tests", "testdata", "required_checks.txt").read_text().split("\n")
     assert job["name"] == "pr-quality" and "pr-quality" not in required and "report" not in required
 
 
@@ -66,18 +69,27 @@ def test_every_checkout_drops_the_token(wf):
                 assert s["with"]["persist-credentials"] is False
 
 
-def test_the_artifact_is_named_pr_quality_and_holds_what_bundle_writes(wf):
-    up = [s for s in steps(wf["jobs"]["report"]) if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
-    assert len(up) == 1 and up[0]["with"]["name"] == "pr-quality" and up[0]["with"]["path"] == "pr-quality/"
-    bundle = next(s for s in steps(wf["jobs"]["report"]) if s.get("id") == "bundle")
-    assert "--out-dir pr-quality" in bundle["run"] and "quality.py bundle" in bundle["run"]
+def test_the_commenter_artifact_is_named_and_uploaded_on_every_run_with_the_files_bundle_writes(wf):
+    ups = {s["with"]["name"]: s for s in steps(wf["jobs"]["report"]) if str(s.get("uses", "")).startswith("actions/upload-artifact@")}
+    assert set(ups) == {qb.COMMENT_ARTIFACT, qb.DATA_ARTIFACT} == {"lh-proof-comment", "pr-quality-data"}
+    assert ups["lh-proof-comment"]["with"]["path"] == "lh-proof-comment/" and ups["pr-quality-data"]["with"]["path"] == "pr-quality-data/"
+    for s in ups.values():  # also when the job failed (not when cancelled), and a missing directory is not an error of the upload
+        assert s["if"] == "${{ !cancelled() }}" and s["with"]["if-no-files-found"] == "ignore"
+    bundle = next(s for s in steps(wf["jobs"]["report"]) if s.get("id") == "bundle")["run"]
+    assert "--out-dir lh-proof-comment" in bundle and "--data-dir pr-quality-data" in bundle
+    notice = next(s for s in steps(wf["jobs"]["report"]) if s.get("name") == "Incomplete notice")
+    assert "failure()" in notice["if"] and "--verdict incomplete" in notice["run"] and "--out-dir lh-proof-comment" in notice["run"]
     assert {qb.QUALITY_FILE, qb.REPORT_FILE, qb.MANIFEST_FILE} == {"quality.json", "pr-quality.md", "manifest.json"}
+
+
+def test_the_workflow_name_is_the_one_the_commenter_matches(wf):
+    assert wf["name"] == "PR Quality"
 
 
 def test_every_quality_py_subcommand_and_option_the_workflow_uses_exists(wf, capsys):
     text = "\n".join(s.get("run", "") for s in steps(wf["jobs"]["report"])).replace("\\\n", " ")
     calls = re.findall(r"ab/quality\.py\s+([a-z]+)([^\n]*)", text)
-    assert {c for c, _ in calls} == {"packages", "collect", "flaky", "bundle"}
+    assert {c for c, _ in calls} == {"packages", "collect", "flaky", "bundle", "placeholder"}
     for cmd, rest in calls:
         with pytest.raises(SystemExit):
             quality.main([cmd, "--help"])
