@@ -190,5 +190,3 @@ func TestDetectGCPMetadata_EmptyResponse(t *testing.T) {
 		t.Errorf("expected empty, got %q", az)
 	}
 }
-
-// pr-quality evidence run (temporary, reverted in the next commit)
