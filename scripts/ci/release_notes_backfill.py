@@ -10,9 +10,14 @@ workflow) from the repository AT THE RELEASE TAG, never from today's main:
 * `CHANGELOG.md` at the tag, and the `changelog.d/` fragments at the tag that the previous release tag
   did not already have (the same rule as the release job, `changelog_fragments.py assemble --after-tag`).
   No tag has its own `## [X.Y.Z]` section: the release-metadata pull request writes it after the tag. The
-  entries of a release are therefore what `[Unreleased]` holds at the tag, minus what it held at the
-  previous release tag (`release_notes.py --after-tag`). A `## [X.Y.Z]` section at the tag, if one exists,
-  is used as it stands.
+  entries of a release are therefore what `[Unreleased]` holds at the tag, minus the entries that
+  `[Unreleased]` held at the previous release tag. A `## [X.Y.Z]` section at the tag, if one exists, is used
+  as it stands.
+* Every release before v0.167.12 was cut with hand-written text under `[Unreleased]`, which the release
+  assembler (`changelog_fragments.assemble`) has refused since it was hardened. The backfill therefore merges
+  that text itself (`legacy_assemble`, the semantics the assembler had before the hardening) and only renders
+  with `release_notes.render`. `legacy_assemble` exists only in this module: the release workflow does not
+  call it, and the release-path assembler is not changed.
 * The old body is kept from its `## Release Artifacts` marker on, byte for byte (binaries, images, Helm).
   Only the text before the marker is replaced, so the new body is `notes + "\\n\\n" + old[marker:]`.
 
@@ -129,6 +134,115 @@ class Repo:
         return run_git(self.root, "cat-file", "blob", blob_id)
 
 
+def legacy_groups(body):
+    """heading -> bullet blocks (their own text) of a hand-written [Unreleased] body.
+
+    This is the merge that changelog_fragments.assemble made before the hand-written [Unreleased] text was
+    refused (git history before #798), kept for the historical tags that were cut that way.
+    """
+    groups = {}
+    heading = None
+    block = []
+
+    def flush():
+        nonlocal block
+        while block and not block[-1].strip():
+            block.pop()
+        if block:
+            groups[heading].append("\n".join(block))
+        block = []
+
+    for line in body.split("\n"):
+        match = re.match(r"^### +(.+?)\s*$", line)
+        if match:
+            flush()
+            heading = match.group(1)
+            groups.setdefault(heading, [])
+        elif line.startswith("- "):
+            if heading is None:
+                raise cf.AssembleError("a bullet under [Unreleased] is outside any '### ' heading")
+            flush()
+            block = [line]
+        elif not line.strip():
+            if block:
+                block.append("")
+        elif block and line.startswith(" "):
+            block.append(line)
+        else:
+            raise cf.AssembleError(f"text under [Unreleased] that is not a bullet below a heading: {line[:60]!r}")
+    flush()
+    return {h: b for h, b in groups.items() if b}
+
+
+def legacy_assemble(text, fragments, version, date):
+    """The changelog with `## [version] - date` built from the hand-written [Unreleased] text AND the fragments.
+
+    Backfill only. The release path uses changelog_fragments.assemble, which refuses text under [Unreleased].
+    """
+    if not cf.SEMVER_RE.match(version):
+        raise cf.AssembleError(f"'{version}' is not a release version (MAJOR.MINOR.PATCH)")
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError as err:
+        raise cf.AssembleError(f"date '{date}' is not YYYY-MM-DD") from err
+    head, body, rest = cf.split_unreleased(text)
+    groups = legacy_groups(body)
+    for fragment in sorted(fragments, key=lambda f: f.path):
+        groups.setdefault(fragment.kind.capitalize(), []).append("\n".join(fragment.lines))
+    order = [h for h in cf.KNOWN_HEADINGS if h in groups] + [h for h in groups if h not in cf.KNOWN_HEADINGS]
+    content = "\n\n".join(f"### {h}\n\n" + "\n\n".join(groups[h]) for h in order)
+    section = f"## [{version}] - {date}\n\n" + (content + "\n\n" if content else "")
+    return head + "\n\n" + section + rest
+
+
+def notes_items(notes):
+    """(lines before the first entry, [(prefix, text of the entry)]) of rendered notes."""
+    pre, items, current = [], [], None
+    for line in notes.rstrip("\n").split("\n"):
+        match = re.match(r"^\* (SECURITY|FEATURE|BUGFIX): ", line)
+        if match:
+            current = [match.group(1), [line]]
+            items.append(current)
+        elif current is None:
+            pre.append(line)
+        else:  # blank lines, nested bullets and further paragraphs belong to the entry above them
+            current[1].append(line)
+    return pre, [(prefix, "\n".join(lines).rstrip("\n")) for prefix, lines in items]
+
+
+def without_released(notes, released):
+    """`notes` without the entries whose rendered text is in `released` (the set of the previous release's)."""
+    pre, items = notes_items(notes)
+    kept = [(prefix, text) for prefix, text in items if text not in released]
+    blocks = ["\n".join(pre).rstrip("\n")]
+    for prefix in rn.GROUP_ORDER:
+        texts = [text for p, text in kept if p == prefix]
+        if texts:
+            blocks.append("\n".join(texts))
+    if not kept and blocks[0].count("\n") == 0:
+        blocks.append("No user-visible changes.")
+    return "\n\n".join(blocks) + "\n"
+
+
+def unreleased_items(text):
+    """Rendered entries of the [Unreleased] section of a changelog text (empty when it has none)."""
+    try:
+        notes, _ = rn.render(text, "Unreleased", "2000-01-01")
+    except rn.ReleaseNotesError:
+        return set()
+    return {entry for _, entry in notes_items(notes)[1]}
+
+
+def count_entries(text, version):
+    """Number of entries of `## [version]` in a changelog text; 0 when it has no such section."""
+    try:
+        _, body = rn.find_section(text.replace("\r\n", "\n").split("\n"), version)
+    except rn.ReleaseNotesError:
+        return 0
+    _, notes, groups, _ = rn.parse_section(body, version)
+    return len(notes) + sum(len(items) for items in groups.values())
+
+
 def tag_fragments(repo, tag, previous):
     """(fragments the release adds, problems): the fragments at the tag that the previous tag did not have."""
     have = repo.fragments(previous) if previous else {}
@@ -169,23 +283,23 @@ def notes_for_tag(repo, tag, date):
         if before is None:
             warnings.append(f"cannot read CHANGELOG.md at {previous}; entries of the previous release may be repeated")
         else:
-            already = rn.bullet_keys(before)
+            already = unreleased_items(before)
     fragments, problems = tag_fragments(repo, tag, previous)
     warnings.extend(f"fragment skipped: {problem}" for problem in problems)
     try:
-        assembled = cf.assemble(text, fragments, version, date)
-        notes, more = rn.render(assembled, version, date, already)
+        assembled = legacy_assemble(text, fragments, version, date)
+        notes, more = rn.render(assembled, version, date)
     except cf.AssembleError as err:
         if fragments:
             raise NoEntry(f"cannot assemble the fragments at {tag}: {err}") from err
         warnings.append(f"[Unreleased] at {tag} rendered as it stands ({err})")
         try:
-            notes, more = rn.render(text, "Unreleased", date, already)
+            notes, more = rn.render(text, "Unreleased", date)
         except rn.ReleaseNotesError as inner:
             raise NoEntry(str(inner)) from inner
     except rn.ReleaseNotesError as err:
         raise NoEntry(str(err)) from err
-    return check_entry(notes), warnings + more
+    return check_entry(without_released(notes, already)), warnings + more
 
 
 def check_entry(notes):
@@ -322,12 +436,12 @@ def plan_release(repo, release, max_ref=None, cutoff=CUTOFF, compare=None):
         notes, warnings = notes_for_tag(repo, tag, release_date(release))
     except NoEntry as err:
         if compare is not None:
-            entry["source"] = {"at_tag": 0, "in_main": len(rn.bullet_keys(compare, tag[1:]))}
+            entry["source"] = {"at_tag": 0, "in_main": count_entries(compare, tag[1:])}
         return skip(NO_ENTRY, str(err))
     result = new_body(notes, suffix)
     found, counts = risks(notes, result, max_ref)
     if compare is not None:
-        entry["source"] = {"at_tag": entry_count(notes), "in_main": len(rn.bullet_keys(compare, tag[1:]))}
+        entry["source"] = {"at_tag": entry_count(notes), "in_main": count_entries(compare, tag[1:])}
     entry.update(
         new_bytes=len(result.encode("utf-8")),
         new_sha256=sha(result),
