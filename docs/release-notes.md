@@ -92,6 +92,9 @@ env -u GITHUB_TOKEN LH_BACKFILL_APPLY=yes python3 scripts/ci/release_notes_backf
   release job does. No tag has its own `## [X.Y.Z]` section (the release-metadata pull request writes it
   after the tag), so the entries of a release are what `[Unreleased]` and the fragments hold at the tag and
   did not hold at the previous tag. A section at the tag, if there is one, is used as it stands.
+  Releases before v0.167.12 were cut with hand-written text under `[Unreleased]`, which the release assembler
+  refuses; the backfill merges that text itself (`legacy_assemble` in the backfill script only; the release
+  path does not use it) and renders with `release_notes.py`.
 * A release is left alone, and the report says why, when it is immutable or was published at or after the
   cutoff (2026-10-23 06:00 UTC), has no `## Release Artifacts` marker, already starts with `Released at`,
   has other text before the marker, or has no entry at its tag.
