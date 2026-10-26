@@ -27,6 +27,9 @@ type Handler struct {
 	resolver *tenant.TenantResolver
 	timeout  time.Duration
 	sem      chan struct{}
+	// maxQueryDuration is -search.maxQueryDuration: the deadline of a Jaeger or
+	// Tempo request (query_deadline.go). The LogsQL routes keep query.timeout.
+	maxQueryDuration time.Duration
 	// globalRead validates the operator credential that widens a query from
 	// one tenant to all of them. Zero value = not configured = never widened.
 	globalRead tenant.GlobalReadAuth
@@ -48,6 +51,8 @@ func NewHandler(store storage.Storage, cfg *config.Config, opts ...HandlerOption
 		cfg:     cfg,
 		timeout: cfg.Query.Timeout,
 		sem:     make(chan struct{}, maxConcurrent),
+
+		maxQueryDuration: DefaultMaxQueryDuration,
 		globalRead: tenant.NewGlobalReadAuth(
 			cfg.Tenant.GlobalReadHeader,
 			cfg.Tenant.GlobalReadValue,
@@ -115,7 +120,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	if h.cfg.Mode == config.ModeTraces {
 		mux.HandleFunc("/select/jaeger/", func(w http.ResponseWriter, r *http.Request) {
-			if !jaeger.RequestHandler(h.scopeContext(r), w, r) {
+			ctx, cancel, ok := h.queryContext(w, r)
+			if !ok {
+				return
+			}
+			defer cancel()
+			if !jaeger.RequestHandler(ctx, w, r) {
 				// Upstream VT's main HTTP dispatcher writes the same 400
 				// for paths Jaeger doesn't know about. Without this,
 				// Grafana sees HTTP 200 + 0 bytes (silent empty) and
@@ -125,7 +135,12 @@ func (h *Handler) Register(mux *http.ServeMux) {
 		})
 		mux.HandleFunc("/select/tempo/", func(w http.ResponseWriter, r *http.Request) {
 			normalizeTempoSearchParams(r)
-			if !tempo.RequestHandler(h.scopeContext(r), w, r) {
+			ctx, cancel, ok := h.queryContext(w, r)
+			if !ok {
+				return
+			}
+			defer cancel()
+			if !tempo.RequestHandler(ctx, w, r) {
 				// Same parity fix as Jaeger above — tempo.RequestHandler
 				// returns false for unknown paths (e.g. /api/v2/search
 				// — TraceQL v2 — which upstream VT itself rejects with
@@ -195,7 +210,12 @@ func (h *Handler) handleTailNoop(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) rewriteToJaeger(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = "/select/jaeger" + r.URL.Path
-	jaeger.RequestHandler(h.scopeContext(r), w, r)
+	ctx, cancel, ok := h.queryContext(w, r)
+	if !ok {
+		return
+	}
+	defer cancel()
+	jaeger.RequestHandler(ctx, w, r)
 }
 
 // normalizeTempoSearchParams works around an upstream VT quirk in

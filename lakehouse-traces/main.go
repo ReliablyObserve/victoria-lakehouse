@@ -39,7 +39,6 @@ import (
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/tenant"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/ui"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/membuffer"
-	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/selectapi"
 	"github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/storage/parquets3"
 	internalvlstorage "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vlstorage"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
@@ -1319,7 +1318,7 @@ func newMux(cfg *config.Config, store *parquets3.Storage, sm *startup.Manager, t
 		mountInternalProtocol(mux, cfg.Delete.Enabled)
 		mountPublicDelete(mux, cfg.Delete.Enabled, globalReadAuthorizer(cfg))
 
-		publicHandler := selectapi.NewHandler(store, cfg)
+		publicHandler := newSelectHandler(store, cfg)
 		publicHandler.Register(mux)
 	}
 

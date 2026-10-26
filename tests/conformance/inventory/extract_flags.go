@@ -61,9 +61,11 @@ var LinkedIntoLH = map[string]bool{
 // /internal/delete/* and delete.enable gates /delete/*: the logs binary gets
 // both from vlselect itself, the traces binary registers VictoriaTraces' own
 // definitions (lakehouse-traces/internal_delete.go, public_delete.go).
+// search.maxQueryDuration is the Jaeger and Tempo deadline of the traces binary,
+// registered by lakehouse-traces/search_max_query_duration.go.
 var HonouredFlags = map[string]map[string]bool{
 	"vl": {"internaldelete.enable": true, "delete.enable": true},
-	"vt": {"internaldelete.enable": true, "delete.enable": true},
+	"vt": {"internaldelete.enable": true, "delete.enable": true, "search.maxQueryDuration": true},
 }
 
 // ExtractFlags scans the non-test .go files directly inside each pkgDir (and, for
