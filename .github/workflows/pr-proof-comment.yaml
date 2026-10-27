@@ -1,0 +1,181 @@
+name: PR proof comment
+
+# Posts the PR proof comments (pr-quality, perf-smoke, api-matrix, visual-proof) for the pull-request workflows
+# named `PR Quality` (.github/workflows/pr-quality.yaml) and `PR proof` (.github/workflows/pr-proof.yaml), from one place that runs BASE-BRANCH code only. Design: docs/ci-proof-comment.md.
+#
+# TRUST MODEL (read before editing; this file holds write tokens)
+#   * `workflow_run` runs this file as it is on the default branch with a token the pull request cannot touch.
+#     It therefore also works for fork and Dependabot pull requests, which a `pull_request` job cannot comment on.
+#   * The producers run pull request code and upload ONE artifact (`lh-proof-comment`). It is DATA. It is read by
+#     scripts/ci/proof_comment.py only: allowlisted file names, size caps, no symlinks, a JSON manifest checked
+#     against a schema, images checked byte for byte, Markdown sanitised. Nothing from it is executed, sourced,
+#     checked out or expanded in a `run:` script.
+#   * The pull request number and head SHA come from the event and are cross-checked against the GitHub API (the
+#     producing run, the open PRs with that head, the artifact's own run). The manifest's values are claims that must
+#     match.
+#   * No job checks out pull request code (the checkouts below are the default branch, sparse, no credentials).
+#   * A head without valid proof (no artifact, or an artifact that fails validation) replaces the producer's older
+#     comments with a "no valid proof for head <sha>" banner built from API data only, so a previous head's verdict
+#     never stays on screen. A cancelled run, a closed PR or a moved head change nothing.
+#   * Token scopes are per job, so the three jobs that can write are separate: `validate` reads, `publish` can push
+#     (only to the data branch pr-visuals, only validated PNG files), `comment` can write PR comments.
+#   * Never use `${{ github.event.* }}` text, a job output or an input inside `run:`; pass it through `env:`.
+#     scripts/ci/tests/test_proof_comment.py and test_workflow_permissions.py hold these rules.
+
+on:
+  workflow_run: # zizmor: ignore[dangerous-triggers] base-branch code only, artifact is validated data, see the trust model above
+    workflows: [PR Quality, PR proof]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      fixture:
+        description: "Dry run: a fixture directory or zip under scripts/ci/tests/testdata/proof_comment/ (renders, posts nothing)"
+        required: true
+        default: scripts/ci/tests/testdata/proof_comment/valid
+      pr_number:
+        description: "Dry run: the pr_number inside the fixture"
+        required: true
+        default: "12345"
+
+permissions: {}
+
+# One commenter at a time per producer and head, never cancelled while running. A newer run of the same producer and head
+# replaces a pending older one, which is intended: it carries the newer run id and the same head.
+concurrency:
+  group: pr-proof-comment-${{ github.event.workflow_run.workflow_id || github.run_id }}-${{ github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # Reads the producer's artifact and cross-checks it. Holds no write scope.
+  validate:
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.validate.outputs.proceed }}
+      mode: ${{ steps.validate.outputs.mode }}
+      has_images: ${{ steps.validate.outputs.has_images }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci/proof_comment.py
+          sparse-checkout-cone-mode: false
+
+      - name: Validate the artifact
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WR_RUN_ID: ${{ github.event.workflow_run.id }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WR_EVENT: ${{ github.event.workflow_run.event }}
+          WR_PATH: ${{ github.event.workflow_run.path }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WR_PRS: ${{ toJSON(github.event.workflow_run.pull_requests.*.number) }}
+        run: python3 -I scripts/ci/proof_comment.py validate --out "$RUNNER_TEMP/bundle"
+
+      - name: Hand the checked bundle to the jobs that can write
+        if: steps.validate.outputs.proceed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proof-bundle
+          path: ${{ runner.temp }}/bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  # Pushes the validated PNG files of this PR to the data-only pr-visuals branch (github-actions[bot], unsigned).
+  publish:
+    needs: validate
+    if: github.event_name == 'workflow_run' && needs.validate.outputs.proceed == 'true' && needs.validate.outputs.has_images == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    # No concurrency group on purpose: GitHub keeps one running and one pending job per group and cancels the pending one
+    # when another is queued, which would drop publishes. publish.py rebuilds on the new tip and pushes with a lease
+    # (4 attempts), so concurrent publishes and the weekly prune stay correct without a group.
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci/proof_comment.py
+            scripts/proof/visual/publish.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: proof-bundle
+          path: ${{ runner.temp }}/bundle
+
+      - name: Re-check the bundle and that this head is still current
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci/proof_comment.py check-bundle --bundle "$RUNNER_TEMP/bundle"
+
+      - name: Publish the images
+        id: publish
+        if: steps.check.outputs.current == 'true'
+        env:
+          PUBLISH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.check.outputs.pr }}
+        run: |
+          python3 -I scripts/proof/visual/publish.py publish \
+            --montage "$RUNNER_TEMP/bundle/images" --pr "$PR_NUMBER" \
+            --remote "https://github.com/${GITHUB_REPOSITORY}.git"
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+  # Upserts the sticky comments. Runs after publish so the image URLs exist; without images it still comments.
+  comment:
+    needs: [validate, publish]
+    if: ${{ !cancelled() && github.event_name == 'workflow_run' && needs.validate.outputs.proceed == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci/proof_comment.py
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: proof-bundle
+          path: ${{ runner.temp }}/bundle
+
+      - name: Post the comments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGES_PUBLISHED: ${{ needs.publish.outputs.published == 'true' && 'true' || 'false' }}
+        run: python3 -I scripts/ci/proof_comment.py comment --bundle "$RUNNER_TEMP/bundle" --images-published "$IMAGES_PUBLISHED"
+
+  # Manual dry run of the whole validate-and-render path on a committed fixture. Cannot post or publish.
+  dry-run:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Render the fixture
+        env:
+          FIXTURE: ${{ inputs.fixture }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: python3 -I scripts/ci/proof_comment.py dry-run --source "$FIXTURE" --pr "$PR_NUMBER"

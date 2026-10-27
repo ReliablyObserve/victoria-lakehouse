@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "pr_number": 12345,
+  "head_sha": "0123456789abcdef0123456789abcdef01234567",
+  "comments": [
+    {
+      "kind": "perf-smoke",
+      "verdict": "pass"
+    },
+    {
+      "kind": "visual-proof",
+      "verdict": "pass"
+    }
+  ],
+  "images": [
+    {
+      "name": "logs-search-1h.png",
+      "sha256": "16240c5a5adb3b05fa68164af7bb1060c709635b636041d51e27cfa34ece08da",
+      "bytes": 76
+    }
+  ],
+  "allowed_issue_refs": [
+    500
+  ]
+}
