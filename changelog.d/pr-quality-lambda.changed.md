@@ -1,1 +1,0 @@
-- **A test of the quality report tooling calls `md_code` directly instead of through a lambda (tests only, no change to the Lakehouse binaries or to runtime behaviour).** It resolves a code-quality finding on the quality report change.
