@@ -122,7 +122,8 @@ GATE_FILES_RE = re.compile(
     r"|tests/parity/(known_failures|lock_cells)\.txt$"
     r"|tests/conformance/registry/(testlinks|paritygate|perfgate|lockcode|escape|canonical)\.go"
     r"|\.github/CODEOWNERS$"
-    r"|\.github/workflows/(conformance|registry-gate|registry-gate-base|gate-selftest|parity)\.yaml"
+    r"|\.github/workflows/(conformance|registry-gate|registry-gate-base|gate-selftest|parity|pr-proof-comment|pr-visuals-prune)\.yaml"
+    r"|scripts/proof/visual/publish\.py$"
     r"|\.github/(registry-exempt-approvers|release-metadata-approvers))"
 )
 SEMVER = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")

@@ -10,3 +10,8 @@ charts/               @szibis
 .github/              @szibis
 scripts/ci/           @szibis
 tests/conformance/    @szibis
+
+# Workflows and scripts that hold write tokens for pull request comments and the pr-visuals data branch
+.github/workflows/pr-proof-comment.yaml  @szibis
+.github/workflows/pr-visuals-prune.yaml  @szibis
+scripts/proof/visual/publish.py          @szibis
