@@ -2,10 +2,10 @@
   "schema_version": 1,
   "verdict": {
     "upstream_items": 437,
-    "upstream_items_with_row": 291,
-    "upstream_items_no_row": 146,
+    "upstream_items_with_row": 292,
+    "upstream_items_no_row": 145,
     "upstream_items_verified": 37,
-    "upstream_items_declared_only": 187,
+    "upstream_items_declared_only": 185,
     "upstream_items_differentially_linked": 67,
     "ingest_protocol_cells": 35,
     "ingest_protocol_cells_verified": 26,
@@ -13,14 +13,14 @@
     "upstream_pass_rows_differential": 108,
     "upstream_pass_rows_other_test": 33,
     "upstream_pass_rows_no_test": 246,
-    "rows_total": 1373,
-    "rows_pending": 1283,
-    "rows_pending_waiting_for_runner": 499,
+    "rows_total": 1375,
+    "rows_pending": 1285,
+    "rows_pending_waiting_for_runner": 501,
     "rows_pending_executed_elsewhere": 784,
     "rows_pending_unclassified": 0,
-    "shipped_features": 155,
+    "shipped_features": 156,
     "shipped_features_no_rows": 110,
-    "shipped_features_no_perf_scenario": 148,
+    "shipped_features_no_perf_scenario": 149,
     "shipped_features_unproven": 107,
     "shared_code_items": 41,
     "shared_code_unguarded": 3
@@ -32,8 +32,8 @@
       "items": 140,
       "with_row": 140,
       "verified": 35,
-      "pending": 61,
-      "differs": 21,
+      "pending": 59,
+      "differs": 23,
       "absent_or_unsupported": 23,
       "no_row": 0,
       "differentially_linked": 63
@@ -56,8 +56,8 @@
       "items": 62,
       "with_row": 62,
       "verified": 1,
-      "pending": 34,
-      "differs": 15,
+      "pending": 32,
+      "differs": 17,
       "absent_or_unsupported": 12,
       "no_row": 0,
       "differentially_linked": 19
@@ -162,12 +162,12 @@
       "kind": "flag",
       "signal": "all",
       "items": 181,
-      "with_row": 35,
+      "with_row": 36,
       "verified": 2,
       "pending": 20,
-      "differs": 12,
+      "differs": 13,
       "absent_or_unsupported": 1,
-      "no_row": 146,
+      "no_row": 145,
       "differentially_linked": 3
     },
     {
@@ -186,12 +186,12 @@
       "kind": "flag",
       "signal": "vt",
       "items": 73,
-      "with_row": 16,
+      "with_row": 17,
       "verified": 0,
       "pending": 7,
-      "differs": 8,
+      "differs": 9,
       "absent_or_unsupported": 1,
-      "no_row": 57,
+      "no_row": 56,
       "differentially_linked": 1
     },
     {
@@ -1982,42 +1982,42 @@
     }
   ],
   "registry": {
-    "rows": 1373,
+    "rows": 1375,
     "by_surface": {
       "lh": 138,
       "vl": 684,
-      "vt": 551
+      "vt": 553
     },
     "by_expect": {
       "absent": 3,
-      "differ": 66,
+      "differ": 68,
       "pass": 1278,
       "unsupported": 26
     },
     "by_origin": {
       "lh-addition": 114,
       "lh-shim": 28,
-      "native": 1231
+      "native": 1233
     },
     "perf_cells": 768,
-    "non_perf_rows": 605,
-    "pending_rows": 1283,
+    "non_perf_rows": 607,
+    "pending_rows": 1285,
     "pending_perf_cells": 768
   },
   "features": {
-    "total": 167,
+    "total": 168,
     "by_status": {
       "in-progress": 3,
       "planned": 9,
-      "shipped": 155
+      "shipped": 156
     },
-    "shipped": 155,
+    "shipped": 156,
     "shipped_no_rows": 110,
     "shipped_no_tests": 1,
-    "shipped_no_perf_scenario": 148,
-    "shipped_citing_a_hot_row": 10,
+    "shipped_no_perf_scenario": 149,
+    "shipped_citing_a_hot_row": 11,
     "shipped_by_proof_class": {
-      "lh-extension": 39,
+      "lh-extension": 40,
       "perf-proven": 3,
       "unproven": 107,
       "upstream-exact": 6
@@ -3090,6 +3090,18 @@
         "rows_pending": 14,
         "rows_targeting_hot": 13,
         "tests": 18,
+        "bench": [],
+        "perf_cells": 0,
+        "perf_scenario": false,
+        "proof_class": "lh-extension"
+      },
+      {
+        "id": "lh.feature.traces.query_deadline",
+        "area": "traces",
+        "rows": 2,
+        "rows_pending": 2,
+        "rows_targeting_hot": 1,
+        "tests": 3,
         "bench": [],
         "perf_cells": 0,
         "perf_scenario": false,
@@ -4337,6 +4349,7 @@
         "imported_by_traces_module": true,
         "guards": [
           "internal/upstreamreuse/upstreamreuse_test.go",
+          "lakehouse-traces/internal/selectapi/query_deadline_test.go",
           "lakehouse-traces/tombstone_multiinstance_test.go"
         ],
         "guards_many": false,
@@ -4347,7 +4360,8 @@
         "imported_by_logs_module": false,
         "imported_by_traces_module": true,
         "guards": [
-          "internal/upstreamreuse/upstreamreuse_test.go"
+          "internal/upstreamreuse/upstreamreuse_test.go",
+          "lakehouse-traces/internal/selectapi/query_deadline_test.go"
         ],
         "guards_many": false,
         "guarded": true
@@ -4398,7 +4412,7 @@
     },
     {
       "reason": "chaos-or-ui-harness",
-      "rows": 24,
+      "rows": 25,
       "executed_elsewhere": false,
       "description": "layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner",
       "refs_doc": [
@@ -4409,12 +4423,13 @@
     },
     {
       "reason": "flag-row",
-      "rows": 35,
+      "rows": 36,
       "executed_elsewhere": false,
       "description": "kind `flag`: no HTTP request; the flag drift checks and cited tests apply",
       "refs_doc": [
         "docs/configuration.md",
         "docs/deletion-strategy.md",
+        "docs/read-path.md",
         "docs/security.md"
       ]
     },

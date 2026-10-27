@@ -1746,6 +1746,7 @@ items:
       surface: vt
       name: search.maxQueryDuration
       source: app/vtselect/main.go
+      linked: true
     - kind: flag
       surface: vt
       name: search.maxQueryLen
