@@ -252,6 +252,100 @@ python3 scripts/bench/ab/quality.py bundle --base base.json --pr pr.json --out-d
 python3 -m pytest scripts/bench/ab/tests/test_quality*.py -q
 ```
 
+## Runner fit: does the stack fit a standard GitHub-hosted runner
+
+`.github/workflows/pr-proof.yaml` (informational: it posts nothing, gates nothing and is not a required check) brings up this stack on
+`ubuntu-latest`, runs `pr_smoke.py` once and records what it cost. The measurement tool is `scripts/proof/runner_fit.py` (standard library;
+unit tests in `scripts/proof/tests/test_runner_fit.py`, run first in the job). It does not change the harness: the seed lever patches two module
+constants of `stack.py` in memory.
+
+It runs on a manual dispatch (the file has to be on the default branch first: `gh workflow run` answers HTTP 404 before) and on pull requests
+that change `pr-proof.yaml`, `deployment/docker/docker-compose-proof.yml`, `scripts/bench/ab` or `runner_fit.py`; ordinary pull requests do not
+run it. A pull request run executes three variants side by side, each on its own runner, plus a disk probe; a manual run executes one variant
+from the inputs. Every variant tears down its compose project and images by exact tag (`stack.py down`, never a prune), removes its base tree
+without `--force`, uploads its artifact on failure too, and has a 60 minute job limit and a 40 minute limit on the `pr-smoke` step, so the
+teardown always has time. The job has `contents: read` and nothing else; every image is pulled anonymously.
+
+| Variant | Base build | Layer cache | UI tier | Runs / API rounds | S3 latency |
+|---|---|---|---|---|---|
+| `full` (the worst case) | merge-base with main, built separately | none | loki-vl-proxy x3, Jaeger UI x3, Grafana | 6 / 3 | 0 and 50 ms |
+| `lean` | the PR image, tagged as base too (A/A) | none | no | 3 / 1 | 0 ms |
+| `lean-cache` | as `lean` | BuildKit local cache, keyed by tree SHA | no | 3 / 1 | 0 ms |
+
+The seed is also a lever (`seed_chunks`, `seed_scale`, dispatch inputs only; see the findings: neither works). All variants run the shape sets
+`control-logs` and `control-traces` (56 cells, both signals, four layers).
+
+What is recorded (`runner-fit.json` in the artifact `runner-fit-<variant>`, and the table in the job summary):
+
+- wall time per phase (pull, setup-buildx, one build per image, probe images, `pr-smoke`, the UI tier, teardown) and, from the harness's own log
+  timestamps, per step inside `pr-smoke` (stack up, seed, forced compaction, buffer layer, seed equality, perf core, further latency profiles,
+  API matrix); `restart_approx` and `confirm_remeasure_approx` are derived from log line gaps and are approximate;
+- every 10 s: `free -m`, `df` of `/`, `/mnt` and the Docker root, `docker system df`, `docker stats`, the load average and CPU utilisation from `/proc/stat`;
+- before teardown: cgroup `memory.peak`, `OOMKilled` and the restart count of every container, and the kernel OOM lines;
+- after teardown: the containers, volumes, networks and images of the compose project that remain (none is the pass);
+- the fit verdict, on memory and disk only: it fails when `MemAvailable` falls below 1 GiB, a container is `OOMKilled`, the kernel logged an OOM
+  kill, the free space of the Docker root falls below 1 GiB, or a phase log says "no space left on device". CPU saturation is reported, never a verdict.
+
+### Measured on `ubuntu-latest` (pull request 815; five runs of the workflow, 18 measured artifacts; "derived" marks what is not a direct measurement)
+
+The machine in every run: 4 vCPU (AMD EPYC 9V45), 15 983 MB RAM, 3 GB swap, image `ubuntu26` 20261023.163.3, Docker 29.4.2 (overlayfs). The root
+disk is 147.8 GB with 88 GB free at the start, not the 14 GB the planning assumed; the stack added 5.6 GB (`lean`) to 12.2 GB (`full`) to `/`.
+**`/tmp` is the exception: it is a 7.9 GB tmpfs, that is RAM**, and a probe that wrote 1 GiB files stopped after 6 GiB with `Disk quota exceeded`
+(twice; `$RUNNER_TEMP`, the workspace and `$HOME` are on the 148 GB ext4 disk and took every GiB tried, 40 in the first run, 12 in the second). A local
+BuildKit cache written to `/tmp` next to its restored copy hit that limit, and the cache files counted as memory: `lean-cache` showed 5.3-5.7 GB of RAM
+used while its cache lived in `/tmp` and 3.5 GB after the job moved its scratch files to `$RUNNER_TEMP`. Any CI step that writes more than a few GB
+to `/tmp` on this image is spending RAM and fails at about 6 GiB.
+
+| Variant | Job wall, per run | Median | Build (all images) | `pr-smoke` | RAM used, max | Containers' RAM, sum max | Fit |
+|---|---|--:|--:|--:|--:|--:|---|
+| `full` | 22.6, 23.2, 22.9, 23.1 min | 23.0 | 4.4-4.6 min | 15.0-16.5 min | 3.7-4.2 GB | 2.6-3.0 GB | fits |
+| `lean` | 11.9, 12.6, 11.4, 13.8, 13.5 min | 12.6 | 2.3-3.0 min | 8.4-10.1 min | 3.5-3.9 GB | 2.4-2.7 GB | fits |
+| `lean-cache` | 12.7, 14.8, 15.5, 13.2, 15.1 min | 14.8 | 3.0-4.4 min | 8.5-10.0 min | 3.5-5.7 GB (3.5 with the cache under `$RUNNER_TEMP`) | 2.4-2.8 GB | fits |
+
+One-off variants of earlier runs of the pull request: `lean-main-cache` (a separate base build with the layer cache) 15.6 and 17.2 min, and once
+failed with the `/tmp` quota above; `lean-scale05` (half the rows per chunk) 12.2 min; `lean-chunks4` and a 3-chunk seed failed in 5-7 min (below).
+
+Every variant: `MemAvailable` never below 8.6 GB (the minimum over all runs of any variant; 10.3-12.5 GB for the three that remain), no container
+`OOMKilled`, none restarted, no kernel OOM line, no container, volume, network or image left after teardown (0 of 18). The cgroup `memory.peak` of
+a container, largest over the runs: RustFS 878 MB, Grafana 618 MB (UI tier only), Lakehouse logs 493 MB, VictoriaLogs 390 MB, Lakehouse traces
+326 MB, VictoriaTraces 211 MB; the other twelve are under 50 MB. CPU utilisation: mean 27-44 %, at or above 95 % in 4-16 of the 10 s samples (the
+builds and the compaction); load average up to 7.7 (up to 11.6 with the UI tier) on 4 vCPU.
+
+Where the time goes in `lean` (seconds, range over the runs): build logs 54-68, traces 61-86, datagen 19-23, stack up 18, seed 102-117, forced
+compaction 2-4, buffer layer 16-17, seed equality 75-78, perf core 192-203 (56 cells, 3.4-3.6 s per cell including the restart layer and the confirming
+re-measures), API matrix 95-167 (one round; the noisiest step), components 3-6, teardown 1.5. `full` adds, against `lean`: a second pair of image builds
+(+113 s), the UI tier (pull 2, build 50, up 10, settle 30 s), the 50 ms profile (+72-104 s), and two more API rounds plus six instead of three runs
+(API matrix 379-464 s; perf core 209-219 s).
+
+Noise. Base and PR are the same code in every run, so a cell that moves is a false positive: 24 of 952 cells (2.5 %) moved in the first pass, none after
+the confirming re-measure. The wall time of `lean` spread 11.4-13.8 min on identical code, and its API matrix 95-167 s: read a difference under
+about 15 % as noise. Latency stays report-only until it is calibrated on a 4-vCPU shared runner, where small shifts cannot be read.
+
+### Findings
+
+- **The stack fits a standard runner.** 16 GB RAM: yes (peak used 3.1-7.4 GB, minimum `MemAvailable` 8.6 GB). 4 vCPU: yes (CPU is busy only
+  during builds and compaction). Disk: yes (5.6 GB added by `lean`, 12.2 GB by `full`, on a 148 GB disk; an actual 14 GB disk would fit `lean` and
+  be tight for `full`; this image's 7.9 GB RAM-backed `/tmp` is the constraint to design around). No variant ran out of memory or space.
+- **The wall time is the cost, not the fit.** `full` takes about 23 min. `lean` takes 11.4-13.8 min (median 12.6), so ordinary levers bring it to
+  about 12-13 min but not reliably under 12. Going from `full` to `lean` saves about 10.4 min (measured differences): API rounds 3 to 1 (-280 to -300 s),
+  no 50 ms profile (-72 to -104 s), no separate base build (-113 s), no UI tier (-93 s), runs 6 to 3 (-8 to -19 s).
+- **Recommended core-tier budget on a standard runner: 15 min wall, job limit 20 min, for the `lean` shape.** The 8 min target of the core tier is not met by
+  any lever that exists today. Derived, not measured: running the 32 smoke cells of the control sets instead of all 56 would save about 85 s (24
+  cells x 3.5 s), giving about 11 min. What would still stand between that and 8 min is 190 s of seed plus seed-equality wait and 140-170 s of image
+  builds: prebuilt images, a shorter chunk schedule or a shorter settle, all harness changes.
+- **The image layer cache does not pay.** Written cold or restored, `lean-cache` is slower than `lean` in four of five paired runs (median 14.8 vs 12.6 min):
+  +15-30 s of build per image for the export and import, 1.9 GB of the repository's 10 GB cache limit (3.3 GB with a separate base build) and about
+  2 GB more resident memory. Only the dependency layers (8-11 per image) were `CACHED`; the compile layer sits after `COPY . .`, so any changed file in
+  the tree misses it. An exact hit on the compile layer of the unchanged base tree was not obtained either (it was rebuilt, 46-52 s, in all four base
+  builds that had a restored cache); the cause was not isolated (issue 825).
+- **Neither seed lever works.** Halving the rows (`lean-scale05`) saved nothing (seed 103 vs 102-117 s, perf core 198 vs 192-203 s): the seed time is
+  the chunk schedule (a 7 s pause per chunk) and per-request overhead, not the volume. Fewer chunks (4, and 3 in an earlier run) breaks the compacted
+  layer: the forced compaction answers `400 partition not found or empty` for every hour and the run stops with exit 3. Hypothesis, supported by the code
+  (`ForceCompactPartition` takes only files the segment guard has released) and by the full seed compacting 4 input files out of 6: the files of a short
+  seed are still held back. A smaller seed is not a lever until the seed schedule changes in the harness (issue 824: the harness neither guards against a short seed nor says why it fails).
+- Registry images (RustFS, mc, toxiproxy, nginx, Jaeger, the Grafana base image) pulled anonymously from Docker Hub and GHCR without error in every run,
+  so the job needs no `packages: read`. Anonymous Docker Hub pulls from shared runner addresses can still be rate limited.
+
 ## Limits
 
 - The seed is small (tens of thousands of rows per tenant); timings are dominated by the S3 round trips and the number of requests,
