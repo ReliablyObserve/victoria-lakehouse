@@ -1,0 +1,395 @@
+name: PR proof (runner fit)
+
+# MEASURES whether the PR proof stack fits a standard GitHub-hosted runner. It posts no comment and gates nothing.
+#
+# It brings up the existing proof stack (deployment/docker/docker-compose-proof.yml with the perf-smoke overlay: the PR build,
+# the base build, hot VictoriaLogs and VictoriaTraces, RustFS behind a verified toxiproxy and, optionally, loki-vl-proxy, the
+# Jaeger UI and Grafana), seeds it with the harness's deterministic seed, runs scripts/bench/ab/pr_smoke.py once (the API matrix
+# once and a short perf core: answer validity and S3 counters are the result, latency is report-only) and uploads what it measured.
+#
+# What it measures, per variant (runner-fit.json in the artifact, the table in the job summary):
+#   - wall time per phase: pull, build (per image), probe images, up, seed, forced compaction, buffer layer, perf core, API matrix,
+#     UI tier, teardown; sampled every 10 s: free -m, df of /, /mnt and the Docker root, docker system df, docker stats, load, CPU
+#   - cgroup memory.peak, OOMKilled and restarts of every container, read before teardown; kernel OOM lines
+#   - a fit verdict on memory and disk only (CPU saturation is reported, not a verdict)
+#
+# The variants are the reduction levers: a separate base build or one image shared by base and PR; a BuildKit layer cache restored
+# by tree SHA; the UI tier or not; fewer repeats and rounds; no 50 ms profile; a smaller seed. A pull request that touches this
+# workflow runs the three variants side by side (each on its own runner); a manual run (workflow_dispatch, once the file is on the
+# default branch) runs one variant from the inputs.
+#
+# Triggers: manual, and pull requests that change the stack or its tooling. It has no paths-free trigger on purpose: it is
+# informational and never a required check, so ordinary pull requests do not run it yet.
+#
+# Safety: top-level `permissions: {}`; the job has `contents: read` and nothing else (no secrets, no packages: every image is
+# pulled anonymously). The pull request's own code runs in the job, so the token cannot write anything. Every input reaches a
+# script through `env:`, never through `${{ }}` inside `run:`. Teardown removes the compose project and the images by exact tag.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/pr-proof.yaml"
+      - "deployment/docker/docker-compose-proof.yml"
+      - "scripts/bench/ab/**"
+      - "scripts/proof/runner_fit.py"
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Label of this run (names the artifact)"
+        type: string
+        default: "manual"
+      base:
+        description: "same: one image build serves base and PR (A/A); main: build the merge-base with main separately"
+        type: choice
+        options: [same, main]
+        default: same
+      image_cache:
+        description: "none, or local: restore and save a BuildKit layer cache keyed by the tree SHA"
+        type: choice
+        options: [none, local]
+        default: none
+      with_ui:
+        description: "Also start loki-vl-proxy x3, Jaeger UI x3 and Grafana after the measurement"
+        type: boolean
+        default: false
+      seed_chunks:
+        description: "Seed chunks per tenant (0 = the harness default, 6)"
+        type: string
+        default: "0"
+      seed_scale:
+        description: "Factor on the rows per chunk (1 = the harness default)"
+        type: string
+        default: "1"
+      runs:
+        description: "Measured runs per cell and target (the first is cold)"
+        type: string
+        default: "3"
+      confirm_runs:
+        description: "Runs of the confirming re-measure of a cell that moved"
+        type: string
+        default: "7"
+      rounds:
+        description: "API matrix rounds per row"
+        type: string
+        default: "1"
+      latencies:
+        description: "S3 latency profiles in ms (profiles above 0 run the control smoke shapes only)"
+        type: string
+        default: "0"
+      sets:
+        description: "Shape sets for the perf core"
+        type: string
+        default: "control-logs,control-traces"
+
+permissions: {}
+
+# A new push to a pull request cancels the run still going for its previous head. Any other event
+# (manual run) gets a group of its own, so it is never cancelled or replaced.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Choose the variants
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          IN_VARIANT: ${{ inputs.variant }}
+          IN_BASE: ${{ inputs.base }}
+          IN_CACHE: ${{ inputs.image_cache }}
+          IN_UI: ${{ inputs.with_ui }}
+          IN_CHUNKS: ${{ inputs.seed_chunks }}
+          IN_SCALE: ${{ inputs.seed_scale }}
+          IN_RUNS: ${{ inputs.runs }}
+          IN_CONFIRM: ${{ inputs.confirm_runs }}
+          IN_ROUNDS: ${{ inputs.rounds }}
+          IN_LAT: ${{ inputs.latencies }}
+          IN_SETS: ${{ inputs.sets }}
+        run: |
+          set -euo pipefail
+          num='^[0-9]+(\.[0-9]+)?$'
+          if [ "$EVENT" = workflow_dispatch ]; then
+            for v in "$IN_CHUNKS" "$IN_SCALE" "$IN_RUNS" "$IN_CONFIRM" "$IN_ROUNDS"; do
+              [[ "$v" =~ $num ]] || { echo "not a number: $v" >&2; exit 1; }
+            done
+            [[ "$IN_LAT" =~ ^[0-9.,]+$ ]] || { echo "latencies must be numbers and commas: $IN_LAT" >&2; exit 1; }
+            [[ "$IN_SETS" =~ ^[a-z0-9,-]+$ ]] || { echo "sets must be shape set names: $IN_SETS" >&2; exit 1; }
+            [[ "$IN_VARIANT" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || { echo "variant must be a short label: $IN_VARIANT" >&2; exit 1; }
+            matrix=$(jq -nc --arg variant "$IN_VARIANT" --arg base "$IN_BASE" --arg cache "$IN_CACHE" --arg ui "$IN_UI" \
+              --arg chunks "$IN_CHUNKS" --arg scale "$IN_SCALE" --arg runs "$IN_RUNS" --arg confirm "$IN_CONFIRM" \
+              --arg rounds "$IN_ROUNDS" --arg lat "$IN_LAT" --arg sets "$IN_SETS" \
+              '{include: [{variant: $variant, base: $base, image_cache: $cache, with_ui: $ui, seed_chunks: $chunks, seed_scale: $scale,
+                           runs: $runs, confirm_runs: $confirm, rounds: $rounds, latencies: $lat, sets: $sets}]}')
+          else
+            # The levers, from the heaviest variant to the leanest. `full` is the worst case: a separate base build, no cache, the
+            # UI tier, six runs, three API rounds and the 50 ms profile. `lean` removes all of that; `lean-cache` adds the BuildKit layer
+            # cache to it (it did not pay in the measured runs). A smaller seed is not a variant: fewer chunks leave no released file for the forced compaction
+            # (the run stops), and fewer rows save nothing (docs/pr-perf-smoke.md, "Runner fit"). Both stay available as dispatch inputs.
+            matrix='{"include": [
+              {"variant": "full",            "base": "main", "image_cache": "none",  "with_ui": "true",  "seed_chunks": "0", "seed_scale": "1",   "runs": "6", "confirm_runs": "7", "rounds": "3", "latencies": "0,50", "sets": "control-logs,control-traces"},
+              {"variant": "lean",            "base": "same", "image_cache": "none",  "with_ui": "false", "seed_chunks": "0", "seed_scale": "1",   "runs": "3", "confirm_runs": "7", "rounds": "1", "latencies": "0",    "sets": "control-logs,control-traces"},
+              {"variant": "lean-cache",      "base": "same", "image_cache": "local", "with_ui": "false", "seed_chunks": "0", "seed_scale": "1",   "runs": "3", "confirm_runs": "7", "rounds": "1", "latencies": "0",    "sets": "control-logs,control-traces"}
+            ]}'
+            matrix=$(printf '%s' "$matrix" | jq -c .)
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$matrix" | jq .
+
+  # How much can a job write, and where? The runner's root disk is large, yet a local BuildKit cache of about 3 GB written next to a
+  # restored copy of itself failed with "Disk quota exceeded" in /tmp. This job prints the mount of each place a job normally writes to
+  # and writes 1 GiB files into each, until the first error or 12 GiB, then deletes them (exact names).
+  disk-probe:
+    name: disk-probe
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
+    steps:
+      - name: Write until the first error
+        env:
+          LIMIT_GIB: "12"
+        run: |
+          set -uo pipefail
+          id
+          for d in /tmp "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"; do
+            echo "mount of $d:"
+            findmnt -T "$d" -o TARGET,SOURCE,FSTYPE,SIZE,OPTIONS || true
+            df -h "$d" || true
+          done
+          probe() {
+            local dir=$1 n=0
+            mkdir -p "$dir/disk-probe"
+            while [ "$n" -lt "$LIMIT_GIB" ]; do
+              dd if=/dev/zero of="$dir/disk-probe/f$n" bs=1M count=1024 status=none 2>/dev/null || break
+              n=$((n + 1))
+            done
+            echo "write probe: $dir took $n GiB before the first error (limit of the probe: $LIMIT_GIB GiB)"
+            echo "- \`$dir\`: $n GiB written before the first error (probe limit $LIMIT_GIB GiB)" >> "$GITHUB_STEP_SUMMARY"
+            rm -rf "$dir/disk-probe"
+          }
+          echo "### Disk write probe (1 GiB files, one place at a time)" >> "$GITHUB_STEP_SUMMARY"
+          probe /tmp
+          probe "$GITHUB_WORKSPACE"
+          probe "$RUNNER_TEMP"
+          probe "$HOME"
+
+  runner-fit:
+    name: runner-fit (${{ matrix.variant }})
+    needs: plan
+    runs-on: ubuntu-latest
+    # Hard limit. The pr-smoke step has its own, shorter limit, so a hang there still leaves time for the teardown,
+    # the report and the artifact upload below (all `if: always()`).
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      AB_PROJECT: lh-ab
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Scratch under RUNNER_TEMP, not /tmp: on this runner image /tmp is a tmpfs of 7.9 GB (RAM-backed, about 6 GiB writable in the
+      # disk-probe job), so a BuildKit cache and its replacement do not fit there and would count as memory; RUNNER_TEMP is on the 148 GB disk.
+      - name: Choose the scratch paths
+        run: |
+          {
+            echo "OUT=$RUNNER_TEMP/runner-fit"
+            echo "CACHE_DIR=$RUNNER_TEMP/buildx-cache"
+            echo "CACHE_NEW=$RUNNER_TEMP/buildx-cache-new"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # The measurement tool decides what this run reports, so its own tests run first (standard library only).
+      - name: Test the measurement tool
+        run: python3 -m unittest scripts.proof.tests.test_runner_fit -v
+
+      - name: Install the harness dependencies
+        run: python -m pip install --disable-pip-version-check --require-hashes -r scripts/ci/requirements.txt
+
+      # The sampler runs for the whole job. A 10 s sample misses short spikes, so the cgroup peaks are read again before teardown.
+      - name: Record the machine and start the sampler
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          python3 scripts/proof/runner_fit.py env --out "$OUT"
+          df -h / /mnt || true
+          setsid nohup python3 scripts/proof/runner_fit.py sample --out "$OUT" --interval 10 > "$OUT/sampler.log" 2>&1 < /dev/null &
+          echo $! > "$OUT/sampler.pid"
+
+      - name: Prepare the base tree
+        id: base
+        env:
+          BASE_MODE: ${{ matrix.base }}
+        run: |
+          set -euo pipefail
+          sha=$(git merge-base origin/main HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          if [ "$BASE_MODE" = main ]; then
+            tree="$RUNNER_TEMP/base-tree"
+            git worktree add --detach "$tree" "$sha"
+            echo "tree=$tree" >> "$GITHUB_OUTPUT"
+            echo "added=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tree=$GITHUB_WORKSPACE" >> "$GITHUB_OUTPUT"
+            echo "added=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Mark the builder setup
+        run: python3 scripts/proof/runner_fit.py mark --out "$OUT" --name setup-buildx start
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Mark the builder setup done
+        run: python3 scripts/proof/runner_fit.py mark --out "$OUT" --name setup-buildx end
+
+      # Lever: a BuildKit layer cache restored by tree SHA (an exact hit when the tree is unchanged, a prefix hit on the dependency
+      # layers otherwise). The compile layer sits after `COPY . .` in the Dockerfiles, so any change to Go code misses it.
+      - name: Restore the image layer cache
+        if: matrix.image_cache == 'local'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/buildx-cache
+          key: runner-fit-buildx-${{ matrix.variant }}-${{ github.sha }}
+          restore-keys: |
+            runner-fit-buildx-${{ matrix.variant }}-
+
+      - name: Pull the registry images
+        run: python3 scripts/proof/runner_fit.py run --out "$OUT" --name pull -- python3 scripts/proof/runner_fit.py stack pull
+
+      - name: Build the images
+        env:
+          BASE_MODE: ${{ matrix.base }}
+          IMAGE_CACHE: ${{ matrix.image_cache }}
+          BASE_TREE: ${{ steps.base.outputs.tree }}
+        run: |
+          set -euo pipefail
+          rf() { python3 scripts/proof/runner_fit.py "$@"; }
+          build_one() {  # name dockerfile tree tag...
+            local name=$1 file=$2 tree=$3; shift 3
+            local args=()
+            for t in "$@"; do args+=(-t "$t"); done
+            if [ "$IMAGE_CACHE" = local ]; then
+              args+=(--cache-from "type=local,src=$CACHE_DIR/$name" --cache-to "type=local,dest=$CACHE_NEW/$name,mode=max")
+            fi
+            rf run --out "$OUT" --name "build-$name" -- docker buildx build --load --progress=plain -f "$tree/$file" "${args[@]}" "$tree"
+            if [ "$IMAGE_CACHE" = local ]; then
+              # Swap this image's cache now, so the old and the new copy of only one image exist side by side (disk quota).
+              rm -rf "${CACHE_DIR:?}/$name" && mkdir -p "$CACHE_DIR" && mv "$CACHE_NEW/$name" "$CACHE_DIR/$name"
+            fi
+          }
+          for sig in logs traces; do
+            if [ "$BASE_MODE" = main ]; then
+              build_one "$sig-pr" "Dockerfile.$sig" "$GITHUB_WORKSPACE" "$AB_PROJECT-$sig:pr"
+              build_one "$sig-base" "Dockerfile.$sig" "$BASE_TREE" "$AB_PROJECT-$sig:base"
+            else
+              build_one "$sig" "Dockerfile.$sig" "$GITHUB_WORKSPACE" "$AB_PROJECT-$sig:pr" "$AB_PROJECT-$sig:base"
+            fi
+          done
+          build_one datagen Dockerfile.datagen "$BASE_TREE" "$AB_PROJECT-datagen:1"
+          if [ "$IMAGE_CACHE" = local ]; then
+            du -sm "$CACHE_DIR" | tee "$OUT/cache-size-mb.txt"
+          fi
+          rf run --out "$OUT" --name build-probe -- python3 scripts/proof/runner_fit.py stack build-probe
+
+      - name: Save the image layer cache
+        if: matrix.image_cache == 'local' && success()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/buildx-cache
+          key: runner-fit-buildx-${{ matrix.variant }}-${{ github.sha }}
+
+      # Up, seed, forced compaction, buffer layer, perf core and API matrix are all inside pr_smoke.py. The runner logs every line of it
+      # with a timestamp, and the report splits the time at the lines the harness prints (stack up, seeded, buffer layer, S3 latency, API matrix).
+      # Exit 0 and 1 (a regression or a new difference in the verdicts) are results, not failures of the measurement; 2, 3 and 4 are.
+      - name: Up, seed, perf core and API matrix
+        timeout-minutes: 40
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          SAME_BUILD: ${{ matrix.base == 'same' && '--same-build' || '' }}
+          SEED_CHUNKS: ${{ matrix.seed_chunks }}
+          SEED_SCALE: ${{ matrix.seed_scale }}
+          RUNS: ${{ matrix.runs }}
+          CONFIRM_RUNS: ${{ matrix.confirm_runs }}
+          ROUNDS: ${{ matrix.rounds }}
+          LATENCIES: ${{ matrix.latencies }}
+          SETS: ${{ matrix.sets }}
+        run: |
+          set -euo pipefail
+          python3 scripts/proof/runner_fit.py run --out "$OUT" --name pr-smoke --ok 0,1 -- \
+            python3 scripts/proof/runner_fit.py pr-smoke --out "$OUT/pr-smoke" --seed-chunks "$SEED_CHUNKS" --seed-scale "$SEED_SCALE" -- \
+            --skip-build --keep-stack $SAME_BUILD --base "$BASE_SHA" --head HEAD \
+            --sets "$SETS" --runs "$RUNS" --confirm-runs "$CONFIRM_RUNS" --rounds "$ROUNDS" --latencies "$LATENCIES"
+
+      # The rest of the proof stack (loki-vl-proxy per target, the Jaeger UI per target, Grafana), started on top of the seeded
+      # stack so the peak memory is the whole stack's. The visual proof itself (a browser) is not run here.
+      - name: UI tier
+        if: matrix.with_ui == 'true'
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          rf() { python3 scripts/proof/runner_fit.py "$@"; }
+          rf run --out "$OUT" --name ui-pull -- python3 scripts/proof/runner_fit.py stack ui-pull
+          rf run --out "$OUT" --name ui-build -- python3 scripts/proof/runner_fit.py stack ui-build
+          rf run --out "$OUT" --name ui-up -- python3 scripts/proof/runner_fit.py stack ui-up
+          rf run --out "$OUT" --name ui-settle -- sleep 30
+
+      - name: Container peaks, OOM state and logs
+        if: always()
+        run: |
+          python3 scripts/proof/runner_fit.py peaks --out "$OUT" || true
+          mkdir -p "$OUT/container-logs"
+          for n in $(docker ps -a --filter "label=com.docker.compose.project=$AB_PROJECT" --format '{{.Names}}'); do
+            docker logs --tail 200 "$n" > "$OUT/container-logs/$n.log" 2>&1 || true
+          done
+
+      # Always: the compose project and its images by exact tag (stack.py down; never a prune), then the base tree without --force.
+      - name: Teardown
+        if: always()
+        env:
+          BASE_TREE: ${{ steps.base.outputs.tree }}
+          BASE_ADDED: ${{ steps.base.outputs.added }}
+        run: |
+          python3 scripts/proof/runner_fit.py run --out "$OUT" --name teardown -- python3 scripts/bench/ab/stack.py down || true
+          if [ "$BASE_ADDED" = true ]; then git worktree remove "$BASE_TREE" || true; fi
+          python3 scripts/proof/runner_fit.py leftovers --out "$OUT" || true
+
+      - name: Stop the sampler
+        if: always()
+        run: |
+          if [ -f "$OUT/sampler.pid" ]; then
+            pid=$(cat "$OUT/sampler.pid")
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          fi
+          df -h / /mnt || true
+
+      - name: Report
+        if: always()
+        env:
+          VARIANT_JSON: ${{ toJSON(matrix) }}
+        run: |
+          python3 scripts/proof/runner_fit.py report --out "$OUT" --variant "$VARIANT_JSON" --pr-smoke "$OUT/pr-smoke"
+          if [ -f "$OUT/cache-size-mb.txt" ]; then echo "BuildKit cache written: $(cut -f1 "$OUT/cache-size-mb.txt") MB (the repository cache limit is 10 GB)." >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: runner-fit-${{ matrix.variant }}
+          path: ${{ runner.temp }}/runner-fit
+          retention-days: 14
+          if-no-files-found: warn

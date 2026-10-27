@@ -7,23 +7,23 @@ What the conformance registry proves, how, and what is missing. Computed from `t
 | Question | Answer |
 |---|--:|
 | Upstream items (routes, pipes, filters, stats, TraceQL, flags) in the inventory | 437 |
-| ... with at least one registry row | 291 |
-| ... with no row | 146 |
+| ... with at least one registry row | 292 |
+| ... with no row | 145 |
 | ... verified (a covering row is executed, nothing worse) | 37 |
-| ... declared only (every covering row pending) | 187 |
+| ... declared only (every covering row pending) | 185 |
 | ... with a covering row that links a differential test against hot VL/VT | 67 |
 | Ingest protocol cells (26 verified) | 35 |
 | Upstream pass rows (vl/vt, not perf cells) | 387 |
 | ... linking a differential test (hot target, tests/parity or tests/e2e) | 108 |
 | ... linking only another test | 33 |
 | ... linking no test at all | 246 |
-| Registry rows / pending rows | 1373 / 1283 |
-| ... pending and waiting for the HTTP runner or a harness | 499 |
+| Registry rows / pending rows | 1375 / 1285 |
+| ... pending and waiting for the HTTP runner or a harness | 501 |
 | ... pending but executed by another CI job or by cited Go tests | 784 |
 | ... pending, reason unclassified | 0 |
-| Shipped features | 155 |
+| Shipped features | 156 |
 | ... citing no registry row | 110 |
-| ... citing no perf scenario (bench id or perf cell) | 148 |
+| ... citing no perf scenario (bench id or perf cell) | 149 |
 | ... unproven (no row and no perf scenario) | 107 |
 | Shared upstream code items (pins, patches, imported packages) | 41 |
 | ... unguarded (no test or gate names them) | 3 |
@@ -34,9 +34,9 @@ Items are counted per surface (a route or flag that VictoriaLogs and VictoriaTra
 
 | Kind | Signal | Items | With a row | Verified | Pending | Differs | Absent/unsupported | No row | Diff-linked |
 |---|---|--:|--:|--:|--:|--:|--:|--:|--:|
-| route | all | 140 | 140 | 35 | 61 | 21 | 23 | 0 | 63 |
+| route | all | 140 | 140 | 35 | 59 | 23 | 23 | 0 | 63 |
 | route | logs (vl) | 78 | 78 | 34 | 27 | 6 | 11 | 0 | 44 |
-| route | traces (vt) | 62 | 62 | 1 | 34 | 15 | 12 | 0 | 19 |
+| route | traces (vt) | 62 | 62 | 1 | 32 | 17 | 12 | 0 | 19 |
 | pipe | all | 50 | 50 | 0 | 42 | 5 | 3 | 0 | 1 |
 | pipe | logs (vl) | 50 | 50 | 0 | 42 | 5 | 3 | 0 | 1 |
 | filter | all | 33 | 33 | 0 | 33 | 0 | 0 | 0 | 0 |
@@ -45,9 +45,9 @@ Items are counted per surface (a route or flag that VictoriaLogs and VictoriaTra
 | stats | logs (vl) | 24 | 24 | 0 | 22 | 2 | 0 | 0 | 0 |
 | traceql | all | 9 | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
 | traceql | traces (vt) | 9 | 9 | 0 | 9 | 0 | 0 | 0 | 0 |
-| flag | all | 181 | 35 | 2 | 20 | 12 | 1 | 146 | 3 |
+| flag | all | 181 | 36 | 2 | 20 | 13 | 1 | 145 | 3 |
 | flag | logs (vl) | 108 | 19 | 2 | 13 | 4 | 0 | 89 | 2 |
-| flag | traces (vt) | 73 | 16 | 0 | 7 | 8 | 1 | 57 | 1 |
+| flag | traces (vt) | 73 | 17 | 0 | 7 | 9 | 1 | 56 | 1 |
 | ingest | all | 35 | 35 | 26 | 0 | 9 | 0 | 0 | 35 |
 | ingest | logs (vl) | 26 | 26 | 24 | 0 | 2 | 0 | 0 | 26 |
 | ingest | traces (vt) | 9 | 9 | 2 | 0 | 7 | 0 | 0 | 9 |
@@ -317,19 +317,19 @@ Rows on the `vl` and `vt` surfaces that expect `pass`, excluding perf cells, spl
 
 ## 3. Shipped features
 
-167 features: 155 shipped, 3 in-progress, 9 planned. Of the 155 shipped:
+168 features: 156 shipped, 3 in-progress, 9 planned. Of the 156 shipped:
 
 - no registry row cited: 110
-- no perf scenario cited (a bench id or a perf cell): 148
+- no perf scenario cited (a bench id or a perf cell): 149
 - no test cited: 1
-- a cited row targets hot: 10
+- a cited row targets hot: 11
 
 Proof class, by precedence: **upstream-exact** (a cited upstream row expects pass, targets hot and links a differential test), **lh-extension** (any other cited row), **perf-proven** (no row, but a bench scenario or perf cell), **unproven** (none of these; cited unit tests are in the tests column and do not change the class).
 
 | Proof class | Shipped features |
 |---|--:|
 | upstream-exact | 6 |
-| lh-extension | 39 |
+| lh-extension | 40 |
 | perf-proven | 3 |
 | unproven | 107 |
 
@@ -423,6 +423,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.deletion.write_once_tombstones` | deletion | 15 (3) | 0 | 151 | none | lh-extension |
 | `lh.feature.traces.jaeger_api` | traces | 2 (2) | 0 | 5 | none | lh-extension |
 | `lh.feature.traces.logsql_latency_offset` | traces | 14 (14) | 13 | 18 | none | lh-extension |
+| `lh.feature.traces.query_deadline` | traces | 2 (2) | 1 | 3 | none | lh-extension |
 | `lh.feature.traces.service_graph` | traces | 0 (0) | 0 | 5 | none | unproven |
 | `lh.feature.traces.span_events_links` | traces | 16 (16) | 10 | 21 | none | upstream-exact |
 | `lh.feature.traces.storage_adapter` | traces | 0 (0) | 0 | 5 | none | unproven |
@@ -556,8 +557,8 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `VictoriaTraces/app/vtinsert` | no | yes | `lakehouse-traces/maintenance_gate_test.go` |
 | `VictoriaTraces/app/vtinsert/insertutil` | no | yes | many (more than 3 files) |
 | `VictoriaTraces/app/vtselect/logsql` | no | yes | — |
-| `VictoriaTraces/app/vtselect/traces/jaeger` | no | yes | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/tombstone_multiinstance_test.go` |
-| `VictoriaTraces/app/vtselect/traces/tempo` | no | yes | `internal/upstreamreuse/upstreamreuse_test.go` |
+| `VictoriaTraces/app/vtselect/traces/jaeger` | no | yes | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/selectapi/query_deadline_test.go`, `lakehouse-traces/tombstone_multiinstance_test.go` |
+| `VictoriaTraces/app/vtselect/traces/tempo` | no | yes | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/selectapi/query_deadline_test.go` |
 | `VictoriaTraces/app/vtstorage` | no | yes | many (more than 3 files) |
 | `VictoriaTraces/lib/protoparser/opentelemetry/pb` | no | yes | many (more than 3 files) |
 
@@ -575,8 +576,8 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 |---|--:|---|---|
 | `perf-cell` | 768 | yes | layer `perf`: a measurement cell run by a perf CI job (its `refs.doc` names the harness), not by the registry runner |
 | `durability-cell` | 16 | yes | kind `durability`: backed by the cited Go tests, no HTTP request |
-| `chaos-or-ui-harness` | 24 | no | layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner |
-| `flag-row` | 35 | no | kind `flag`: no HTTP request; the flag drift checks and cited tests apply |
+| `chaos-or-ui-harness` | 25 | no | layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner |
+| `flag-row` | 36 | no | kind `flag`: no HTTP request; the flag drift checks and cited tests apply |
 | `http-runner-test-linked` | 147 | no | has an HTTP request; waits for the registry HTTP runner, a cited Go test covers part of it |
 | `http-runner-nothing-linked` | 293 | no | has an HTTP request; waits for the registry HTTP runner and links no test |
 
@@ -586,7 +587,7 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 
 ## 6. Registry totals and what is not inventoried
 
-1373 rows: lh 138, vl 684, vt 551; expect absent 3, differ 66, pass 1278, unsupported 26; origin lh-addition 114, lh-shim 28, native 1231. 768 perf cells (768 pending), 605 other rows.
+1375 rows: lh 138, vl 684, vt 553; expect absent 3, differ 68, pass 1278, unsupported 26; origin lh-addition 114, lh-shim 28, native 1233. 768 perf cells (768 pending), 607 other rows.
 
 Surfaces with no inventory, so no completeness number can be computed for them:
 
