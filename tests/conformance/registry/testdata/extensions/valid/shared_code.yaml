@@ -1,0 +1,58 @@
+# Example shared-code rows: code shared with, imported from or patched into upstream.
+- id: lh.shared.example_export.patch
+  title: "patches/example/example-export.patch applies and stays mirrored"
+  surface: lh
+  kind: shared-code
+  origin: lh-addition
+  expect: pass
+  targets: [global]
+  layers: [api]
+  tier: core
+  refs: { tests: ["internal/example/example_test.go#TestPatchApplies"] }
+  shared_code:
+    type: patch
+    name: patches/example/example-export.patch
+    binaries: [logs, traces]
+    gate: scripts/ci/check_patches_equal.sh
+- id: lh.shared.example_query.src
+  title: "example-query.go.src compiled into lib/logstorage keeps its markers"
+  surface: lh
+  kind: shared-code
+  origin: lh-addition
+  expect: pass
+  targets: [global]
+  layers: [api]
+  tier: core
+  refs: { tests: ["internal/example/example_test.go#TestPatchApplies"] }
+  shared_code:
+    type: src
+    name: patches/example/example-query.go.src
+    binaries: [logs]
+- id: lh.shared.logstorage.package
+  title: "lib/logstorage imported by both binaries compiles against both pins"
+  surface: lh
+  kind: shared-code
+  origin: lh-addition
+  expect: pass
+  targets: [global]
+  layers: [api]
+  tier: focused
+  refs: { tests: ["internal/example/example_test.go#TestPatchApplies"] }
+  shared_code:
+    type: package
+    name: github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage
+    binaries: [logs, traces]
+- id: lh.shared.vl_commit_traces.pin
+  title: "the VictoriaLogs commit the traces binary builds against"
+  surface: lh
+  kind: shared-code
+  origin: lh-addition
+  expect: pass
+  targets: [global]
+  layers: [api]
+  tier: daily
+  refs: { tests: ["internal/example/example_test.go#TestPatchApplies"] }
+  shared_code:
+    type: pin
+    name: VL_COMMIT_TRACES
+    binaries: [traces]

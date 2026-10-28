@@ -466,7 +466,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.ops.benchmark_harness` | ops | 0 (0) | 0 | 4 | count_by_service, count_total, scan, trace_by_id | perf-proven |
 | `lh.feature.ops.config_drift_gate` | ops | 1 (1) | 0 | 5 | none | lh-extension |
 | `lh.feature.ops.config_profiles` | ops | 0 (0) | 0 | 3 | none | unproven |
-| `lh.feature.ops.conformance_registry` | ops | 0 (0) | 0 | 111 | none | unproven |
+| `lh.feature.ops.conformance_registry` | ops | 0 (0) | 0 | 112 | none | unproven |
 | `lh.feature.ops.datagen` | ops | 0 (0) | 0 | 1 | none | unproven |
 | `lh.feature.ops.feature_catalog` | ops | 0 (0) | 0 | 9 | none | unproven |
 | `lh.feature.ops.hot_cold_parity_suite` | ops | 0 (0) | 0 | 10 | none | unproven |
