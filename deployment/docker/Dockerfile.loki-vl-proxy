@@ -60,7 +60,7 @@ FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cab
 # names in LogQL answer Loki's parse error (1.100), and line filters accept
 # `or` alternatives (2.2.0). On this stack's data the service_name label values
 # no longer include the values of the unrelated `component` field.
-ARG VERSION=2.35.0
+ARG VERSION=2.37.1
 ARG TARGETARCH=amd64
 RUN wget -qO /usr/local/bin/loki-vl-proxy \
       "https://github.com/ReliablyObserve/loki-vl-proxy/releases/download/v${VERSION}/loki-vl-proxy-linux-${TARGETARCH}" \
