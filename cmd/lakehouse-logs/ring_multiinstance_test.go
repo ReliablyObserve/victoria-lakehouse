@@ -255,14 +255,10 @@ func TestMultiInstance_TwoWritersTwoSelects_EveryPartitionCompactedByExactlyOneW
 		}
 	}
 
-	// Every reader answers with every row once (the row multiset, not only the
-	// count). writer-0 is left out: it still holds the seeded rows in its local
-	// buffer segments (the test ages their markers to get past the segment guard),
-	// and a compacted output carries no segment nonce, so that pod answers the same
-	// rows from the buffer and from cold storage. That is the situation the guard
-	// exists to prevent, not a property of the ring.
+	// Every pod answers with every row once (the row multiset, not only the
+	// count), the writer that took the seed included.
 	want := seededKeys(partitions*filesEach, rowsEach)
-	for _, p := range pods[1:] {
+	for _, p := range pods {
 		if err := p.store.RefreshManifest(context.Background()); err != nil {
 			t.Fatal(err)
 		}
