@@ -247,6 +247,7 @@ def test_the_header_counts_per_signal_and_the_gated_and_pending_rows():
     text, v = comment.render_api(j, SEL, META, known.join(known.observed_from_api(j), rows, {}))
     assert "logs:" in text and "traces:" in text
     assert v["gated_rows"] == 1 and v["pending_rows"] == len(j["results"]) - 1
+    assert "**1 row is gated**" in text and f"**{len(j['results']) - 1} are pending triage**" in text
 
 
 def test_the_pending_differences_are_one_collapsed_section_and_not_rows_of_the_main_table():

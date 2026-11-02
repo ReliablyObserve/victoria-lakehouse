@@ -374,11 +374,12 @@ def render_api(matrix: dict | None, selection: dict, meta: dict, known: dict | N
         head, state = "NEUTRAL API matrix: no change in any endpoint", "passed"
     exact = [r for r in results if r["verdict"] == "exact"]
     pending_rows = [r for r in results if r.get("untriaged")]
+    gated = len(results) - len(pending_rows)
     bits = [f"{n} {k}" for k, n in sorted(counts.items(), key=lambda kv: -kv[1])]
     lines = [API_MARKER, f"### {head}", "",
              f"**{len(results)} registry rows exercised** against base, PR and hot VL/VT (read-only requests, {matrix.get('rounds', '?')} rounds each): " + ", ".join(bits) +
              f". **{s['not_exercised']} rows not exercised** (listed below by reason).", "",
-             f"**{len(results) - len(pending_rows)} rows are gated** (triaged on the base registry); **{len(pending_rows)} are pending triage** (their differences from hot are "
+             f"**{gated} {'row is' if gated == 1 else 'rows are'} gated** (triaged on the base registry); **{len(pending_rows)} {'is' if len(pending_rows) == 1 else 'are'} pending triage** (their differences from hot are "
              f"listed, a new regression still fails). By signal, never averaged: {signal_line(results, failing_ids) or 'no row'}.", ""]
     if ref_broken:
         lines += ["**Hot VictoriaLogs/VictoriaTraces gave no valid answer to most upstream rows of a signal: the reference stack is broken, the run proves nothing.** "
