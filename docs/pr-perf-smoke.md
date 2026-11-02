@@ -252,9 +252,65 @@ python3 scripts/bench/ab/quality.py bundle --base base.json --pr pr.json --out-d
 python3 -m pytest scripts/bench/ab/tests/test_quality*.py -q
 ```
 
+## API matrix: the `PR proof` workflow's `api` job
+
+`.github/workflows/pr-proof.yaml` (name `PR proof`) runs the API matrix on every pull request and turns its state into the check
+`gate-deterministic`. The job `api` builds the base and PR images, brings up the proof stack in its own compose project (`lh-apimx`; the
+host ports derive from the project name and sit in the 38000s, the runner is isolated), seeds it, checks that hot VL/VT, base and PR hold
+the same rows, sends every executable registry row to the three targets (`pr_smoke.py --api-only`: no perf cells, no components), and writes
+the comment artifact. It tears the project and its images down by exact name. Nothing in it can write: the job has `contents: read`; the
+sticky comment `<!-- lh-api-matrix -->` is posted by the commenter workflow from the artifact `lh-proof-comment` (see `docs/ci-proof-comment.md`).
+
+```bash
+python3 scripts/bench/ab/pr_smoke.py --api-only --base origin/main --out /tmp/ab-api     # the same run by hand (docker; own project via AB_PROJECT)
+python3 scripts/bench/ab/pr_smoke.py --api-only --out /tmp/ab-api --registry-ref tree     # judge by the working tree's registry (local only)
+python3 scripts/bench/ab/api_proof.py bundle --api-dir /tmp/ab-api --out-dir lh-proof-comment --pr-number N --head-sha SHA
+```
+
+**Scope.** No `paths:` filter, so the check can become a required one without staying Pending. `api_proof.py scope` decides inside: the matrix
+runs when the pull request changes Go code or an asset of `cmd/`, `internal/`, `lakehouse-traces/`, `patches/`, a build input (`go.mod`,
+`go.sum`, `Makefile`, `Dockerfile*`), the proof harness (`scripts/bench/ab`, `scripts/proof`, the proof compose file), the workflow itself or a
+registry row; otherwise the comment says `skipped` and the check passes. The runner-fit measurement keeps its former trigger (the stack and
+its tooling) and its own jobs.
+
+**What is gated, and judged by whom.** Rows are judged by the registry of the **base commit** (`abreg.registry_at`, `git archive` of the
+base), never by the pull request's own: a `pending` flag, a row or a gap entry that the pull request adds cannot excuse its own difference.
+The pull request's rows are still executed, so a new row is exercised. An unreadable base stops the run before anything is built (exit 3);
+there is no fall back to the working tree.
+
+| Row, on the base registry | A difference from hot VL/VT that the base and the PR share | A NEW difference (the PR answers worse than the base, in every sample) |
+|---|---|---|
+| triaged (`pending` is not set) | tracked when a `differ`/`unsupported`/`absent` row records it, else UNTRACKED: fails | fails |
+| `pending: true`, or a row the base does not have | listed under "pending triage", not gated | fails |
+| `expect: differ` / `unsupported` / `absent` | tracked (its issue is linked) | fails |
+
+A row whose answer flips between samples is `nondeterministic`: on a triaged row it fails when one sample had the PR worse (the existing rule), on
+a pending row it is listed as unstable. One sample cannot tell a flip from a regression, so each row is sent three times and a row that fails
+is sent five more times, judged on all the samples (`--rounds`, `--api-confirm-rounds`); a difference that holds in every sample stays, it is not a retry.
+Pending rows are flipped to executed in reviewed registry batches; from then on they are gated like the others.
+
+**States.** The exit code of `pr_smoke.py --api-only` is the state of the check: 0 passed, 1 a regression, a status change or a new difference,
+2 an invalid run (hot VL/VT gave no answer to more than max(2, 10 %) of a signal's upstream rows, or no row was exercised), 3 the run did not
+complete (the comment says "did not complete" and why), 4 the project's stack belongs to another run. The comment starts with the verdict
+and counts rows per signal, never averaged. The manifest verdict is `pass`, `fail`, `skipped` or `incomplete`: 2, 3 and 4 are `incomplete`, and the body
+says which. `gate-deterministic` is green for 0 and for a skip, red for 1, 2 and 3: a missing proof is not a pass. The job `api` itself stays green when it
+measured something, so a regression is one red check, not two.
+
+**Measured on the first run of the existing harness (an A/A run on `ubuntu-latest`, base and PR the same code; the trim is the fixture of
+`scripts/bench/ab/tests/test_api_triage.py`):** 227 registry rows exercised, 172 exact, 29 same as the base but different from hot, 1 regressed,
+1155 not exercised (seeds the stack does not have, writes, flags). 226 of the 227 exercised rows are `pending: true`. Judged as before the triage, that run was RED
+(1 new, 18 untracked); judged by the base registry it passes, with those 19 listed as pending. Read this plainly: today the matrix gates one triaged
+row and the NEW-difference rule on the pending ones; its protection grows with every registry batch that flips pending rows to executed.
+
+**Not in this change (follow-ups, owner decisions where marked).** Committed contracts for the Lakehouse-only APIs
+(`tests/conformance/contracts/`) and the CHANGELOG-fragment exemption for a deliberate schema change: today a base-vs-PR schema or status change fails and
+needs the owner's waiver. The `proof-base-<sha>` cache of the base side from `main` (the base image is built in the job, about two minutes). An alias
+tenant in the seed beyond `acme-corp` (1001:0). Making `gate-deterministic` a required check, and running the harness from the base branch when it is one
+(the harness is the pull request's own code today): owner decisions.
+
 ## Runner fit: does the stack fit a standard GitHub-hosted runner
 
-`.github/workflows/pr-proof.yaml` (informational: it posts nothing, gates nothing and is not a required check) brings up this stack on
+The `runner-fit` jobs of `.github/workflows/pr-proof.yaml` (informational: they post nothing, gate nothing and are not required checks) bring up this stack on
 `ubuntu-latest`, runs `pr_smoke.py` once and records what it cost. The measurement tool is `scripts/proof/runner_fit.py` (standard library;
 unit tests in `scripts/proof/tests/test_runner_fit.py`, run first in the job). It does not change the harness: the seed lever patches two module
 constants of `stack.py` in memory.

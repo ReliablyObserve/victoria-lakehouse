@@ -4,6 +4,7 @@
   python3 scripts/bench/ab/pr_smoke.py --base origin/main --out /tmp/ab-smoke               # head = HEAD
   python3 scripts/bench/ab/pr_smoke.py --base <sha> --head origin/some-branch --out /tmp/ab
   python3 scripts/bench/ab/pr_smoke.py --same-build --out /tmp/ab-aa                         # A/A: the noise floor
+  python3 scripts/bench/ab/pr_smoke.py --api-only --base <sha> --out /tmp/ab-api            # the API matrix alone (the PR proof's gate)
 
 Steps (each its own module, usable alone):
   1. selection.py     the shape sets the changed files need (nothing for docs/CI-only changes: the comments say "skipped")
@@ -21,6 +22,12 @@ Steps (each its own module, usable alone):
 Outputs in --out: selection.json, state.json, raw-*.json, summary-*.json, api-matrix.json, components.json, known-perf.json, known-api.json,
 perf-smoke.md, api-matrix.md, perf-verdict.json, api-verdict.json, meta.json.
 Exit status: the larger of the two verdicts (comment.py documents the codes).
+
+--api-only runs steps 2 (up, seed, compaction, buffer window, seed equality) and 5 alone, with no selection and no perf cells: the files are
+state.json, api-matrix.json, known-api.json, api-matrix.md, api-verdict.json and meta.json, and the exit status is the API verdict's (0 passed,
+1 a regression or a new difference, 2 invalid, 3 did not complete, 4 the project's stack is somebody else's). With --api-only the rows are judged by the registry of the
+BASE commit (--registry-ref base, the default): a pull request cannot excuse its own difference by editing the registry. `--registry-ref tree`
+judges by the working tree, for a local run only.
 """
 from __future__ import annotations
 
@@ -151,11 +158,9 @@ def set_latency(ms: float, state: dict, means_at_zero: dict | None = None) -> di
     return res
 
 
-def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
+def prepare_stack(args, out: str, meta: dict) -> tuple:
+    """Up, seed, forced compaction, the buffer window and the proof that hot, base and PR hold the same rows. Returns (ns, state)."""
     ns = types.SimpleNamespace(out=out)
-    cells = measure.plan(spec, list(sel["sets"]), sel["sets"])
-    by_key = {c["key"]: c for c in cells}
-    log(f"{len(cells)} cells in {len(sel['sets'])} set(s)")
     stack.cmd_up(ns, reuse=args.reuse_stack, preflighted=True)
     stack.cmd_seed(ns)
     stack.cmd_compact(ns)
@@ -172,6 +177,32 @@ def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
     meta["data"] = (f"{stack.HOURS_BACK} h seeded in {stack.CHUNKS} chunks; tenant 0:0 {c.get('logs/numeric/cold')} log rows and {c.get('traces/numeric/cold')} spans, "
                     f"tenant 1001:0 (alias acme-corp) {c.get('logs/numeric1001/cold')} and {c.get('traces/numeric1001/cold')}; buffer window {c.get('logs/numeric/buffer')} rows and "
                     f"{c.get('traces/numeric/buffer')} spans")
+    return ns, state
+
+
+def judging(args, meta: dict) -> tuple[list[dict], dict]:
+    """(rows, gaps) of the registry that decides what is gated and what is a known difference: the base commit's, never the pull request's own
+    (`--registry-ref tree` takes the working tree, for a local run). An unreadable base raises: the run does not judge itself."""
+    if args.registry_ref == "tree":
+        meta["registry"] = "working tree"
+        return abreg.load_rows(), abreg.gaps_doc_issues()
+    meta["registry"] = f"base {meta['base'][:10]}"
+    return abreg.registry_at(meta["base"])
+
+
+def measure_api_only(args, out: str, meta: dict, judge: list[dict]) -> dict:
+    ns, state = prepare_stack(args, out, meta)
+    log("API matrix")
+    matrix = api_matrix.run_all(state, abreg.load_rows(), args.rounds, log=log, judge=judge, confirm_rounds=args.api_confirm_rounds)
+    abreg.dump_json(os.path.join(out, "api-matrix.json"), matrix)
+    return {"matrix": matrix, "state": state}
+
+
+def measure_all(args, sel: dict, spec: dict, out: str, meta: dict) -> dict:
+    cells = measure.plan(spec, list(sel["sets"]), sel["sets"])
+    by_key = {c["key"]: c for c in cells}
+    log(f"{len(cells)} cells in {len(sel['sets'])} set(s)")
+    ns, state = prepare_stack(args, out, meta)
     probes = [set_latency(0.0, state)]
     mean0 = probes[0]["lh_mean_ms"]  # per process
     pre = [c for c in cells if c["layer"] != "after-restart"]
@@ -232,6 +263,37 @@ def finish(out: str, perf_text: str, api_text: str, perf_v: dict, api_v: dict, m
     return max(perf_v["exit"], api_v["exit"])
 
 
+def finish_api(out: str, api_text: str, api_v: dict, meta: dict) -> int:
+    """The outputs of --api-only: the API comment and its verdict; the exit status is that verdict's."""
+    abreg.write_text(os.path.join(out, "api-matrix.md"), api_text)
+    abreg.dump_json(os.path.join(out, "api-verdict.json"), api_v)
+    abreg.dump_json(os.path.join(out, "meta.json"), meta)
+    print(api_text)
+    return api_v["exit"]
+
+
+def render_api_only(out: str, result: dict, sel: dict, meta: dict, args, judged: tuple[list[dict], dict]) -> int:
+    rows, gaps = judged
+    known = knownmod.join(knownmod.observed_from_api(result["matrix"]), rows, gaps, args.require_issue)
+    known["registry"] = meta["registry_gap_stats"] = knownmod.registry_gap_stats(rows, gaps)
+    abreg.dump_json(os.path.join(out, "known-api.json"), known)
+    api_text, api_v = comment.render_api(result["matrix"], sel, meta, known)
+    return finish_api(out, api_text, api_v, meta)
+
+
+def finish_errored(args, out: str, sel: dict, meta: dict, reason: str, exit_code: int | None = None) -> int:
+    """The "did not complete" comments of a run that stopped (exit 3, or `exit_code`); --api-only writes only the API one."""
+    api_text, api_v = comment.errored(sel, meta, reason, comment.API_MARKER, comment.API_TITLE)
+    if exit_code is not None:
+        api_v["exit"] = exit_code
+    if args.api_only:
+        return finish_api(out, api_text, api_v, meta)
+    perf_text, perf_v = comment.errored(sel, meta, reason, comment.PERF_MARKER, comment.PERF_TITLE)
+    if exit_code is not None:
+        perf_v["exit"] = exit_code
+    return finish(out, perf_text, api_text, perf_v, api_v, meta)
+
+
 def render_all(out: str, result: dict, sel: dict, spec: dict, meta: dict, args) -> int:
     """Known differences, the two comments and their verdicts, from the results of a run (saved in --out, so --rerender can redo it)."""
     rows = abreg.load_rows()
@@ -279,6 +341,11 @@ def main(argv=None) -> int:
     ap.add_argument("--runs", type=int, default=6, help="per target and cell; the first is cold")
     ap.add_argument("--confirm-runs", type=int, default=7)
     ap.add_argument("--rounds", type=int, default=3, help="API matrix rounds per row")
+    ap.add_argument("--api-confirm-rounds", type=int, default=0, help="--api-only: a row that fails the first pass is sent this many more times, and judged on all the samples "
+                    "(a flip is nondeterministic; a difference that holds in every sample stays); 0 (default) sends nothing again")
+    ap.add_argument("--api-only", action="store_true", help="the API matrix alone (no selection, no perf cells, no components); the exit status is the API verdict's")
+    ap.add_argument("--registry-ref", choices=("base", "tree"), default="base",
+                    help="--api-only: the registry that judges the rows: the base commit's (default; a pull request cannot excuse its own difference) or the working tree (local runs)")
     ap.add_argument("--latencies", default="0,50", help="S3 latency profiles in ms; profiles above 0 run the control smoke shapes only")
     ap.add_argument("--noise", type=float, default=report.NOISE_REL)
     ap.add_argument("--min-delta-ms", type=float, default=report.NOISE_ABS_MS)
@@ -309,7 +376,10 @@ def main(argv=None) -> int:
         base = a.base or git("merge-base", "origin/main", head)
         meta["base"] = git("rev-parse", base)
         meta["versions"] = pins()
-        if a.sets:
+        judged = judging(a, meta) if a.api_only else None  # before anything is built: a base registry that cannot be read stops the run here
+        if a.api_only:
+            sel = {"run": True, "sets": {}, "changed": 0, "why": {}}
+        elif a.sets:
             sel = select_all(spec)
             if a.sets != "all":
                 sel["sets"] = {n: sel["sets"][n] for n in a.sets.split(",")}
@@ -339,23 +409,21 @@ def main(argv=None) -> int:
                     trees.append(base_dir)
             log("building the images")
             stack.cmd_build(types.SimpleNamespace(base=base_dir, pr=head_dir))
+        if a.api_only:
+            result = measure_api_only(a, out, meta, judged[0])
+            meta["elapsed_s"] = round(time.time() - t0)
+            meta["host_load_end"] = ", ".join(f"{x:.1f}" for x in os.getloadavg())
+            return render_api_only(out, result, sel, meta, a, judged)
         result = measure_all(a, sel, spec, out, meta)
         meta["elapsed_s"] = round(time.time() - t0)
         meta["host_load_end"] = ", ".join(f"{x:.1f}" for x in os.getloadavg())
         return render_all(out, result, sel, spec, meta, a)
     except stack.StackBusy as e:
-        reason = f"StackBusy: {e}"
-        perf_text, perf_v = comment.errored(sel, meta, reason, comment.PERF_MARKER, "Performance A/B vs main, against VictoriaLogs / VictoriaTraces")
-        api_text, api_v = comment.errored(sel, meta, reason, comment.API_MARKER, "API endpoints: Lakehouse base vs PR vs VictoriaLogs / VictoriaTraces")
-        perf_v["exit"] = api_v["exit"] = stack.EXIT_BUSY
-        return finish(out, perf_text, api_text, perf_v, api_v, meta)
+        return finish_errored(a, out, sel, meta, f"StackBusy: {e}", stack.EXIT_BUSY)
     except (Exception, SystemExit) as e:  # noqa: BLE001 - any failure must still produce the comments and exit 3
         traceback.print_exc()
         meta["elapsed_s"] = round(time.time() - t0)
-        reason = f"{type(e).__name__}: {e}"
-        perf_text, perf_v = comment.errored(sel, meta, reason, comment.PERF_MARKER, "Performance A/B vs main, against VictoriaLogs / VictoriaTraces")
-        api_text, api_v = comment.errored(sel, meta, reason, comment.API_MARKER, "API endpoints: Lakehouse base vs PR vs VictoriaLogs / VictoriaTraces")
-        return finish(out, perf_text, api_text, perf_v, api_v, meta)
+        return finish_errored(a, out, sel, meta, f"{type(e).__name__}: {e}")
     finally:
         if not a.keep_stack:
             steps = ([("stack", stack.down_stack)] if owns_stack else []) + ([("images", stack.remove_images)] if images and owns_stack else []) \
