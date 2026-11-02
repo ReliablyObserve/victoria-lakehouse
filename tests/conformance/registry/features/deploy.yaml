@@ -5,6 +5,8 @@
   status: shipped
   area: deploy
   surfaces: [cli]
+  rows:
+    - lh.flag.vmauth_default_routing
   tests:
     - charts/victoria-lakehouse/test_templates.sh
     - charts/victoria-lakehouse/test_images.sh
