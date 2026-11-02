@@ -468,7 +468,9 @@ func TestRowRead_RemovedObject_FailsWith502(t *testing.T) {
 // answered from the manifest without reading it, so the removal changes nothing,
 // and a window that cuts the object fails with 502 (the name is the one the
 // registry row and its parity lock have always cited; the guarantee is narrowed).
-func TestRowRead_RemovedObject_StaysTolerated(t *testing.T) { checkCountFromManifestWithRemovedObject(t) }
+func TestRowRead_RemovedObject_StaysTolerated(t *testing.T) {
+	checkCountFromManifestWithRemovedObject(t)
+}
 
 // The control of the failure above: an object that was never listed changes
 // nothing, and a read of the same listing without the removed key is complete.
