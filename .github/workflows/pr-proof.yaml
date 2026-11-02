@@ -1,8 +1,19 @@
 name: PR proof
 
-# MEASURES whether the PR proof stack fits a standard GitHub-hosted runner. It posts no comment and gates nothing.
+# Two things, in separate jobs:
 #
-# It brings up the existing proof stack (deployment/docker/docker-compose-proof.yml with the perf-smoke overlay: the PR build,
+#   api / gate-deterministic   the API matrix (scripts/bench/ab/api_matrix.py, comment marker lh-api-matrix): every executable registry row is sent to the
+#                              base build, the PR build and hot VictoriaLogs/VictoriaTraces on the proof stack (deployment/docker/docker-compose-proof.yml,
+#                              compose project lh-apimx) and judged by the BASE branch's registry. It posts the sticky comment through the artifact
+#                              `lh-proof-comment` (.github/workflows/pr-proof-comment.yaml runs the commenter from the base branch; docs/ci-proof-comment.md).
+#                              The check states are the exit codes of the harness: 0 passed, 1 a regression or a new difference, 2 an invalid run (hot did not
+#                              answer), 3 did not complete; `gate-deterministic` is red for 1, 2 and 3. It is INFORMATIONAL: it is not a required check
+#                              (making it one is the owner's decision, not this file's), and it runs on every pull request without a `paths:` filter
+#                              so that it can become one: a pull request that changes nothing the matrix exercises gets a `skipped` comment.
+#   runner-fit                 MEASURES whether the PR proof stack fits a standard GitHub-hosted runner (docs/pr-perf-smoke.md, "Runner fit"). It posts no
+#                              comment and gates nothing. It runs on manual dispatch and on pull requests that change the stack or its tooling.
+#
+# The runner-fit measurement brings up the existing proof stack (the perf-smoke overlay: the PR build,
 # the base build, hot VictoriaLogs and VictoriaTraces, RustFS behind a verified toxiproxy and, optionally, loki-vl-proxy, the
 # Jaeger UI and Grafana), seeds it with the harness's deterministic seed, runs scripts/bench/ab/pr_smoke.py once (the API matrix
 # once and a short perf core: answer validity and S3 counters are the result, latency is report-only) and uploads what it measured.
@@ -18,21 +29,13 @@ name: PR proof
 # workflow runs the three variants side by side (each on its own runner); a manual run (workflow_dispatch, once the file is on the
 # default branch) runs one variant from the inputs.
 #
-# Triggers: manual, and pull requests that change the stack or its tooling. It has no paths-free trigger on purpose: it is
-# informational and never a required check, so ordinary pull requests do not run it yet.
-#
-# Safety: top-level `permissions: {}`; the job has `contents: read` and nothing else (no secrets, no packages: every image is
-# pulled anonymously). The pull request's own code runs in the job, so the token cannot write anything. Every input reaches a
+# Safety: top-level `permissions: {}`; every job that runs the pull request's code has `contents: read` and nothing else (no secrets, no packages: every
+# image is pulled anonymously), so the token cannot write anything; the comment is posted by the commenter workflow, never by a job here. Every input reaches a
 # script through `env:`, never through `${{ }}` inside `run:`. Teardown removes the compose project and the images by exact tag.
 
 on:
   pull_request:
     branches: [main]
-    paths:
-      - ".github/workflows/pr-proof.yaml"
-      - "deployment/docker/docker-compose-proof.yml"
-      - "scripts/bench/ab/**"
-      - "scripts/proof/runner_fit.py"
   workflow_dispatch:
     inputs:
       variant:
@@ -95,10 +98,26 @@ jobs:
     name: plan
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      api: ${{ steps.scope.outputs.api }}
+      runner_fit: ${{ steps.scope.outputs.runner_fit }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # What the pull request changes decides what runs: the API matrix when it touches what the matrix exercises (product code, build inputs, the
+      # proof harness, registry rows), the runner-fit measurement when it touches the stack or its tooling. Standard library only.
+      - name: Scope
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+        run: python3 scripts/bench/ab/api_proof.py scope --event "$EVENT" --base origin/main --head HEAD | tee -a "$GITHUB_OUTPUT"
+
       - name: Choose the variants
         id: plan
         env:
@@ -150,6 +169,7 @@ jobs:
   disk-probe:
     name: disk-probe
     needs: plan
+    if: ${{ needs.plan.outputs.runner_fit == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions: {}
@@ -185,6 +205,7 @@ jobs:
   runner-fit:
     name: runner-fit (${{ matrix.variant }})
     needs: plan
+    if: ${{ needs.plan.outputs.runner_fit == 'true' }}
     runs-on: ubuntu-latest
     # Hard limit. The pr-smoke step has its own, shorter limit, so a hang there still leaves time for the teardown,
     # the report and the artifact upload below (all `if: always()`).
@@ -393,3 +414,148 @@ jobs:
           path: ${{ runner.temp }}/runner-fit
           retention-days: 14
           if-no-files-found: warn
+
+  # The API matrix of the pull request. One fresh stack of its own compose project (lh-apimx; the host ports derive from the project name, the runner
+  # is isolated), torn down by exact name. The harness exits 0 passed, 1 regression or new difference, 2 invalid run, 3 did not complete; those are RESULTS,
+  # so this job stays green when it measured something and `gate-deterministic` below turns the state into the check. The bundle step runs on every
+  # outcome except a cancelled run, so a stale verdict of an earlier head never stays on the pull request.
+  api:
+    name: api
+    needs: plan
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    outputs:
+      rc: ${{ steps.matrix.outputs.rc }}
+    env:
+      AB_PROJECT: lh-apimx
+      SCOPE: ${{ needs.plan.outputs.api }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Scratch under RUNNER_TEMP, not /tmp: /tmp is a RAM-backed tmpfs of 7.9 GB on this runner image (docs/pr-perf-smoke.md, "Runner fit").
+      - name: Choose the scratch paths
+        run: echo "OUT=$RUNNER_TEMP/api-matrix" >> "$GITHUB_ENV"
+
+      - if: ${{ env.SCOPE == 'true' }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install the harness dependencies
+        if: ${{ env.SCOPE == 'true' }}
+        run: python -m pip install --disable-pip-version-check --require-hashes -r scripts/ci/requirements.txt -r scripts/proof/requirements.txt
+
+      # The tooling decides what this check reports, so its own tests run first (no CI job runs scripts/bench/ab/tests otherwise).
+      - name: Test the harness
+        if: ${{ env.SCOPE == 'true' }}
+        run: python -m pytest scripts/bench/ab/tests -q
+
+      - name: Prepare the base
+        id: base
+        if: ${{ env.SCOPE == 'true' }}
+        run: echo "sha=$(git merge-base origin/main HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Builds the base and PR images, brings the stack up, seeds, compacts, checks the three sides hold the same rows, sends every executable row
+      # three times (a row that fails is sent five more times), judges them by the registry of the BASE commit and writes the comment and the verdict.
+      - name: Up, seed and API matrix
+        id: matrix
+        if: ${{ env.SCOPE == 'true' }}
+        timeout-minutes: 40
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          set +e
+          python3 scripts/bench/ab/pr_smoke.py --api-only --out "$OUT" --base "$BASE_SHA" --head HEAD --rounds 3 --api-confirm-rounds 5
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Container logs
+        if: ${{ always() && env.SCOPE == 'true' }}
+        run: |
+          mkdir -p api-matrix-data/container-logs
+          for n in $(docker ps -a --filter "label=com.docker.compose.project=$AB_PROJECT" --format '{{.Names}}'); do
+            docker logs --tail 200 "$n" > "api-matrix-data/container-logs/$n.log" 2>&1 || true
+          done
+
+      # pr_smoke.py tears down what it made; this removes the compose project and its images by exact tag again if it was killed (never a prune).
+      - name: Teardown
+        if: ${{ always() && env.SCOPE == 'true' }}
+        run: python3 scripts/bench/ab/stack.py down || true
+
+      # The commenter's artifact (manifest.json + api-matrix.md) and the data behind it. verdict: pass, fail (exit 1), incomplete (invalid run,
+      # did not complete, no verdict file) or skipped (nothing the matrix exercises changed).
+      - name: Write the comment artifact
+        if: ${{ !cancelled() }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          extra=()
+          case "$SCOPE" in
+            true) ;;
+            false) extra=(--skipped --changed "$(git diff --name-only origin/main...HEAD | wc -l | tr -d ' ')") ;;
+            *) extra=(--reason "the plan job did not finish, so what the pull request changes is unknown") ;;
+          esac
+          python3 scripts/bench/ab/api_proof.py bundle --out-dir lh-proof-comment --data-dir api-matrix-data --api-dir "$OUT" \
+            --pr-number "$PR_NUMBER" --head-sha "$HEAD_SHA" --base-sha "${BASE_SHA:-}" --repo "$REPO" --run-id "$RUN_ID" "${extra[@]}"
+          cat lh-proof-comment/api-matrix.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: lh-proof-comment
+          path: lh-proof-comment/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: api-matrix-data
+          path: api-matrix-data/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The state of the API matrix as a check: green for 0 and for a skip, red for 1 (regression or new difference), 2 (invalid run) and 3 (did not
+  # complete): a missing proof is not a pass. No `paths:` filter and no `needs`-skip: it always reports on a pull request. Informational for now: whether it
+  # becomes a required check is the owner's decision and is not made here.
+  gate-deterministic:
+    name: gate-deterministic
+    needs: [plan, api]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: State of the API matrix
+        env:
+          SCOPE: ${{ needs.plan.outputs.api }}
+          API_RESULT: ${{ needs.api.result }}
+          RC: ${{ needs.api.outputs.rc }}
+        run: |
+          set -euo pipefail
+          if [ "$SCOPE" = false ]; then
+            echo "skipped: the pull request changes nothing the API matrix exercises"
+            exit 0
+          fi
+          if [ "$SCOPE" != true ] || [ "$API_RESULT" != success ]; then
+            echo "::error title=API matrix::did not complete (scope '$SCOPE', api job '$API_RESULT')"
+            exit 3
+          fi
+          case "$RC" in
+            0) echo "passed" ;;
+            1) echo "::error title=API matrix::a regression, a status change or a new difference; see the comment and the job summary of the api job"; exit 1 ;;
+            2) echo "::error title=API matrix::invalid run (hot VictoriaLogs/VictoriaTraces did not answer, or no row was exercised); re-run the job"; exit 2 ;;
+            *) echo "::error title=API matrix::did not complete (exit '$RC')"; exit 3 ;;
+          esac

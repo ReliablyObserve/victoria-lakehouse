@@ -1,0 +1,1002 @@
+{
+ "results": [
+  {
+   "id": "lh.shim.tempo_search_empty_q",
+   "row": "lh.shim.tempo_search_empty_q",
+   "registry_surface": "lh",
+   "surface": "lh-traces",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/tempo/api/search",
+   "compare": "trace",
+   "expect": "pass",
+   "lh_only": true,
+   "status": {
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "base": 75.34,
+    "pr": 78.78
+   },
+   "status_changed": false,
+   "samples": [
+    "exact"
+   ],
+   "notes": [],
+   "base_score": 100.0,
+   "pr_score": 100.0,
+   "base_worst": "status",
+   "pr_worst": "status",
+   "error": null,
+   "verdict": "exact",
+   "latency": "same"
+  },
+  {
+   "id": "lh.query.half_open_time_range",
+   "row": "lh.query.half_open_time_range",
+   "registry_surface": "lh",
+   "surface": "lh-logs",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "pass",
+   "lh_only": true,
+   "status": {
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "base": 77.73,
+    "pr": 82.36
+   },
+   "status_changed": false,
+   "samples": [
+    "exact"
+   ],
+   "notes": [],
+   "base_score": 100.0,
+   "pr_score": 100.0,
+   "base_worst": "count",
+   "pr_worst": "count",
+   "error": null,
+   "verdict": "exact",
+   "latency": "same"
+  },
+  {
+   "id": "lh.shim.time_params_ms",
+   "row": "lh.shim.time_params_ms",
+   "registry_surface": "lh",
+   "surface": "lh-logs",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "pass",
+   "lh_only": true,
+   "status": {
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "base": 71.98,
+    "pr": 70.33
+   },
+   "status_changed": false,
+   "samples": [
+    "exact"
+   ],
+   "notes": [],
+   "base_score": 100.0,
+   "pr_score": 100.0,
+   "base_worst": "count",
+   "pr_worst": "count",
+   "error": null,
+   "verdict": "exact",
+   "latency": "same"
+  },
+  {
+   "id": "lh.cold.span_events_links_roundtrip_property",
+   "row": "lh.cold.span_events_links_roundtrip_property",
+   "registry_surface": "lh",
+   "surface": "lh-logs",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "count",
+   "expect": "pass",
+   "lh_only": true,
+   "status": {
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "base": 24.57,
+    "pr": 24.08
+   },
+   "status_changed": false,
+   "samples": [
+    "vacuous"
+   ],
+   "notes": [],
+   "base_score": 100.0,
+   "pr_score": 100.0,
+   "base_worst": "count",
+   "pr_worst": "count",
+   "error": null,
+   "verdict": "vacuous",
+   "latency": "same"
+  },
+  {
+   "id": "lh.admin.parity.schema@logs",
+   "row": "lh.admin.parity.schema",
+   "registry_surface": "lh",
+   "surface": "lh-logs",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/lakehouse/api/v1/admin/parity",
+   "compare": "schema",
+   "expect": "pass",
+   "lh_only": true,
+   "status": {
+    "base": "403",
+    "pr": "403"
+   },
+   "p50_ms": {
+    "base": 0.47,
+    "pr": 0.46
+   },
+   "status_changed": false,
+   "samples": [],
+   "notes": [],
+   "base_score": null,
+   "pr_score": null,
+   "base_worst": null,
+   "pr_worst": null,
+   "error": "every target answers {'base': '403', 'pr': '403'} to the request the registry row declares",
+   "verdict": "unusable",
+   "latency": "same"
+  },
+  {
+   "id": "vl.insert.api_v1_validate.status",
+   "row": "vl.insert.api_v1_validate.status",
+   "registry_surface": "vl",
+   "surface": "jaeger",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/api/v1/validate",
+   "compare": "status",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 0.85,
+    "base": 0.61,
+    "pr": 0.49
+   },
+   "status_changed": false,
+   "samples": [
+    "exact"
+   ],
+   "notes": [],
+   "base_score": 100.0,
+   "pr_score": 100.0,
+   "base_worst": "status",
+   "pr_worst": "status",
+   "error": null,
+   "verdict": "exact",
+   "latency": "same"
+  },
+  {
+   "id": "vl.pipe.extract.basic",
+   "row": "vl.pipe.extract.basic",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.37,
+    "base": 10.96,
+    "pr": 11.67
+   },
+   "status_changed": false,
+   "samples": [
+    "regressed"
+   ],
+   "notes": [
+    "17 rows where the reference's limited answer has 15"
+   ],
+   "base_score": 93.33333333333333,
+   "pr_score": 88.23529411764706,
+   "base_worst": "cardinality",
+   "pr_worst": "cardinality",
+   "error": null,
+   "verdict": "regressed",
+   "latency": "same"
+  },
+  {
+   "id": "vl.pipe.field_names.basic",
+   "row": "vl.pipe.field_names.basic",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 8.63,
+    "base": 23.63,
+    "pr": 24.75
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [
+    "12 of 42 rows are not in the unlimited reference answer"
+   ],
+   "base_score": 71.42857142857143,
+   "pr_score": 71.42857142857143,
+   "base_worst": "membership",
+   "pr_worst": "membership",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vl.pipe.pack_json.basic",
+   "row": "vl.pipe.pack_json.basic",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 2.15,
+    "base": 60.94,
+    "pr": 60.9
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [
+    "100 of 100 rows are not in the unlimited reference answer"
+   ],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "membership",
+   "pr_worst": "membership",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vl.pipe.pack_logfmt.basic",
+   "row": "vl.pipe.pack_logfmt.basic",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 2.21,
+    "base": 54.22,
+    "pr": 51.63
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [
+    "100 of 100 rows are not in the unlimited reference answer"
+   ],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "membership",
+   "pr_worst": "membership",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vl.pipe.sample.basic",
+   "row": "vl.pipe.sample.basic",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "differ",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 3.51,
+    "base": 24.87,
+    "pr": 25.87
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "row_set",
+   "pr_worst": "row_set",
+   "error": null,
+   "verdict": "arbitrary",
+   "latency": "same"
+  },
+  {
+   "id": "vl.select.field_values.limit",
+   "row": "vl.select.field_values.limit",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/logsql/field_values",
+   "compare": "values-with-hits",
+   "expect": "differ",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.2,
+    "base": 3.43,
+    "pr": 2.75
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 50.0,
+   "pr_score": 50.0,
+   "base_worst": "value_set",
+   "pr_worst": "value_set",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vl.select.buildinfo.basic",
+   "row": "vl.select.buildinfo.basic",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/buildinfo",
+   "compare": "exact-json",
+   "expect": "differ",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "404",
+    "pr": "404"
+   },
+   "p50_ms": {
+    "ref": 0.77,
+    "base": 0.85,
+    "pr": 0.69
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "error",
+   "pr_worst": "error",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vl.select.vmalert.differ",
+   "row": "vl.select.vmalert.differ",
+   "registry_surface": "vl",
+   "surface": "vl-native",
+   "signal": "logs",
+   "method": "GET",
+   "path": "/select/vmalert/",
+   "compare": "status",
+   "expect": "differ",
+   "lh_only": false,
+   "status": {
+    "ref": "400",
+    "base": "404",
+    "pr": "404"
+   },
+   "p50_ms": {
+    "ref": 0.42,
+    "base": 0.42,
+    "pr": 0.41
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "error",
+   "pr_worst": "error",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.buildinfo.basic",
+   "row": "vt.select.buildinfo.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/buildinfo",
+   "compare": "exact-json",
+   "expect": "differ",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "404",
+    "pr": "404"
+   },
+   "p50_ms": {
+    "ref": 0.52,
+    "base": 0.46,
+    "pr": 0.46
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "error",
+   "pr_worst": "error",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.vmalert.differ",
+   "row": "vt.select.vmalert.differ",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/vmalert/",
+   "compare": "status",
+   "expect": "differ",
+   "lh_only": false,
+   "status": {
+    "ref": "400",
+    "base": "404",
+    "pr": "404"
+   },
+   "p50_ms": {
+    "ref": 0.41,
+    "base": 0.41,
+    "pr": 0.41
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "error",
+   "pr_worst": "error",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_query.wildcard",
+   "row": "vt.select.logsql_query.wildcard",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 53.79,
+    "base": 88.78,
+    "pr": 76.92
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 87.61953993279917,
+   "pr_score": 87.61953993279917,
+   "base_worst": "count",
+   "pr_worst": "count",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_field_names.basic",
+   "row": "vt.select.logsql_field_names.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/field_names",
+   "compare": "exact-json",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.82,
+    "base": 41.62,
+    "pr": 43.82
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 76.92307692307692,
+   "pr_score": 76.92307692307692,
+   "base_worst": "hits_equality",
+   "pr_worst": "hits_equality",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_field_values.basic",
+   "row": "vt.select.logsql_field_values.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/field_values",
+   "compare": "values-with-hits",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.67,
+    "base": 3.63,
+    "pr": 2.93
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 83.33333333333333,
+   "pr_score": 83.33333333333333,
+   "base_worst": "value_set",
+   "pr_worst": "value_set",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_hits.basic",
+   "row": "vt.select.logsql_hits.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/hits",
+   "compare": "series",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 2.48,
+    "base": 7.11,
+    "pr": 6.29
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "points_within_tol",
+   "pr_worst": "points_within_tol",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_stats_query.basic",
+   "row": "vt.select.logsql_stats_query.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/stats_query",
+   "compare": "count",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.38,
+    "base": 6.21,
+    "pr": 6.49
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 87.61953993279917,
+   "pr_score": 87.61953993279917,
+   "base_worst": "count",
+   "pr_worst": "count",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_stats_query.time_range_bounds",
+   "row": "vt.select.logsql_stats_query.time_range_bounds",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/stats_query",
+   "compare": "count",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.28,
+    "base": 5.31,
+    "pr": 8.58
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 87.61953993279917,
+   "pr_score": 87.61953993279917,
+   "base_worst": "count",
+   "pr_worst": "count",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_stats_query_range.basic",
+   "row": "vt.select.logsql_stats_query_range.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/stats_query_range",
+   "compare": "series",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.79,
+    "base": 8.23,
+    "pr": 6.33
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "points_within_tol",
+   "pr_worst": "points_within_tol",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_stream_field_names.basic",
+   "row": "vt.select.logsql_stream_field_names.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/stream_field_names",
+   "compare": "exact-json",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 4.95,
+    "base": 2.43,
+    "pr": 2.4
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 66.66666666666667,
+   "pr_score": 66.66666666666667,
+   "base_worst": "value_set",
+   "pr_worst": "value_set",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_stream_ids.basic",
+   "row": "vt.select.logsql_stream_ids.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/stream_ids",
+   "compare": "exact-json",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.95,
+    "base": 3.49,
+    "pr": 3.21
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 7.396449704142012,
+   "pr_score": 7.396449704142012,
+   "base_worst": "value_set",
+   "pr_worst": "value_set",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_streams.basic",
+   "row": "vt.select.logsql_streams.basic",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/streams",
+   "compare": "exact-json",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 2.91,
+    "base": 2.26,
+    "pr": 3.1
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 7.396449704142012,
+   "pr_score": 7.396449704142012,
+   "base_worst": "value_set",
+   "pr_worst": "value_set",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_query.latency_offset_rate",
+   "row": "vt.select.logsql_query.latency_offset_rate",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "count",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 0.83,
+    "base": 2.19,
+    "pr": 2.43
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "row_set",
+   "pr_worst": "row_set",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_query.latency_offset_time_offset",
+   "row": "vt.select.logsql_query.latency_offset_time_offset",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "count",
+   "expect": "pass",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.96,
+    "base": 27.38,
+    "pr": 24.17
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "row_set",
+   "pr_worst": "row_set",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  },
+  {
+   "id": "vt.select.logsql_query.time_offset_time_column",
+   "row": "vt.select.logsql_query.time_offset_time_column",
+   "registry_surface": "vt",
+   "surface": "vt-native",
+   "signal": "traces",
+   "method": "GET",
+   "path": "/select/logsql/query",
+   "compare": "ndjson-multiset",
+   "expect": "differ",
+   "lh_only": false,
+   "status": {
+    "ref": "200",
+    "base": "200",
+    "pr": "200"
+   },
+   "p50_ms": {
+    "ref": 1.51,
+    "base": 126.66,
+    "pr": 136.18
+   },
+   "status_changed": false,
+   "samples": [
+    "same"
+   ],
+   "notes": [
+    "5 of 5 rows are not in the unlimited reference answer"
+   ],
+   "base_score": 0.0,
+   "pr_score": 0.0,
+   "base_worst": "membership",
+   "pr_worst": "membership",
+   "error": null,
+   "verdict": "same",
+   "latency": "same"
+  }
+ ],
+ "skipped": [],
+ "rounds": 1,
+ "window": {
+  "start": "2026-11-02T14:00:00Z",
+  "end": "2026-11-02T15:00:00Z"
+ },
+ "state": {
+  "H": "2026-11-02T15:00:00Z",
+  "cold": {
+   "start": "2026-11-02T09:00:00Z",
+   "end": "2026-11-02T15:00:00Z"
+  },
+  "project": "lh-ab"
+ }
+}

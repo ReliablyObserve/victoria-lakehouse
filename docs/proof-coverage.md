@@ -17,7 +17,7 @@ What the conformance registry proves, how, and what is missing. Computed from `t
 | ... linking a differential test (hot target, tests/parity or tests/e2e) | 108 |
 | ... linking only another test | 33 |
 | ... linking no test at all | 246 |
-| Registry rows / pending rows | 1379 / 1288 |
+| Registry rows / pending rows | 1380 / 1288 |
 | ... pending and waiting for the HTTP runner or a harness | 500 |
 | ... pending but executed by another CI job or by cited Go tests | 788 |
 | ... pending, reason unclassified | 0 |
@@ -480,7 +480,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.deploy.az_aware` | deploy | 0 (0) | 0 | 5 | none | unproven |
 | `lh.feature.deploy.compose` | deploy | 0 (0) | 0 | 2 | none | unproven |
 | `lh.feature.deploy.discovery` | deploy | 0 (0) | 0 | 4 | none | unproven |
-| `lh.feature.deploy.helm` | deploy | 1 (0) | 0 | 3 | none | lh-extension |
+| `lh.feature.deploy.helm` | deploy | 2 (0) | 0 | 3 | none | lh-extension |
 | `lh.feature.deploy.release_image_patches` | deploy | 0 (0) | 0 | 3 | none | unproven |
 | `lh.feature.deploy.ring_self_resolution` | deploy | 4 (0) | 0 | 46 | none | lh-extension |
 | `lh.feature.deploy.role_separation` | deploy | 0 (0) | 0 | 5 | none | unproven |
@@ -587,7 +587,7 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 
 ## 6. Registry totals and what is not inventoried
 
-1379 rows: lh 142, vl 684, vt 553; expect absent 3, differ 69, pass 1281, unsupported 26; origin lh-addition 118, lh-shim 28, native 1233. 768 perf cells (768 pending), 611 other rows.
+1380 rows: lh 143, vl 684, vt 553; expect absent 3, differ 69, pass 1282, unsupported 26; origin lh-addition 119, lh-shim 28, native 1233. 768 perf cells (768 pending), 612 other rows.
 
 Surfaces with no inventory, so no completeness number can be computed for them:
 

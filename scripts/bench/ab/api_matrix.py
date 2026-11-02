@@ -14,6 +14,9 @@ Verdicts are scripts.proof.metrics': exact, same, fixed, improved, regressed, no
 harness-error. A row whose query ends in `limit N` keeps an arbitrary subset, so it is scored by membership: every row an
 answer returns must be a row of the unlimited reference answer (`evaluate_limited`). `facets` is reported as `arbitrary`; Tempo's tag list and tag values (samples) are scored by status, shape and non-emptiness. The check fails on regressed and harness-error, on a nondeterministic row only when one sample had the PR worse than the base
 (a flip the other way is listed, not failing), and on a status change base -> PR.
+
+A row that is untriaged (`pending: true` on the BASE registry, or not in it: `untriaged_ids`) fails only when it is `regressed` in every sample (a NEW difference); its
+other differences are listed. A row that fails the first pass is sent `confirm_rounds` more times and judged on all the samples (`confirm_failing`).
 """
 from __future__ import annotations
 
@@ -257,37 +260,86 @@ def latency_verdict(row: dict) -> str:
 NOT_PROVING = ("vacuous", "blocked", "arbitrary", "unusable")
 
 
+def untriaged_ids(exec_rows: list[dict], base_rows: list[dict]) -> set[str]:
+    """The ids of the rows whose differences from hot are not gated: `pending: true` on the BASE registry, and rows the base does not
+    have at all (they are new in the pull request; nothing existed to regress). Judged by the base, so a pull request that sets
+    `pending` on a row, or adds a row, cannot excuse a failure of a row the base already gated."""
+    base = {r["id"]: r for r in base_rows}
+    return {i for i, r in base.items() if r.get("pending")} | {r["id"] for r in exec_rows if r["id"] not in base}
+
+
 def failing(row: dict) -> bool:
     """regressed and harness-error fail; so does a status change from base to PR. A request whose verdict flips between samples fails only
-    when one of the samples had the PR worse than the base: a flip the other way is the base being unstable, not the PR."""
+    when one of the samples had the PR worse than the base: a flip the other way is the base being unstable, not the PR.
+
+    An untriaged row (see `untriaged_ids`) fails only on a NEW difference, that is a verdict `regressed` in every sample: its differences
+    from hot are listed in the comment, and a flip or a status it never settled is noise until the row is triaged."""
+    if row.get("untriaged"):
+        return row["verdict"] == "regressed"
     if row["verdict"] == "nondeterministic":
         return "regressed" in row["samples"]
     return row["verdict"] in FAILING or (row["status_changed"] and row["verdict"] not in NOT_PROVING)
 
 
-def summarize(results: list[dict], skipped: list[dict]) -> dict:
+def merge_rounds(first: dict, again: dict, rounds: int) -> dict:
+    """The row after extra rounds: the samples of both passes decide the verdict (a flip is `nondeterministic`), the first pass's scores stay."""
+    out = dict(first)
+    out["samples"] = list(first["samples"]) + list(again["samples"])
+    out["verdict"] = classify_samples(out["samples"])
+    out["confirmed"] = rounds
+    out["status"] = {t: "/".join(sorted(set(first["status"][t].split("/")) | set(again["status"].get(t, "").split("/")) - {""})) for t in first["status"]}
+    out["status_changed"] = out["status"].get("base") != out["status"].get("pr")
+    return out
+
+
+def confirm_failing(state: dict, reqs: dict[str, dict], results: list[dict], rounds: int, log=lambda m: None) -> list[dict]:
+    """Send every row that fails after the first pass again, `rounds` more times, and judge it on all the samples. One sample cannot tell a
+    regression from an answer that varies from run to run (a limited query, a sampled one); only the rows that fail are re-sent, so a
+    quiet run costs nothing. A difference that holds in every sample stays: this is not a retry, it never turns a failure into a pass by luck."""
+    if rounds <= 0:
+        return results
+    out = []
+    for r in results:
+        if not failing(r) or r["id"] not in reqs:
+            out.append(r)
+            continue
+        log(f"api matrix: {r['id']} fails, sending it {rounds} more times")
+        out.append(merge_rounds(r, run_request(state, reqs[r["id"]], rounds), rounds))
+    return out
+
+
+def summarize(results: list[dict], skipped: list[dict], untriaged=frozenset()) -> dict:
     counts: dict[str, int] = {}
     for r in results:
+        r["untriaged"] = r["row"] in untriaged
         r["latency"] = latency_verdict(r)
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     return {"requests": len(results), "verdicts": counts, "failing": [r["id"] for r in results if failing(r)],
             "status_changes": [r["id"] for r in results if r["status_changed"]],
+            "untriaged": sum(1 for r in results if r["untriaged"]),
             "slower": [r["id"] for r in results if r["latency"] == "slower"],
             "not_exercised": len(skipped), "not_exercised_reasons": api_rows.skip_counts(skipped)}
 
 
-def run_all(state: dict, rows: list[dict], rounds: int = 3, only: str = "", log=lambda m: None) -> dict:
+def run_all(state: dict, rows: list[dict], rounds: int = 3, only: str = "", log=lambda m: None, judge: list[dict] | None = None,
+            confirm_rounds: int = 0) -> dict:
+    """Every executable row of `rows` against the three targets. `judge` is the registry that decides what is gated (the base branch's rows;
+    default: `rows` themselves). A row that fails the first pass is sent `confirm_rounds` more times."""
     values = api_rows.window_values(matrix_window(state))
     picks = pick_values(state)
     reqs, skipped = api_rows.translate(rows, values, picks)
     if only:
         reqs = [r for r in reqs if re.search(only, r["id"])]
+    untriaged = untriaged_ids(rows, judge if judge is not None else rows)
     results = []
     for i, req in enumerate(reqs):
-        results.append(run_request(state, req, rounds))
+        r = run_request(state, req, rounds)
+        r["untriaged"] = r["row"] in untriaged
+        results.append(r)
         if i % 25 == 0:
             log(f"api matrix {i + 1}/{len(reqs)}")
-    return {"results": results, "skipped": skipped, "summary": summarize(results, skipped), "rounds": rounds,
+    results = confirm_failing(state, {q["id"]: q for q in reqs}, results, confirm_rounds, log)
+    return {"results": results, "skipped": skipped, "summary": summarize(results, skipped, untriaged), "rounds": rounds, "confirm_rounds": confirm_rounds,
             "window": matrix_window(state), "state": {k: state[k] for k in ("H", "cold", "project")}}
 
 

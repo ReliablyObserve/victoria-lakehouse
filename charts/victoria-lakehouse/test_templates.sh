@@ -636,7 +636,6 @@ done
 # src_paths (a regex that must match the whole path) and src_headers (any listed header
 # equals the request's) both match wins; the `headers` key only sets a header on the
 # proxied request and is never part of the match. Rows: mode, path, header, service.
-# Out of scope here: the traces insert rule (see the PR that added this check).
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- vmauth default routing ---"
@@ -658,6 +657,8 @@ CASES = {
         ("/delete/logsql/delete", TRACES, "logs-select"),
         ("/delete/tracessql/delete", {}, "logs-select"),
         ("/insert/jsonline", {}, "logs-insert"),
+        ("/insert/jsonline", TRACES, "logs-insert"),
+        ("/insert/opentelemetry/v1/traces", {}, "logs-insert"),
         ("/select/vmui/", {}, "logs-select"),
     ],
     "both": [
@@ -672,6 +673,20 @@ CASES = {
         ("/select/jaeger/api/traces", TRACES, "traces-select"),
         ("/tempo/api/search", {}, "traces-select"),
         ("/insert/jsonline", {}, "logs-insert"),
+        ("/insert/jsonline", TRACES, "traces-insert"),
+        ("/insert/loki/api/v1/push", {}, "logs-insert"),
+        ("/insert/opentelemetry/v1/logs", {}, "logs-insert"),
+        ("/insert/opentelemetry/v1/traces", {}, "traces-insert"),
+        ("/insert/opentelemetry/v1/traces", TRACES, "traces-insert"),
+        ("/insert/native", {}, "logs-insert"),
+        ("/insert/native", TRACES, "traces-insert"),
+        ("/insert/native", {"X-Lakehouse-Signal": "logs"}, "logs-insert"),
+        ("/insert/ready", {}, "logs-insert"),
+        ("/insert/ready", TRACES, "traces-insert"),
+        ("/insert/opentelemetry/v1/logs", TRACES, "traces-insert"),
+        ("/insert/multitenant/native", {}, "logs-insert"),
+        ("/insert/multitenant/native", TRACES, "traces-insert"),
+        ("/internal/insert", {}, "logs-insert"),
         ("/select/vmui/", {}, "logs-select"),
         ("/select/vmui/", TRACES, "logs-select"),
     ],
@@ -683,12 +698,32 @@ CASES = {
         ("/delete/tracessql/delete", {}, "traces-select"),
         ("/select/jaeger/api/traces", {}, "traces-select"),
         ("/tempo/api/search", TRACES, "traces-select"),
+        ("/insert/opentelemetry/v1/traces", {}, "traces-insert"),
+        ("/insert/opentelemetry/v1/traces", TRACES, "traces-insert"),
+        ("/insert/native", {}, "traces-insert"),
+        ("/insert/native", TRACES, "traces-insert"),
+        ("/insert/jsonline", {}, "traces-insert"),
     ],
     "both, traces select disabled": [
         ("/select/logsql/query", TRACES, "logs-select"),
         ("/delete/logsql/delete", TRACES, "logs-select"),
         ("/delete/tracessql/delete", {}, "logs-select"),
         ("/select/jaeger/api/traces", {}, "logs-select"),
+        ("/insert/jsonline", {}, "logs-insert"),
+        ("/insert/jsonline", TRACES, "traces-insert"),
+        ("/insert/opentelemetry/v1/traces", {}, "traces-insert"),
+    ],
+    "both, traces insert disabled": [
+        ("/insert/opentelemetry/v1/traces", {}, "logs-insert"),
+        ("/insert/jsonline", TRACES, "logs-insert"),
+        ("/insert/native", TRACES, "logs-insert"),
+        ("/select/logsql/query", TRACES, "traces-select"),
+    ],
+    "both, logs insert disabled": [
+        ("/insert/jsonline", {}, "traces-insert"),
+        ("/insert/opentelemetry/v1/traces", {}, "traces-insert"),
+        ("/select/logsql/query", {}, "logs-select"),
+        ("/select/logsql/query", TRACES, "traces-select"),
     ],
 }
 
@@ -758,6 +793,8 @@ run_vmauth_routing "logs-only"
 run_vmauth_routing "both" --set "traces.enabled=true"
 run_vmauth_routing "traces-only" --set "logs.enabled=false" --set "traces.enabled=true"
 run_vmauth_routing "both, traces select disabled" --set "traces.enabled=true" --set "traces.select.enabled=false"
+run_vmauth_routing "both, traces insert disabled" --set "traces.enabled=true" --set "traces.insert.enabled=false"
+run_vmauth_routing "both, logs insert disabled" --set "traces.enabled=true" --set "logs.insert.enabled=false"
 rm -f "${VMAUTH_ROUTING_PY}"
 
 # ---------------------------------------------------------------------------

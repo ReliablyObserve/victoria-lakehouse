@@ -124,3 +124,17 @@
     doc: docs/kubernetes-deployment.md
     tests:
       - charts/victoria-lakehouse/test_templates.sh
+
+- id: lh.flag.vmauth_traces_insert_routing
+  title: "The chart's default vmauth config sends /insert/opentelemetry/v1/traces (by path), and any other /insert/* path with X-Lakehouse-Signal: traces (matched with src_headers), to the traces insert service, ahead of the logs insert rule; with no logs insert pods every /insert/* path goes to the traces insert service"
+  surface: lh
+  kind: flag
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: golden }
+  layers: [api]
+  refs:
+    doc: docs/kubernetes-deployment.md
+    tests:
+      - charts/victoria-lakehouse/test_templates.sh

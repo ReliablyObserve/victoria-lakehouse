@@ -1,0 +1,182 @@
+[
+ {
+  "id": "lh.shim.tempo_search_empty_q",
+  "surface": "lh",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "lh.query.half_open_time_range",
+  "surface": "lh",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "lh.shim.time_params_ms",
+  "surface": "lh",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "lh.cold.span_events_links_roundtrip_property",
+  "surface": "lh",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "lh.admin.parity.schema",
+  "surface": "lh",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vl.insert.api_v1_validate.status",
+  "surface": "vl",
+  "expect": "pass"
+ },
+ {
+  "id": "vl.pipe.extract.basic",
+  "surface": "vl",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vl.pipe.field_names.basic",
+  "surface": "vl",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vl.pipe.pack_json.basic",
+  "surface": "vl",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vl.pipe.pack_logfmt.basic",
+  "surface": "vl",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vl.pipe.sample.basic",
+  "surface": "vl",
+  "expect": "differ",
+  "pending": true,
+  "differ_note": "sample keeps every Nth block; block ordering/boundaries differ between hot local storage and cold columnar reads, so the same N can select a different subset. See docs/parity-and-gaps.md."
+ },
+ {
+  "id": "vl.select.field_values.limit",
+  "surface": "vl",
+  "expect": "differ",
+  "pending": true,
+  "differ_note": "LH truncates in map order; hot returns top-hits sorted (docs/parity-and-gaps.md #A6). Flips to pass in the MergeValuesWithHits fix."
+ },
+ {
+  "id": "vl.select.buildinfo.basic",
+  "surface": "vl",
+  "expect": "differ",
+  "pending": true,
+  "differ_note": "Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md."
+ },
+ {
+  "id": "vl.select.vmalert.differ",
+  "surface": "vl",
+  "expect": "differ",
+  "pending": true,
+  "differ_note": "Live since the VL 1.51.0 bump (pinned VL is 1.53.0), but Lakehouse registers no vmalert proxy route in its dispatcher, so the route is served hot only (v1.53.0 makes hot VL demand -httpAuth.* on /select/vmalert/*/config and /reload; Lakehouse proxies none of it, so there is nothing to protect and nothing to match). Paired flag row: vl.flag.vmalert_proxy_url (docs/parity-and-gaps.md)."
+ },
+ {
+  "id": "vt.select.buildinfo.basic",
+  "surface": "vt",
+  "expect": "differ",
+  "pending": true,
+  "differ_note": "Neither binary mounts the upstream select dispatcher yet; hot returns JSON, cold 404 until the dispatcher PR. See docs/parity-and-gaps.md."
+ },
+ {
+  "id": "vt.select.vmalert.differ",
+  "surface": "vt",
+  "expect": "differ",
+  "pending": true,
+  "differ_note": "Live since the VT 0.10.0 bump (pinned VT is 0.12.0), but Lakehouse registers no vmalert proxy route in its traces dispatcher, so the route is served hot only. Paired flag row: vt.flag.vmalert_proxy_url (docs/parity-and-gaps.md)."
+ },
+ {
+  "id": "vt.select.logsql_query.wildcard",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_field_names.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_field_values.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_hits.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_stats_query.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_stats_query.time_range_bounds",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_stats_query_range.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_stream_field_names.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_stream_ids.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_streams.basic",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_query.latency_offset_rate",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_query.latency_offset_time_offset",
+  "surface": "vt",
+  "expect": "pass",
+  "pending": true
+ },
+ {
+  "id": "vt.select.logsql_query.time_offset_time_column",
+  "surface": "vt",
+  "expect": "differ",
+  "pending": true,
+  "differ_note": "Hot storage adds the time_offset to the _time values it returns (storage_search.go subTimeOffsetToTimestamps); the cold tier filters by the shifted range but returns _time unshifted. Pre-existing and independent of the latency offset (found by TestLogsQLServedEqualsUpstreamOnTheSameData, which pins the difference)."
+ }
+]
