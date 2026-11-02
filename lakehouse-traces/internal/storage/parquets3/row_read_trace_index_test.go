@@ -90,14 +90,18 @@ func TestLookupTraceIndex_UnreadableFooterBeatsTheAggregateOfTheOthers(t *testin
 	// held the trace: it cannot narrow the bound, so the others' bound stands (no
 	// loss of the fast path). A facet that may contain the trace, or cannot answer,
 	// leaves the entry unknown. An unreadable (not gone) footer is never excluded.
-	facet := func(s *Storage, keys []string, holdsTrace map[int]bool) {
+	facet := func(s *Storage, keys []string, holdsTrace map[int]bool, otherPartition bool) {
 		s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
 		for i, k := range keys {
 			ids := []string{"trace-other"}
 			if holdsTrace[i] {
 				ids = []string{"trace-xyz"}
 			}
-			s.catalog.OnFileFlush(pmeta.FileContribution{Partition: manifest.ExtractTenantPartition(k), FileKey: k,
+			partition := manifest.ExtractTenantPartition(k)
+			if otherPartition {
+				partition += "-elsewhere" // a facet exists, but not for these files' partition
+			}
+			s.catalog.OnFileFlush(pmeta.FileContribution{Partition: partition, FileKey: k,
 				BloomValues: map[string][]string{"trace_id": ids}})
 		}
 	}
@@ -107,17 +111,19 @@ func TestLookupTraceIndex_UnreadableFooterBeatsTheAggregateOfTheOthers(t *testin
 		unreadable bool
 		holds      map[int]bool
 		noFacet    bool
+		elsewhere  bool
 		wantFound  bool
 	}{
 		{name: "a gone file the facet excludes still gives a hit", gone: 2, holds: map[int]bool{0: true, 1: true}, wantFound: true},
 		{name: "a gone file the facet may contain is a miss", gone: 1, holds: map[int]bool{0: true, 1: true}},
 		{name: "a gone file with no facet to ask is a miss", gone: 2, noFacet: true},
+		{name: "a gone file whose partition has no facet is a miss", gone: 2, elsewhere: true, holds: map[int]bool{0: true, 1: true}},
 		{name: "an unreadable file the facet excludes is still a miss", gone: 2, unreadable: true, holds: map[int]bool{0: true, 1: true}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fs, s, keys := traceIndexFixture(t)
 			if !c.noFacet {
-				facet(s, keys, c.holds)
+				facet(s, keys, c.holds, c.elsewhere)
 			}
 			if c.unreadable {
 				fs.setFault(keys[c.gone], accessDenied)
