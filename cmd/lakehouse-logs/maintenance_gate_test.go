@@ -500,8 +500,9 @@ func TestMultiInstance_OneInsertTwoSelect_OnlyTheWriterCompacts(t *testing.T) {
 	if w := bucketWrites(pods[0].s3.Requests()); len(w) == 0 {
 		t.Error("the insert pod did not compact; the check above proves nothing")
 	}
-	// The readers see every row once: a refresh, then a query on each select pod.
-	for _, p := range pods[1:] {
+	// The readers see every row once: a refresh, then a query on every pod, the
+	// insert pod included.
+	for _, p := range pods {
 		if err := p.store.RefreshManifest(context.Background()); err != nil {
 			t.Fatal(err)
 		}
