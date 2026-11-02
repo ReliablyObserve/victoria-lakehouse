@@ -316,7 +316,14 @@ With both signals enabled, the generated config sends `/select/jaeger/*`, `/temp
 and `/select/logsql/*` and `/delete/logsql/*` to the traces select pods when the request carries the header `X-Lakehouse-Signal: traces`
 (otherwise to the logs select pods, as does every path no other rule lists). The traces rules come first because vmauth uses the first
 `url_map` entry that matches, and the header is matched with `src_headers` (vmauth's `headers` option only sets a header on the proxied
-request). `charts/victoria-lakehouse/test_templates.sh` renders the config and checks where each header and path pair goes.
+request).
+
+Inserts follow the same pattern. With both signals enabled, `/insert/opentelemetry/v1/traces` (served by the traces binary only) goes
+to the traces insert pods by path, and every other `/insert/*` path (`/insert/native`, `/insert/multitenant/native`, `/insert/ready`
+are served by both signals) goes to the traces insert pods only when the request carries `X-Lakehouse-Signal: traces`; without the
+header it goes to the logs insert pods. These rules come before the logs insert rule. With no logs insert pods (`logs.enabled=false`
+or `logs.insert.enabled=false`) there is nothing to tell apart and every `/insert/*` path goes to the traces insert pods.
+`charts/victoria-lakehouse/test_templates.sh` renders the config and checks where each header and path pair goes.
 
 ## Monitoring
 
