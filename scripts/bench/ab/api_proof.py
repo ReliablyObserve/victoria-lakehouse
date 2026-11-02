@@ -5,6 +5,11 @@
         prints `api=true|false` and `runner_fit=true|false` lines for $GITHUB_OUTPUT: does the pull request touch what the API matrix
         exercises (product code, build inputs, the proof harness, the registry's rows) and what the runner-fit measurement measures.
 
+  api_proof.py run    --out OUT -- <pr_smoke.py options>
+        runs `pr_smoke.py --api-only` on a port block chosen by probing (stack.pick_port_base), and once more on another block when the first
+        attempt stopped because its ports were in use (exit 4): the single classified re-attempt. Any other result is final. The exit code is
+        pr_smoke's; OUT/reattempt.json records a re-attempt, and `bundle` says so in the comment.
+
   api_proof.py bundle --out-dir lh-proof-comment --data-dir api-matrix-data --api-dir OUT --pr-number N --head-sha SHA --base-sha SHA \\
                       [--repo OWNER/NAME --run-id ID] [--skipped --changed N] [--reason TEXT]
         writes the commenter's artifact (manifest.json + api-matrix.md, docs/ci-proof-comment.md) and the data artifact:
@@ -24,6 +29,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +41,10 @@ from scripts.ci import proof_comment as pc  # noqa: E402
 KIND = "api-matrix"
 PRODUCER = ".github/workflows/pr-proof.yaml"
 MANIFEST_FILE, BODY_FILE = "manifest.json", f"{KIND}.md"
+EXIT_BUSY = 4  # stack.EXIT_BUSY and stack.PORTS_BUSY (a test pins both); stack.py is imported only by `run`, which has the harness dependencies
+PORTS_BUSY = "ports already in use"
+PR_SMOKE = os.path.join(HERE, "pr_smoke.py")
+REATTEMPT_FILE = "reattempt.json"
 DATA_FILES = ("api-matrix.json", "known-api.json", "api-verdict.json", "meta.json")
 BODY_CAP = 60000  # GitHub rejects a comment above 65536 characters; the commenter cuts at 65000
 REPO_RE = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}")
@@ -74,6 +84,68 @@ def cmd_scope(a) -> int:
     return 0
 
 
+# ------------------------------------------------------------------------------------------------ the run
+def ports_busy(out: str) -> list[int] | None:
+    """The ports a busy attempt reported, from the comment it left (None when it stopped for another reason: a stack of the project is
+    already running, or the lock is held; another port block would not help)."""
+    try:
+        with open(os.path.join(out, "api-matrix.md"), encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    m = re.search(re.escape(PORTS_BUSY) + r" on 127\.0\.0\.1: \[([0-9, ]*)\]", text)
+    return None if not m else [int(x) for x in re.findall(r"\d+", m.group(1))]
+
+
+def write_infra_state(out: str, reason: str) -> None:
+    """No attempt could start (no port block is free): the same files a busy pr_smoke leaves, so the bundle and the gate see exit 4."""
+    meta: dict = {}
+    text, verdict = comment.errored({}, meta, "StackBusy: " + reason, comment.API_MARKER, comment.API_TITLE, infra=True)
+    verdict["exit"] = EXIT_BUSY
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(out, "api-matrix.md"), "w", encoding="utf-8") as f:
+        f.write(text)
+    with open(os.path.join(out, "api-verdict.json"), "w", encoding="utf-8") as f:
+        json.dump(verdict, f)
+
+
+def run_with_retry(out: str, pick, attempt) -> int:
+    """`attempt(base)` runs the matrix on a port block and returns its exit code; `pick(exclude)` returns a free block or raises stack.NoFreeBlock.
+    Exit 4 because the ports were in use is re-attempted ONCE on another block (a collision with something on the host says nothing about the pull
+    request); a regression, an invalid run or any other stop is never re-attempted."""
+    from stack import NoFreeBlock  # noqa: PLC0415 - the harness dependencies are installed where `run` is used
+    try:
+        first = pick(())
+    except NoFreeBlock as e:
+        write_infra_state(out, str(e))
+        return EXIT_BUSY
+    rc = attempt(first)
+    busy = ports_busy(out) if rc == EXIT_BUSY else None
+    if busy is None:
+        return rc
+    rec = {"first_base": first, "busy_ports": busy, "second_base": None, "outcome": "no other free block"}
+    try:
+        rec["second_base"] = pick((first,))
+        rc = attempt(rec["second_base"])
+        rec["outcome"] = "busy again" if rc == EXIT_BUSY else "recovered"
+    except NoFreeBlock:
+        pass
+    with open(os.path.join(out, REATTEMPT_FILE), "w", encoding="utf-8") as f:
+        json.dump(rec, f)
+    return rc
+
+
+def cmd_run(a) -> int:
+    import stack  # noqa: PLC0415
+
+    def attempt(base: int) -> int:
+        print(f"[api-proof] API matrix on the port block starting at {base}", file=sys.stderr, flush=True)
+        return subprocess.run([sys.executable, PR_SMOKE, "--api-only", "--out", a.out, *a.smoke], env=dict(os.environ, PROOF_PORT_BASE=str(base)), check=False).returncode
+    rc = run_with_retry(a.out, lambda exclude: stack.pick_port_base(exclude), attempt)
+    print(f"[api-proof] exit {rc}", file=sys.stderr, flush=True)
+    return rc
+
+
 # ------------------------------------------------------------------------------------------------ the artifact
 def verdict_of(exit_code: int) -> str:
     return {0: "pass", 1: "fail"}.get(exit_code, "incomplete")
@@ -105,6 +177,19 @@ def run_line(repo: str, run_id: str) -> str:
     return "The job log has the details."
 
 
+def reattempt_note(api_dir: str) -> str:
+    """One line when the run was re-attempted on another port block (the comment records every re-attempt)."""
+    try:
+        with open(os.path.join(api_dir, REATTEMPT_FILE), encoding="utf-8") as f:
+            r = json.load(f)
+        ports = ", ".join(str(int(p)) for p in r["busy_ports"])
+        second = "no other block was free" if r.get("second_base") is None else f"the second attempt ran on the block starting at {int(r['second_base'])}"
+        return (f"\nRe-attempted once: the ports {ports} were in use on this runner (the block starting at {int(r['first_base'])}); {second} "
+                f"({str(r['outcome'])[:40].replace('`', '')}).\n")
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+
+
 def body_for(args, api_dir: str) -> tuple[str, str, dict | None]:
     """(body, verdict, known differences) for what the run left in api_dir."""
     meta = {"base": args.base_sha, "head": args.head_sha}
@@ -117,6 +202,7 @@ def body_for(args, api_dir: str) -> tuple[str, str, dict | None]:
             exit_code = int(json.load(f).get("exit", 3))
         with open(md, encoding="utf-8") as f:
             body = f.read()
+        body += reattempt_note(api_dir)
         known = None
         kf = os.path.join(api_dir, "known-api.json")
         if os.path.isfile(kf):
@@ -159,6 +245,9 @@ def main(argv=None) -> int:
     sc.add_argument("--event", required=True, choices=("pull_request", "workflow_dispatch", "push", "schedule"))
     sc.add_argument("--base", default="origin/main")
     sc.add_argument("--head", default="HEAD")
+    ru = sub.add_parser("run")
+    ru.add_argument("--out", required=True)
+    ru.add_argument("smoke", nargs=argparse.REMAINDER, help="options of pr_smoke.py after --")
     bu = sub.add_parser("bundle")
     bu.add_argument("--out-dir", required=True)
     bu.add_argument("--data-dir", default="")
@@ -172,6 +261,9 @@ def main(argv=None) -> int:
     bu.add_argument("--changed", type=int, default=0)
     bu.add_argument("--reason", default="")
     a = ap.parse_args(argv)
+    if a.cmd == "run":
+        a.smoke = a.smoke[1:] if a.smoke[:1] == ["--"] else a.smoke
+        return cmd_run(a)
     return cmd_scope(a) if a.cmd == "scope" else cmd_bundle(a)
 
 
