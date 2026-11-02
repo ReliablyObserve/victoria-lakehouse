@@ -3,6 +3,6 @@
 # this file and recompiles the lock; to do it by hand:
 #   uv pip compile --universal --generate-hashes --python-version 3.12 \
 #     --exclude-newer <date> .github/semgrep-requirements.in -o .github/semgrep-requirements.txt
-semgrep==1.181.0
+semgrep==1.182.1
 # Security floor: certifi before 2026.10.19 is affected by GHSA-6q48-6c7w-9gw2 (dependency review fails on it).
-certifi>=2026.10.19
+certifi>=2026.10.23
