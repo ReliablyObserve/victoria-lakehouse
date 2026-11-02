@@ -2,7 +2,8 @@ package parquets3
 
 // The S3 reads of one Jaeger trace-by-ID when a listed object is gone (#772): the
 // footer lookup (LookupTraceIndex) lists the tenant's objects over all time, so a
-// gone object anywhere in that listing leaves an index entry unknown and the lookup
+// gone object anywhere in that listing leaves an index entry unknown (unless the
+// in-RAM pmeta bloom facet proves the object never held the trace) and the lookup
 // reports a miss, and the span scan of the query window answers (and fails for an
 // object inside the window). The numbers are logged for the PR record
 // (go test -v -run TestTraceByID_GoneObject_S3Reads); the assertions are the
@@ -18,6 +19,7 @@ import (
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 )
 
@@ -63,10 +65,12 @@ func TestTraceByID_GoneObject_S3Reads(t *testing.T) {
 	}
 	path := "/select/jaeger/api/traces/" + tid
 	type result struct {
-		code  int
-		body  string
-		gets  int64
-		spans int
+		code   int
+		body   string
+		gets   int64
+		spans  int
+		hits   uint64 // lakehouse_trace_index_lookups_total{result="hit"} during the request
+		misses uint64
 	}
 	run := func(t *testing.T, gone string, warm bool, facet string) result {
 		fx := newRCFixture(t, 4, rcKeyFmt)
@@ -103,9 +107,10 @@ func TestTraceByID_GoneObject_S3Reads(t *testing.T) {
 		if key != "" {
 			fx.removeObject(key)
 		}
-		before := fx.fs.gets.Load()
+		before, hitsBefore, missBefore := fx.fs.gets.Load(), metrics.TraceIndexLookups.Get("hit"), metrics.TraceIndexLookups.Get("miss")+metrics.TraceIndexLookups.Get("error")
 		code, body := rcGet(fx, path, params())
-		return result{code: code, body: body, gets: fx.fs.gets.Load() - before, spans: strings.Count(body, `"spanID"`)}
+		return result{code: code, body: body, gets: fx.fs.gets.Load() - before, spans: strings.Count(body, `"spanID"`),
+			hits: metrics.TraceIndexLookups.Get("hit") - hitsBefore, misses: metrics.TraceIndexLookups.Get("miss") + metrics.TraceIndexLookups.Get("error") - missBefore}
 	}
 	// The reads of the healthy trace-by-ID with the same facet: what the fast path
 	// costs when nothing is gone.
@@ -137,6 +142,16 @@ func TestTraceByID_GoneObject_S3Reads(t *testing.T) {
 				}
 				if r.gets > limit {
 					t.Fatalf("%d GETs, want at most %d (the fast path of a healthy trace-by-ID plus the gone object's own footer GET)", r.gets, limit)
+				}
+			}
+			if gone == "inside_window" && !warm && (facet == "excludes" || facet == "off" || facet == "may_contain") {
+				// The stage-1 lookup is a hit only when the facet proves the gone
+				// object irrelevant: without the gate this end-to-end test fails.
+				if facet == "excludes" && r.hits == 0 {
+					t.Fatalf("lakehouse_trace_index_lookups_total{result=hit} did not rise: the bloom facet did not keep the stage-1 hit (misses %d)", r.misses)
+				}
+				if facet != "excludes" && r.hits != 0 {
+					t.Fatalf("stage-1 lookup was a hit (%d) with a gone object the facet cannot exclude", r.hits)
 				}
 			}
 			complete := gone == "none" || gone == "outside_window" || warm || facet == "excludes"

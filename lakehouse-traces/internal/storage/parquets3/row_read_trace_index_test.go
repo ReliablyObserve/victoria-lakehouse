@@ -193,3 +193,35 @@ func TestTraceByIDIndexQuery_UnreadableObjectFailsTheLookup(t *testing.T) {
 		t.Fatalf("the index lookup failed with %v, want status 502", err)
 	}
 }
+
+// checkFileBloom prunes by the in-RAM pmeta bloom facet only when the facet can
+// answer for the file's partition: a facet that exists only for another partition
+// (or an empty one) cannot prune, and the per-file `.bloom` fallback is used (one
+// GET). The facet part is shared with the gone-object gate of LookupTraceIndex.
+func TestCheckFileBloom_FacetOfAnotherPartitionDoesNotPrune(t *testing.T) {
+	query := `trace_id:="trace-xyz"`
+	install := func(s *Storage, keys []string, partitionSuffix string) {
+		s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
+		for _, k := range keys {
+			s.catalog.OnFileFlush(pmeta.FileContribution{Partition: manifest.ExtractTenantPartition(k) + partitionSuffix, FileKey: k,
+				BloomValues: map[string][]string{"trace_id": {"trace-other"}}})
+		}
+	}
+	check := func(t *testing.T, suffix string) (pruned bool, gets int64) {
+		fs, s, keys := traceIndexFixture(t)
+		install(s, keys, suffix)
+		before := fs.gets.Load()
+		fi := manifest.FileInfo{Key: keys[2]}
+		return s.checkFileBloom(context.Background(), fi, query), fs.gets.Load() - before
+	}
+	t.Run("a facet that excludes the file prunes it without a read", func(t *testing.T) {
+		if pruned, gets := check(t, ""); !pruned || gets != 0 {
+			t.Fatalf("pruned=%v gets=%d, want pruned by the facet with no GET", pruned, gets)
+		}
+	})
+	t.Run("a facet of another partition cannot prune and the .bloom fallback is read", func(t *testing.T) {
+		if pruned, gets := check(t, "-elsewhere"); pruned || gets != 1 {
+			t.Fatalf("pruned=%v gets=%d, want not pruned and one .bloom GET", pruned, gets)
+		}
+	})
+}

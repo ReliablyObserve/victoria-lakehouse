@@ -564,7 +564,8 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 
 // fileReadFailure is what a failed read of one object means for the query. The
 // context decides first, as at upstream (the caller's cancellation or deadline
-// overrides a storage error, netselect getFirstError): a read that was stopped
+// overrides a storage error, netselect storageNode.handleError; getFirstError
+// only maps the unavailable-storage error to 502): a read that was stopped
 // (its caller, or the row ceiling) is reported by RunQuery, and a read it aborted
 // is not a failing or a gone object. Then a listed object that is gone, then any
 // other failure, which leaves rows of a selected object out of the answer: the
