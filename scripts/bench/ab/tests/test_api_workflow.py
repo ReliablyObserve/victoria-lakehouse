@@ -14,6 +14,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 PATH = os.path.join(ROOT, ".github", "workflows", "pr-proof.yaml")
 
 
+def workflow_text():
+    with open(PATH, encoding="utf-8") as f:
+        return f.read()
+
+
 @pytest.fixture(scope="module")
 def wf():
     with open(PATH, encoding="utf-8") as f:
@@ -113,7 +118,8 @@ def test_the_project_name_and_the_scratch_path_are_the_reviewed_ones(wf):
     job = wf["jobs"]["api"]
     assert job["env"]["AB_PROJECT"] == "lh-apimx"
     assert step(job, "Choose the scratch paths")["run"] == 'echo "OUT=$RUNNER_TEMP/api-matrix" >> "$GITHUB_ENV"'  # not /tmp: a RAM-backed tmpfs on the runner
-    assert "stack.py down" in step(job, "Teardown")["run"] and "prune" not in open(PATH, encoding="utf-8").read().replace("never a prune", "").replace("no prune", "")
+    text = workflow_text().replace("never a prune", "").replace("no prune", "")
+    assert "stack.py down" in step(job, "Teardown")["run"] and "prune" not in text
 
 
 def test_the_gate_reports_on_every_pull_request_and_maps_the_exit_codes(wf):
@@ -129,5 +135,6 @@ def test_the_gate_reports_on_every_pull_request_and_maps_the_exit_codes(wf):
 
 def test_gate_deterministic_is_not_a_required_check_yet():
     """Whether it becomes required is the owner's decision (a direction change); this change does not make it one."""
-    required = open(os.path.join(ROOT, "scripts", "ci", "tests", "testdata", "required_checks.txt"), encoding="utf-8").read().split("\n")
+    with open(os.path.join(ROOT, "scripts", "ci", "tests", "testdata", "required_checks.txt"), encoding="utf-8") as f:
+        required = f.read().split("\n")
     assert "gate-deterministic" not in required and "api" not in required

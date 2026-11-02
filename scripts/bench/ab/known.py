@@ -172,11 +172,11 @@ def pending_lines(pending: list[dict], max_rows: int = 60) -> list[str]:
     by_signal: dict[str, int] = {}
     for it in pending:
         by_signal[it["signal"]] = by_signal.get(it["signal"], 0) + 1
-    lines = ["", f"<details><summary>{len(pending)} differences from hot VL/VT on rows not triaged yet (`pending: true` in the base registry, or rows the base "
-                 f"does not have): listed, not gated ({', '.join(f'{n} {s}' for s, n in sorted(by_signal.items()))})</summary>", "",
-             "A pending row is flipped to executed in a reviewed registry batch; from then on a difference on it must be recorded in the registry or it fails the check. "
-             "A NEW difference (the pull request made the answer worse than the base's, in every sample) fails on a pending row too.", "",
-             "| signal | row | what differs |", "|---|---|---|"]
+    summary = (f"<details><summary>{len(pending)} differences from hot VL/VT on rows not triaged yet (`pending: true` in the base registry, or rows the base "
+               + f"does not have): listed, not gated ({', '.join(f'{n} {s}' for s, n in sorted(by_signal.items()))})</summary>")
+    explain = ("A pending row is flipped to executed in a reviewed registry batch; from then on a difference on it must be recorded in the registry or it fails the check. "
+               + "A NEW difference (the pull request made the answer worse than the base's, in every sample) fails on a pending row too.")
+    lines = ["", summary, "", explain, "", "| signal | row | what differs |", "|---|---|---|"]
     for it in sorted(pending, key=lambda i: (i["signal"], i["what"]))[:max_rows]:
         lines.append(f"| {it['signal']} | `{it['what']}` | {it.get('detail', '').strip() or '-'} |")
     if len(pending) > max_rows:

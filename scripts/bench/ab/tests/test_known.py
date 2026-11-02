@@ -126,3 +126,12 @@ def test_documented_limit_a_covered_row_tracks_the_shape_on_every_layer():
     cells = [{"shape": "s", "difference": "pre-existing", "signal": "logs", "layer": lay, "range": "1h", "form": "numeric"} for lay in ("cold", "compacted")]
     k = known.join(known.observed_from_perf({"cells": cells}, spec), rows, {})
     assert sorted(i["what"] for i in k["items"]) == ["s [cold]", "s [compacted]"] and {i["tracking"] for i in k["items"]} == {"tracked"}
+
+
+def test_the_pending_section_keeps_each_sentence_whole_and_separated():
+    """A missing comma or `+` between two adjacent string literals would fuse the neighbours; every line of the section is checked."""
+    item = {"tracking": "pending", "signal": "logs", "what": "vl.a.pass", "detail": "x"}
+    text = "\n".join(known.pending_lines([item]))
+    assert "(`pending: true` in the base registry, or rows the base does not have): listed, not gated (1 logs)</summary>" in text
+    assert "must be recorded in the registry or it fails the check. A NEW difference (the pull request made the answer worse" in text
+    assert text.splitlines()[1].startswith("<details><summary>1 differences from hot VL/VT") and text.splitlines()[3].startswith("A pending row is flipped")
