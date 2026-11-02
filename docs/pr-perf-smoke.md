@@ -346,6 +346,57 @@ about 15 % as noise. Latency stays report-only until it is calibrated on a 4-vCP
 - Registry images (RustFS, mc, toxiproxy, nginx, Jaeger, the Grafana base image) pulled anonymously from Docker Hub and GHCR without error in every run,
   so the job needs no `packages: read`. Anonymous Docker Hub pulls from shared runner addresses can still be rate limited.
 
+## The previous release (`prev`)
+
+Besides `main` and hot VictoriaLogs / VictoriaTraces, a pull request is to be measured against the release users run, so "better than
+`main`" can be told from "better than the last release". `scripts/bench/ab/prev.py` finds and fetches that target. It is informational:
+nothing in the PR proof workflow calls it yet, no check can fail because of it, and starting it with its own flags and comparing it are
+later changes.
+
+```bash
+python3 scripts/bench/ab/prev.py tag      --rev HEAD^1      # the release tag and why, no network
+python3 scripts/bench/ab/prev.py digests  --rev HEAD^1      # plus the digest GHCR reports for each binary (anonymous)
+python3 scripts/bench/ab/prev.py prepare  --rev HEAD^1 --out prev.json   # plus docker pull by digest, else a build from the tag
+python3 scripts/bench/ab/prev.py line prev.json             # the verdict phrase of a record
+```
+
+- **Which release.** The newest `vMAJOR.MINOR.PATCH` tag that is an ancestor of `--rev`. In a pull request run `HEAD` is the merge
+  commit and `HEAD^1` is `main` (the default); pass `--rev HEAD` on a `main` run. A release cut after the merge-base, a backport branch
+  and a hotfix that `main` does not contain are not ancestors and are not chosen; `-fips`, pre-release and other tag names are not
+  releases. The rule is the one the release job uses for "the previous release" (`release_tags` in `scripts/ci/check_changelog_pr.py`).
+  A shallow clone reports `shallow-clone` instead of a wrong or missing tag: the job needs the full history and the tags
+  (`fetch-depth: 0`).
+- **Which image.** `ghcr.io/reliablyobserve/victoria-lakehouse/lakehouse-{logs,traces}:<tag>`, resolved to the digest of its OCI index over
+  the registry API with an anonymous pull token (no `packages: read`), then pulled **by digest**. A git tag is immutable and a registry tag is
+  not, so the first digest is recorded in `<cache>/<tag>/record.json` and a later resolution that differs makes the state `invalid`
+  (a harness error), never a silent re-pin. A pulled image that reports another digest is `invalid` too. A 5xx or no answer is retried twice.
+- **Fallback.** When the registry answers 404 for a binary, that binary is built from a detached worktree of the tag with the tag's own
+  Dockerfile and pins (`docker build --build-arg VERSION=<tag>`), saved as `<cache>/<tag>/lakehouse-<binary>.tar` and pinned by its sha256;
+  the next run loads the tarball (a tarball that no longer matches its sha256 is `invalid`, `cache-corrupt`). An outage (401, 5xx, no
+  answer) does not fall back: it says nothing about the image, and a build would replace the release recipe with another. The cache directory
+  is `$PROOF_PREV_CACHE`, else `$RUNNER_TEMP/lh-proof-prev`, else the system temp directory; a job caches it by tag.
+- **Flags of its own tree.** A target starts with the flags its tree lists in `scripts/proof/target-flags.json`. A tag whose tree has no
+  such file is `not-evaluated` with `tag-older-than-flags-contract`. The record still carries its tag and digests, so the resolver can
+  be checked on its own (`flags_contract` is reported separately). Until a release contains that file, every tag reports this.
+
+### State vocabulary
+
+`record["state"]` is one of three values. A missing prev is never worded or exited like a pass.
+
+| state | exit | meaning |
+|---|--:|---|
+| `evaluated` | 0 | a tag, both images and the flags file are present; `images` names where each came from (`registry`, `cache`, `build`) |
+| `not-evaluated` | 10 | no usable prev; `reason` says why. It annotates a verdict (`prev not evaluated (v0.167.15): the tag predates the proof flags contract`) and does not fail the check, because the `main` and hot comparisons still decide it |
+| `invalid` | 2 | the harness is wrong: `digest-changed`, `digest-mismatch` or `cache-corrupt` |
+
+Reasons of `not-evaluated`: `base-unresolved`, `shallow-clone`, `no-release-tag`, `tag-older-than-flags-contract`, `image-not-found` (the
+registry has no image and the fallback build is off, `--no-build`), `registry-unauthorized`, `registry-unavailable`,
+`registry-bad-response`, `pull-failed`, `build-failed`.
+
+Measured 2026-11-02 against the registry: `v0.167.15` resolves anonymously to `sha256:94840cc4...f6a4` (logs) and `sha256:db26bba3...6889`
+(traces), the digests the registry reports for those tags. The unit tests (`scripts/bench/ab/tests/test_prev.py`, in `make ab-test`) run the
+ancestry rules on throw-away git repositories and the registry and docker steps behind fakes.
+
 ## Limits
 
 - The seed is small (tens of thousands of rows per tenant); timings are dominated by the S3 round trips and the number of requests,
