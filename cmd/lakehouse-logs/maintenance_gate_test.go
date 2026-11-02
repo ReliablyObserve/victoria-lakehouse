@@ -126,7 +126,7 @@ func seedFlushesAfter(t *testing.T, store *parquets3.Storage, cfg *config.Config
 	}
 	store.SetLocalBuffer(segs)
 	flusher := parquets3.NewBufferFlusher(store.Writer(), segs, cfg.Insert.BufferDir, nil, parquets3.BufferFlusherConfig{
-		TargetBytes: 1 << 20, MaxAge: time.Millisecond, Grace: time.Minute})
+		TargetBytes: 1 << 20, MaxAge: time.Millisecond, Grace: time.Millisecond})
 	flusher.Start(10 * time.Millisecond)
 	store.SetBufferFlusher(flusher)
 
@@ -156,6 +156,17 @@ func seedFlushesAfter(t *testing.T, store *parquets3.Storage, cfg *config.Config
 		if got := store.Manifest().TotalFiles(); got != existing+f+1 {
 			t.Fatalf("after batch %d the insert pod holds %d objects, want %d", f, got, existing+f+1)
 		}
+	}
+	// The tests age the bucket by hours after the seed (the object store's clock),
+	// so the pod's own clock has to have passed the grace of its segments too: a
+	// segment still served next to the object compaction merged it into would be
+	// answered twice (#611). The flusher retires them within a check interval.
+	retired := time.Now().Add(20 * time.Second)
+	for segs.Stats(time.Now()).Committed+segs.Stats(time.Now()).Pending > 0 && time.Now().Before(retired) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if st := segs.Stats(time.Now()); st.Committed+st.Pending > 0 {
+		t.Fatalf("the seeded segments are still served: %+v", st)
 	}
 	return rows
 }

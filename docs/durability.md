@@ -253,7 +253,7 @@ the twins agree, that a loss-counted cell names a registered metric and that thi
 document names every cell) are `lh.durability.pre1970_rows_*`,
 `lh.durability.pre1970_stored_*` (the known difference from hot VictoriaLogs/VictoriaTraces),
 `lh.durability.restart_cardinality_gate_*`, `lh.durability.drain_plan_mismatch_*`,
-`lh.durability.kill_during_segment_reap_*`
+`lh.durability.kill_during_segment_reap_*`, `lh.durability.slow_drain_outlasts_grace_*`
 and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 
 ### 2.0 Durability matrix — what survives what
@@ -617,6 +617,19 @@ or once the nonce is older than 7 days (an owner that never committed — it los
 its disk). A failed marker listing releases nothing
 (`lakehouse_compaction_segment_guard_errors_total`). Markers older than
 8 days are deleted by the compaction scan.
+
+The segment is retired by a loop of its own, not by the flusher's tick: the tick
+reaps after it has drained the pending segments, and a drain can last longer than
+the guard's twice the grace (a slow object store, a backlog after an outage). With
+the reap in the tick only, a pod went on serving a committed segment while
+compaction, on any writer, had already merged its objects, and answered the rows
+twice, once from the segment and once from the merged object (#611). A committed
+segment is now served for at most the grace plus one flusher check interval
+(1 s) after its commit, whatever a drain is doing. This needs the object store's
+clock and the pod's to agree within the margin between the grace and twice the
+grace (the 'clock skew' above); a test that ages the markers of the bucket by hours must
+have the pod's segments retired too. `lh.durability.slow_drain_outlasts_grace_*`
+pin it.
 
 The grace counts from the real commit, also across a restart. The flusher's state
 file (`buffer_flush_state.json`) records the commit time of every segment

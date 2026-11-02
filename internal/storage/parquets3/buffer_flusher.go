@@ -823,6 +823,9 @@ func (f *BufferFlusher) Start(checkInterval time.Duration) {
 	f.cancel = cancel
 	go func() {
 		defer close(f.done)
+		reaped := make(chan struct{})
+		go f.reapLoop(ctx, checkInterval, reaped)
+		defer func() { <-reaped }()
 		t := time.NewTicker(checkInterval)
 		defer t.Stop()
 		for {
@@ -834,6 +837,25 @@ func (f *BufferFlusher) Start(checkInterval time.Duration) {
 			}
 		}
 	}()
+}
+
+// reapLoop retires the committed segments whose grace has passed every
+// checkInterval, apart from the tick: a drain can outlast the grace (a slow or
+// failing object store, a backlog after an outage) and the tick reaps only after
+// it, but compaction is let merge a segment's objects 2 x grace after its commit
+// whatever this pod is doing, and a segment still served then is answered twice.
+func (f *BufferFlusher) reapLoop(ctx context.Context, checkInterval time.Duration, done chan<- struct{}) {
+	defer close(done)
+	t := time.NewTicker(checkInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			f.segs.Reap(f.now(), f.grace)
+		}
+	}
 }
 
 // Stop ends the flusher and waits for its current step to finish, so the

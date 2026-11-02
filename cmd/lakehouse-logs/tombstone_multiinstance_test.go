@@ -389,18 +389,19 @@ func TestTombstones_MultiInstance_CompactionKeepsDeletedRowsHidden(t *testing.T)
 		if err := p.store.RefreshManifest(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		seen := map[string]bool{}
+		seen := map[string]int{}
 		for _, k := range queryKeys(t, p.store, "_msg") {
 			if strings.HasPrefix(k, "file-2-row-") {
 				t.Fatalf("%s shows the deleted row %s after compaction: a deleted row was copied forward visibly", p.name, k)
 			}
-			seen[k] = true
+			seen[k]++
 		}
-		// (The writer that took the seed also holds the rows in its insert buffer,
-		// so its count can include a row twice; the kept set is what must be whole.)
 		for _, k := range seededKeys(files, rowsEach) {
-			if !strings.HasPrefix(k, "file-2-row-") && !seen[k] {
-				t.Fatalf("%s lost the kept row %s", p.name, k)
+			if strings.HasPrefix(k, "file-2-row-") {
+				continue
+			}
+			if seen[k] != 1 {
+				t.Fatalf("%s returns the kept row %s %d times, want once", p.name, k, seen[k])
 			}
 		}
 	}
