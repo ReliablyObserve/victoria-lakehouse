@@ -47,13 +47,13 @@ import (
 //     interval", which a loop that reaps at 2 x grace breaks),
 //     TestReap_FleetAnswersEveryRowOnce_RandomSchedules (two insert and two
 //     select pods running the real flusher, a drain that stalls) and
-//     TestReap_StopEndsTheReapLoop (the loop exists, and ends with Stop). The
-//     registry rows for the slow-drain cells list these tests only.
+//     TestReap_StopEndsTheReapLoop (the loop exists, and ends with Stop).
 //   - Contract locks, which pass without the loop and are not evidence that it
 //     exists: TestReap_EveryAgeOfACommittedSegmentAnswersEachRowOnce (drives Reap
 //     itself and pins the guard's 2 x grace) and
 //     TestReap_TheOtherSignalIsUnaffected (the bridge's isolation of the other
-//     signal).
+//     signal). The registry rows for the slow-drain cells reference them too (a
+//     pass row may not drop a reference) and say in their notes that they are locks.
 
 // reapGate is a bucket that deletes (the plain mock answers a DELETE like a GET,
 // so compaction's inputs would stay listed) and whose PUTs of the keys containing
