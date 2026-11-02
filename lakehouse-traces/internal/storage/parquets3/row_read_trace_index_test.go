@@ -5,16 +5,20 @@ package parquets3
 // leaves its file's entry unknown: the bound of the files that could be read may
 // be narrower than the trace, so the lookup reports a miss and VictoriaTraces'
 // span scan, which fails when it cannot read the file, answers instead (issue
-// #503: the aggregate of the readable files used to be returned as if complete).
+// #503: the aggregate of the readable files used to be returned as if complete). A file
+// that is gone leaves its entry unknown in the same way (#772).
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
+	"github.com/VictoriaMetrics/VictoriaMetrics/lib/httpserver"
 	"github.com/VictoriaMetrics/VictoriaTraces/app/vtstorage"
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
@@ -56,16 +60,29 @@ func TestLookupTraceIndex_UnreadableFooterBeatsTheAggregateOfTheOthers(t *testin
 			t.Fatalf("got (%d, %d, found=%v, err=%v): the bound of the readable files (1000..5000) would hide spans of the unreadable one", start, end, found, err)
 		}
 	})
-	t.Run("a file that is gone is not an error", func(t *testing.T) {
-		fs, s, keys := traceIndexFixture(t)
-		fs.mock.mu.Lock()
-		delete(fs.mock.files, keys[2])
-		fs.mock.mu.Unlock()
-		start, end, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-xyz")
-		if err != nil || !found || start != 500 || end != 5_000 {
-			t.Fatalf("got (%d, %d, found=%v, err=%v), want (500, 5000, true, nil)", start, end, found, err)
-		}
-	})
+	// A file that is gone (removed by a compaction or retention run, #772) leaves
+	// its index entry unknown, like an unreadable footer: its rows are in an object
+	// the lookup did not list, and it may hold spans before the start or after the
+	// end of the bound the other files give. A miss sends the lookup to the span
+	// scan, which fails with 502 on the gone object.
+	for _, gone := range []struct {
+		name string
+		idx  int
+	}{
+		{"a file that is gone and does not list the trace", 2},
+		{"the file with the earliest start of the trace is gone", 1},
+	} {
+		t.Run(gone.name+": a miss, so the scan answers", func(t *testing.T) {
+			fs, s, keys := traceIndexFixture(t)
+			fs.mock.mu.Lock()
+			delete(fs.mock.files, keys[gone.idx])
+			fs.mock.mu.Unlock()
+			start, end, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-xyz")
+			if err != nil || found {
+				t.Fatalf("got (%d, %d, found=%v, err=%v): the bound of the files still there (1000..5000) would hide the spans of the removed one", start, end, found, err)
+			}
+		})
+	}
 }
 
 // The VictoriaTraces index lookup through the adapter: with an unreadable file
@@ -101,5 +118,20 @@ func TestTraceByIDIndexQuery_UnreadableObjectFailsTheLookup(t *testing.T) {
 	fs.setFault(keys[1], accessDenied)
 	if rows, err := run(fs, s); err == nil {
 		t.Fatalf("the index lookup answered %d rows with an unreadable object", len(rows))
+	}
+
+	// The same for an object removed meanwhile: the index lookup does not answer
+	// from the footers of the others, and the scan that replaces it fails with 502.
+	fs, s, keys = traceIndexFixture(t)
+	fs.mock.mu.Lock()
+	delete(fs.mock.files, keys[1])
+	fs.mock.mu.Unlock()
+	rows, err := run(fs, s)
+	if err == nil {
+		t.Fatalf("the index lookup answered %d rows with a removed object", len(rows))
+	}
+	var esc *httpserver.ErrorWithStatusCode
+	if !errors.As(err, &esc) || esc.StatusCode != http.StatusBadGateway {
+		t.Fatalf("the index lookup failed with %v, want status 502", err)
 	}
 }

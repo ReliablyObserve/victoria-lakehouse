@@ -140,9 +140,13 @@ func TestLookupTraceIndex_FooterErrorsSwallowed(t *testing.T) {
 	}
 }
 
-// TestLookupTraceIndex_ErrorDoesNotMaskHit: one unreadable file plus one
-// good file with the trace — the hit must win over the error.
-func TestLookupTraceIndex_ErrorDoesNotMaskHit(t *testing.T) {
+// TestLookupTraceIndex_GoneSiblingBeatsTheHit: one listed file whose object is
+// gone plus one good file with the trace. The gone file's index entry is unknown
+// (its spans are in an object the lookup did not list, #772), so the bound of the
+// good file alone could hide them: the lookup reports a miss and the span scan,
+// which fails on the gone object, answers. (A sibling whose footer cannot be read
+// beats a hit in the same way, see row_read_trace_index_test.go.)
+func TestLookupTraceIndex_GoneSiblingBeatsTheHit(t *testing.T) {
 	mock := newMockS3Server()
 	defer mock.close()
 	s := testStorageWithS3(t, mock.url())
@@ -163,8 +167,8 @@ func TestLookupTraceIndex_ErrorDoesNotMaskHit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LookupTraceIndex: %v", err)
 	}
-	if !found || startNs != 100 || endNs != 200 {
-		t.Errorf("hit must win over a sibling file's footer error: found=%v range=(%d,%d)", found, startNs, endNs)
+	if found {
+		t.Errorf("a gone sibling's unknown entry must beat the hit: found=%v range=(%d,%d)", found, startNs, endNs)
 	}
 }
 

@@ -172,7 +172,13 @@
   area: query
   readme_section: Read Path
   surfaces: [flag]
-  rows: [lh.query.read_complete_or_fail, lh.query.removed_source_mid_query, lh.query.shared_download_per_caller_context]
+  rows:
+    - lh.query.read_complete_or_fail
+    - lh.durability.compaction_swap_past_bound_logs
+    - lh.durability.compaction_swap_past_bound_traces
+    - lh.durability.compaction_swap_within_bound_logs
+    - lh.durability.compaction_swap_within_bound_traces
+    - lh.query.shared_download_per_caller_context
   tests:
     - internal/storage/parquets3/worker_cap_test.go
     - internal/storage/parquets3/query_memory_budget_test.go#TestAcquireFileBudget_BoundsConcurrency
@@ -189,8 +195,9 @@
   description: >-
     Cold queries are dominated by per-file latency, so files are processed concurrently — but
     from a bounded pool, because unbounded fan-out turns an object-store latency problem into a
-    memory problem. An object a worker could not read (anything but a listed object that is gone)
-    fails the read and stops the other workers, so no answer is silently missing rows.
+    memory problem. An object a worker could not read, or that was listed and is gone (a
+    compaction or a retention run removed it while the query ran), fails the read with 502 and
+    stops the other workers, so no answer is silently missing rows.
 
 - id: lh.feature.query.count_pushdown
   title: Count and grouped-count pushdown to metadata
