@@ -217,13 +217,17 @@ type Durability struct {
 
 // DurabilityModes, DurabilitySignals and DurabilityGuarantees are the values a
 // durability cell may take. The guarantees are the approved set of the design
-// (no-loss, no-duplicate, loss-counted, rejected-429, rejected-503): a row that
-// the insert path drops and answers as a success is loss-counted, with the
-// counter that counts it.
+// (no-loss, no-duplicate, loss-counted, rejected-429, rejected-502, rejected-503):
+// a row that the insert path drops and answers as a success is loss-counted, with
+// the counter that counts it; a read that cannot be answered completely is
+// rejected-502 (the status upstream gives a read whose storage node cannot serve
+// it). The modes are the write or storage mechanism a fault strikes: the insert
+// buffer's flush, and the compaction swap (and the retention delete) that removes
+// objects a running query listed.
 var (
-	DurabilityModes      = map[string]bool{"buffer-flush": true}
+	DurabilityModes      = map[string]bool{"buffer-flush": true, "compaction": true}
 	DurabilitySignals    = map[string]bool{"logs": true, "traces": true}
-	DurabilityGuarantees = map[string]bool{"no-loss": true, "no-duplicate": true, "loss-counted": true, "rejected-429": true, "rejected-503": true}
+	DurabilityGuarantees = map[string]bool{"no-loss": true, "no-duplicate": true, "loss-counted": true, "rejected-429": true, "rejected-502": true, "rejected-503": true}
 )
 
 var durabilityMetricRe = regexp.MustCompile(`^lakehouse_[a-z0-9_]+$`)
