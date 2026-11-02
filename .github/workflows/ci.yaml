@@ -330,7 +330,7 @@ jobs:
           # Required: parquets3 must be measured, so the gate cannot silently stop seeing it.
           scripts/ci/check_coverage.sh -t 90 -x testutil -x 'testutil/*' -r storage/parquets3 < <({ go test $(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$') -cover -count=1 -timeout=10m
                      SHARD_SHORT=0 scripts/ci/sharded_go_test.sh cover ./internal/compaction/ 5 600
-                     scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
+                     scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | awk '/coverage:/ { print; next } /^[ \t]*(FAIL|--- FAIL|panic:|::error::)/ { print > "/dev/stderr" }')
 
       - name: Vet logs module
         run: go vet ./internal/... ./cmd/...
@@ -387,7 +387,7 @@ jobs:
           # is internal/storage/parquets3). Excluded: testutil and below (test helpers),
           # vtstorage_adapter and selectapi (unchanged exclusions). Required: parquets3 must be measured.
           ../scripts/ci/check_coverage.sh -t 90 -x testutil -x 'testutil/*' -x vtstorage_adapter -x selectapi -r storage/parquets3 < <({ go test $(go list ./internal/... | grep -v '/internal/storage/parquets3$') -cover -count=1 -timeout=10m
-                     SHARD_WEIGHTS=../scripts/ci/shard_weights/traces-parquets3.json ../scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | grep 'coverage:')
+                     SHARD_WEIGHTS=../scripts/ci/shard_weights/traces-parquets3.json ../scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | awk '/coverage:/ { print; next } /^[ \t]*(FAIL|--- FAIL|panic:|::error::)/ { print > "/dev/stderr" }')
 
       - name: Vet traces module
         working-directory: lakehouse-traces
