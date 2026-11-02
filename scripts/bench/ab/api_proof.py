@@ -113,10 +113,10 @@ def run_with_retry(out: str, pick, attempt) -> int:
     """`attempt(base)` runs the matrix on a port block and returns its exit code; `pick(exclude)` returns a free block or raises stack.NoFreeBlock.
     Exit 4 because the ports were in use is re-attempted ONCE on another block (a collision with something on the host says nothing about the pull
     request); a regression, an invalid run or any other stop is never re-attempted."""
-    from stack import NoFreeBlock  # noqa: PLC0415 - the harness dependencies are installed where `run` is used
+    import stack  # noqa: PLC0415 - the harness dependencies are installed where `run` is used
     try:
         first = pick(())
-    except NoFreeBlock as e:
+    except stack.NoFreeBlock as e:
         write_infra_state(out, str(e))
         return EXIT_BUSY
     rc = attempt(first)
@@ -126,7 +126,7 @@ def run_with_retry(out: str, pick, attempt) -> int:
     rec = {"first_base": first, "busy_ports": busy, "second_base": None, "outcome": "no other free block"}
     try:
         rec["second_base"] = pick((first,))
-    except NoFreeBlock:
+    except stack.NoFreeBlock:
         return finish_reattempt(out, rec, rc)  # nowhere else to go: the first stop stands
     rc = attempt(rec["second_base"])
     rec["outcome"] = "busy again" if rc == EXIT_BUSY else "recovered"
