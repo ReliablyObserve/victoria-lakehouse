@@ -312,6 +312,12 @@ vmauth:
 
 The chart auto-generates vmauth config that routes `/insert/` paths to insert pods and `/select/` paths to select pods.
 
+With both signals enabled, the generated config sends `/select/jaeger/*`, `/tempo/*` and `/delete/tracessql/*` to the traces select pods,
+and `/select/logsql/*` and `/delete/logsql/*` to the traces select pods when the request carries the header `X-Lakehouse-Signal: traces`
+(otherwise to the logs select pods, as does every path no other rule lists). The traces rules come first because vmauth uses the first
+`url_map` entry that matches, and the header is matched with `src_headers` (vmauth's `headers` option only sets a header on the proxied
+request). `charts/victoria-lakehouse/test_templates.sh` renders the config and checks where each header and path pair goes.
+
 ## Monitoring
 
 Enable ServiceMonitor for Prometheus scraping:
