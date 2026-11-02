@@ -1,4 +1,4 @@
-name: PR proof (runner fit)
+name: PR proof
 
 # MEASURES whether the PR proof stack fits a standard GitHub-hosted runner. It posts no comment and gates nothing.
 #
