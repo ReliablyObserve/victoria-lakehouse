@@ -559,19 +559,26 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 	if err == nil {
 		return nil
 	}
+	return s.fileReadFailure(ctx, fi, startNs, endNs, filter, hasTombstones, filteredWriteBlock, err)
+}
+
+// fileReadFailure is what a failed read of one object means for the query. The
+// context decides first, as at upstream (the caller's cancellation or deadline
+// overrides a storage error, netselect getFirstError): a read that was stopped
+// (its caller, or the row ceiling) is reported by RunQuery, and a read it aborted
+// is not a failing or a gone object. Then a listed object that is gone, then any
+// other failure, which leaves rows of a selected object out of the answer: the
+// read fails rather than answer with a silent hole.
+func (s *Storage) fileReadFailure(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc, err error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	if isObjectGone(err, fi.Key) {
 		// Listed, then removed by a compaction or a retention run (#772). Its rows
 		// are in a compacted object this query did not list, or deleted: the answer
 		// is complete only if the manifest alone gives them exactly, else it fails.
 		return s.handle404Recovery(ctx, fi, startNs, endNs, filter, hasTombstones, filteredWriteBlock, err)
 	}
-	if ctx.Err() != nil {
-		// The query was stopped (its caller, or the row ceiling); the stop is
-		// reported by RunQuery, and a read it aborted is not a failing object.
-		return nil
-	}
-	// Any other failure leaves rows of a selected object out of the answer:
-	// fail the read rather than answer with a silent hole.
 	metrics.QueryFileErrorsTotal.Inc()
 	logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 	return unreadableObjectError(fi.Key, err)
@@ -2807,19 +2814,19 @@ func (s *Storage) resolveBloomColumn(fieldName string) string {
 	return ""
 }
 
-func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, queryStr string) bool {
-	if queryStr == "" {
-		return false
-	}
-	// A full-hex trace_id phrase may prune only a file that attests hex ids.
-	attested := fi.TraceIDHex
+// bloomColumnValues is a bloom-promoted column with the candidate values a query
+// filters it on (any-of within a column, AND across columns).
+type bloomColumnValues struct {
+	Column string
+	Values []string
+}
 
-	// Collect per-column candidate value sets (supports exact-match and in())
-	type bloomColumn struct {
-		Column string
-		Values []string
-	}
-	var perColumn []bloomColumn
+// fileBloomColumns collects, per bloom-promoted column, the values queryStr
+// filters on (exact-match and in()); a full-hex trace_id phrase counts only for a
+// file that attests hex ids. Negated predicates are left out: a bloom proves
+// presence-may, never absence.
+func (s *Storage) fileBloomColumns(queryStr string, attested bool) []bloomColumnValues {
+	var perColumn []bloomColumnValues
 	for _, col := range s.registry.PromotedColumns() {
 		if !col.HasBloom {
 			continue
@@ -2833,48 +2840,63 @@ func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, quer
 		}
 		vals = attestedPruneValues(vals, queryStr, col, attested)
 		if len(vals) > 0 {
-			perColumn = append(perColumn, bloomColumn{Column: col.ParquetColumn, Values: vals})
+			perColumn = append(perColumn, bloomColumnValues{Column: col.ParquetColumn, Values: vals})
 		}
 	}
+	return perColumn
+}
+
+// facetBloomVerdict asks the in-RAM pmeta bloom facet (partition `_bloom.bin`
+// bundle) about fi, with no S3 read: usable is false when the facet cannot answer
+// (no catalog, no facet for the partition, an empty facet); excluded is true when
+// it proves the file holds none of the candidate values. Same AND-across-columns /
+// OR-within-column semantics as the per-file bloom; blooms never false-negative
+// and an unknown key is kept, so this only changes pruning efficiency, never
+// correctness.
+func (s *Storage) facetBloomVerdict(fi manifest.FileInfo, perColumn []bloomColumnValues) (usable, excluded bool) {
+	if s.catalog == nil {
+		return false, false
+	}
+	partition := manifest.ExtractTenantPartition(fi.Key)
+	for _, bc := range perColumn {
+		anyMatch := false
+		for _, v := range bc.Values {
+			matched, ok := s.catalog.BloomMayContain(partition, []string{fi.Key}, bc.Column, v)
+			if !ok {
+				return false, false
+			}
+			if len(matched) > 0 {
+				anyMatch = true
+				break
+			}
+		}
+		if !anyMatch {
+			excluded = true
+			break
+		}
+	}
+	return true, excluded
+}
+
+func (s *Storage) checkFileBloom(ctx context.Context, fi manifest.FileInfo, queryStr string) bool {
+	if queryStr == "" {
+		return false
+	}
+	// A full-hex trace_id phrase may prune only a file that attests hex ids.
+	perColumn := s.fileBloomColumns(queryStr, fi.TraceIDHex)
 	if len(perColumn) == 0 {
 		return false
 	}
 
-	// pmeta bloom read-flip: consult the in-RAM bloom facet (partition `_bloom.bin`
-	// bundle) before a per-file `.bloom` S3 GET. Same AND-across-columns /
-	// OR-within-column semantics; blooms never false-negative, so this only changes
-	// pruning efficiency, never correctness. Falls back to the `.bloom` download for
-	// any partition the bundle doesn't carry.
-	if s.catalog != nil {
-		partition := manifest.ExtractTenantPartition(fi.Key)
-		usable := true
-		excluded := false
-	colLoop:
-		for _, bc := range perColumn {
-			anyMatch := false
-			for _, v := range bc.Values {
-				matched, ok := s.catalog.BloomMayContain(partition, []string{fi.Key}, bc.Column, v)
-				if !ok {
-					usable = false
-					break colLoop
-				}
-				if len(matched) > 0 {
-					anyMatch = true
-					break
-				}
-			}
-			if !anyMatch {
-				excluded = true
-				break
-			}
+	// pmeta bloom read-flip: consult the in-RAM bloom facet before a per-file
+	// `.bloom` S3 GET. Falls back to the `.bloom` download for any partition the
+	// bundle doesn't carry.
+	if usable, excluded := s.facetBloomVerdict(fi, perColumn); usable {
+		if excluded {
+			metrics.ParquetBloomChecks.Inc("facet_bloom_skip")
+			return true
 		}
-		if usable {
-			if excluded {
-				metrics.ParquetBloomChecks.Inc("facet_bloom_skip")
-				return true
-			}
-			return false
-		}
+		return false
 	}
 
 	bloomKey := fi.Key + ".bloom"

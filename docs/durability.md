@@ -801,9 +801,11 @@ read did not list, or were deleted on purpose.
   (`/select/logsql/*`, the field and stream enumerations, Jaeger and Tempo search),
   naming the object. It used to be skipped with a log line, and the read answered
   200 without its rows (Jaeger trace-by-ID: 404 "trace not found" for a trace that
-  exists). Jaeger and Tempo trace-by-ID answer 400 for the same reason as for an
-  unreadable object ([#773](https://github.com/ReliablyObserve/victoria-lakehouse/issues/773)),
-  never 404 and never 200. 502 is upstream's status for a read whose storage node
+  exists). Jaeger and Tempo trace-by-ID (also Jaeger services, Tempo tags and
+  metrics) answer 400, as for an unreadable object: that is upstream VictoriaTraces
+  behaviour, not a Lakehouse defect (its handlers stringify the stage-1 storage
+  error with `%s` and drop the status; Lakehouse does not patch it), never 404 and
+  never 200. 502 is upstream's status for a read whose storage node
   cannot serve it; the S3 error stays in the error chain and
   `lakehouse_query_file_not_found_total` keeps counting (an increase means a read
   met a swap).

@@ -8,6 +8,8 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,8 +102,9 @@ func TestGoneObject_ManifestAnswersOnlyWhenExact(t *testing.T) {
 // object is tolerated, through RunQuery: a timestamp-only count over objects whose
 // rows the manifest knows is exact although one object was removed (the manifest
 // answers, no read), and fails with 502 as soon as the window cuts the removed
-// object (its rows inside the window are unknown). Run by
-// TestRowRead_RemovedObject_StaysTolerated.
+// object (its rows inside the window are unknown). In the first case the gone key
+// is not requested at all. Run by
+// TestRowRead_RemovedObject_ManifestExactCountOrFails502.
 func checkCountFromManifestWithRemovedObject(t *testing.T) {
 	fx := newRCFixture(t, 4, rcKeyFmt)
 	for i, key := range fx.keys {
@@ -111,6 +114,11 @@ func checkCountFromManifestWithRemovedObject(t *testing.T) {
 		fx.s.manifest.AddFile(fx.partitionOf(key), fi)
 	}
 	fx.removeObject(fx.keys[1])
+	var goneGets atomic.Int64 // requests for the gone key
+	fx.fs.setFault(fx.keys[1], func(w http.ResponseWriter, r *http.Request) {
+		goneGets.Add(1)
+		fx.fs.mock.handler(w, r)
+	})
 	run := func(start, end int64) (int, error) {
 		q := mustParseQueryWithTime(t, "* | stats count() n", start, end)
 		rows := 0
@@ -122,8 +130,14 @@ func checkCountFromManifestWithRemovedObject(t *testing.T) {
 	if err != nil || rows != rcFiles*rcRowsPerFile {
 		t.Fatalf("count over a window that holds the removed object: %d rows, err %v; want %d rows and no error", rows, err, rcFiles*rcRowsPerFile)
 	}
+	if n := goneGets.Load(); n != 0 {
+		t.Fatalf("the manifest-answered count requested the gone key %d times, want 0", n)
+	}
 	_, err = run(fx.now.UnixNano(), fx.end) // the window cuts every object
 	goneReadError(t, err, fx.keys[1])
+	if goneGets.Load() == 0 {
+		t.Fatal("the cut window never requested the gone key: the 502 did not come from reading it")
+	}
 }
 
 // The other signal is unaffected: an object of the traces signal that was removed
@@ -142,4 +156,26 @@ func TestGoneObject_OtherSignalIsUnaffected(t *testing.T) {
 	if got := metrics.QueryFileNotFoundTotal.Get(); got != gone {
 		t.Fatalf("lakehouse_query_file_not_found_total moved (%d -> %d) for an object this signal never listed", gone, got)
 	}
+}
+
+// The caller's cancellation or deadline overrides a storage error, as at
+// upstream: a gone object seen after the caller stopped the read is not reported
+// as a removed object (502), a live read is.
+func TestGoneObject_CallerCancellationOverridesTheGoneObject(t *testing.T) {
+	s := testStorageWithS3(t, "http://127.0.0.1:1")
+	fi := manifest.FileInfo{Key: "logs/dt=2026-05-10/hour=14/gone.parquet"}
+	gone := fmt.Errorf("s3 GetObject %s: %w", fi.Key, &types.NoSuchKey{})
+	write := func(uint, *logstorage.DataBlock) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.fileReadFailure(ctx, fi, 0, 1<<62, nil, false, write, gone); err != nil {
+		t.Fatalf("a gone object after the caller cancelled the read was reported as %v, want nil (RunQuery reports the cancellation)", err)
+	}
+	dctx, dcancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer dcancel()
+	if err := s.fileReadFailure(dctx, fi, 0, 1<<62, nil, false, write, gone); err != nil {
+		t.Fatalf("a gone object after the deadline was reported as %v, want nil", err)
+	}
+	goneReadError(t, s.fileReadFailure(context.Background(), fi, 0, 1<<62, nil, false, write, gone), fi.Key)
 }

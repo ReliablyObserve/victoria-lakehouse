@@ -2,6 +2,7 @@ package parquets3
 
 import (
 	"context"
+	"strconv"
 	"sync"
 
 	"github.com/VictoriaMetrics/VictoriaLogs/lib/logstorage"
@@ -117,7 +118,12 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.T
 				// A footer that cannot be read means this file's index entry is
 				// unknown, whether the object is unreadable or gone (removed by a
 				// compaction or retention run): the spans a gone file held are in an
-				// object this lookup did not list, not nowhere (#772).
+				// object this lookup did not list, not nowhere (#772). Unless the
+				// in-RAM bloom facet proves the file never held this trace (no
+				// false negatives, no S3 read): then it cannot narrow the bound.
+				if isObjectGone(lookupErr, fi.Key) && s.facetExcludesTraceID(fi, traceID) {
+					return
+				}
 				anyErr = lookupErr
 			}
 		}()
@@ -186,4 +192,16 @@ func findTraceIDInFooterMeta(meta *format.FileMetaData, traceID string) (TraceIn
 		return TraceIndexEntry{}, false, nil
 	}
 	return TraceIndexEntry{}, false, nil
+}
+
+// facetExcludesTraceID reports whether the pmeta bloom facet of fi's partition
+// proves that fi holds no span of traceID, the facet-only part of checkFileBloom
+// (no `.bloom` read). False when the facet cannot answer.
+func (s *Storage) facetExcludesTraceID(fi manifest.FileInfo, traceID string) bool {
+	perColumn := s.fileBloomColumns("trace_id:="+strconv.Quote(traceID), fi.TraceIDHex)
+	if len(perColumn) == 0 {
+		return false
+	}
+	usable, excluded := s.facetBloomVerdict(fi, perColumn)
+	return usable && excluded
 }

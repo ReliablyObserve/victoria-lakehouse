@@ -463,12 +463,11 @@ func TestRowRead_RemovedObject_FailsWith502(t *testing.T) {
 	}
 }
 
-// A removed object stays tolerated only where the manifest gives its rows exactly
+// A removed object is answered only where the manifest gives its rows exactly
 // (#772): a timestamp-only count of an object entirely inside the window is
-// answered from the manifest without reading it, so the removal changes nothing,
-// and a window that cuts the object fails with 502 (the name is the one the
-// registry row and its parity lock have always cited; the guarantee is narrowed).
-func TestRowRead_RemovedObject_StaysTolerated(t *testing.T) {
+// answered from the manifest without a single read of the gone key, and a window
+// that cuts the object fails with 502.
+func TestRowRead_RemovedObject_ManifestExactCountOrFails502(t *testing.T) {
 	checkCountFromManifestWithRemovedObject(t)
 }
 
@@ -808,7 +807,14 @@ func TestRowRead_EverySurface_FailsOnUnreadableObject(t *testing.T) {
 		t.Run(name+"/removed", func(t *testing.T) {
 			fx := newRCFixture(t, 4, rcKeyFmt)
 			fx.removeObject(fx.keys[1])
+			gone, errs := metrics.QueryFileNotFoundTotal.Get(), metrics.QueryFileErrorsTotal.Get()
 			goneReadError(t, surface(fx), fx.keys[1])
+			if got := metrics.QueryFileNotFoundTotal.Get(); got <= gone {
+				t.Fatalf("%s: the removed object was not counted as not found (%d -> %d)", name, gone, got)
+			}
+			if got := metrics.QueryFileErrorsTotal.Get(); got != errs {
+				t.Fatalf("%s: a removed object was counted as an unreadable one (%d -> %d)", name, errs, got)
+			}
 		})
 	}
 }

@@ -73,7 +73,7 @@
   "TestFooterCache_WholeObjectReadKeepsOnlyTheFooter": 1.2,
   "TestParseFooterFromData_EntryDoesNotRetainTheObject": 1.2,
   "TestRowRead_CallerStopsDuringLastObject_Fails": 1.2,
-  "TestRowRead_RemovedObject_StaysTolerated": 1.2,
+  "TestRowRead_RemovedObject_ManifestExactCountOrFails502": 1.2,
   "TestRowRead_TraceByID_ThroughAdapter": 1.2,
   "TestTracesParquetWriteIsByteReproducible": 1.2,
   "TestBufferFlusher_Property_VisibleLifetimeBelowGuard": 1.1,
