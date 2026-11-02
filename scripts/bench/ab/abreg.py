@@ -7,10 +7,14 @@ This module reads those YAML files as they are; nothing here keeps a second copy
 from __future__ import annotations
 
 import glob
+import io
 import json
 import os
 import re
+import subprocess
 import sys
+import tarfile
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
@@ -52,6 +56,28 @@ def load_rows(root: str = REGISTRY) -> list[dict]:
             r["_file"] = rel
             rows.append(r)
     return rows
+
+
+REGISTRY_PATHS = ("tests/conformance/registry", GAPS_DOC)
+
+
+def registry_at(ref: str, root: str = ROOT) -> tuple[list[dict], dict[str, list[str]]]:
+    """The registry rows and the gap issues of docs/parity-and-gaps.md as they are at git `ref`, not in the working tree.
+
+    The proof judges a pull request with the registry of its BASE: a row, a `pending` flag or a gap entry that the pull request adds
+    or edits cannot excuse the pull request's own difference. A ref that cannot be read is an error, never a fall back to the working
+    tree (that would let a pull request judge itself)."""
+    try:
+        out = subprocess.run(["git", "-C", root, "archive", "--format=tar", ref, *REGISTRY_PATHS], check=True, capture_output=True).stdout
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"cannot read the registry at {ref!r}: {e.stderr.decode('utf-8', 'replace').strip()[:200]}") from e
+    with tempfile.TemporaryDirectory(prefix="lh-registry-at-") as tmp:
+        with tarfile.open(fileobj=io.BytesIO(out)) as tar:
+            if hasattr(tarfile, "data_filter"):
+                tar.extractall(tmp, filter="data")
+            else:  # pragma: no cover - Python before 3.12
+                tar.extractall(tmp)  # noqa: S202 - the archive is this repository's own git object
+        return load_rows(os.path.join(tmp, "tests", "conformance", "registry")), gaps_doc_issues(tmp)
 
 
 def load_features(root: str = REGISTRY) -> list[dict]:

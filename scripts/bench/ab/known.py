@@ -11,6 +11,11 @@ an API row that does not match the reference) is either
   (c) UNTRACKED: a difference nobody recorded (the covered rows say `expect: pass`, or there is none). It is
       printed as UNTRACKED and fails the check: owner rule (skill 2b), no silent problems, every difference has
       an issue, a registry row and a line in the PR comment.
+  (d) PENDING: the same as (c) on an API row that is `pending: true` in the BASE registry (or that the base does not
+      have): the row is not triaged yet, so the difference is listed under "pending triage" and does not fail. A NEW
+      difference (the PR made the answer worse in every sample) fails whatever the row's state.
+
+The registry that judges is the base branch's (`abreg.registry_at`), never the pull request's own.
 
 A difference the PR fixes is listed too: the registry row it maps to can flip to `expect: pass` with a lock.
 `--require-issue` additionally fails a tracked difference whose registry row cites no GitHub issue.
@@ -81,7 +86,8 @@ def observed_from_api(matrix: dict) -> list[dict]:
         v = r["verdict"]
         if v in NOT_A_DIFFERENCE:
             continue  # proves nothing (arbitrary, vacuous, unusable, blocked) or is a failure of the run, not a difference
-        if v == "regressed" or (v == "nondeterministic" and "regressed" in r.get("samples", [])):
+        untriaged = bool(r.get("untriaged"))
+        if v == "regressed" or (v == "nondeterministic" and "regressed" in r.get("samples", []) and not untriaged):
             status = "new"
         elif v == "nondeterministic":
             status = "unstable"  # listed, not failing: the answer flips between samples, the PR was never the worse one
@@ -92,7 +98,8 @@ def observed_from_api(matrix: dict) -> list[dict]:
         else:
             status = "pre-existing" if v in ("same", "improved") else "new"
         g = groups.setdefault((r["row"], status), {"source": "api", "what": r["row"], "status": status, "covers": [r["row"]], "where": [], "signals": [],
-                                                   "detail": f"{r['surface']} {r['path']} " + (r.get("notes") or [""])[0][:100], "verdict": v})
+                                                   "detail": f"{r['surface']} {r['path']} " + (r.get("notes") or [""])[0][:100], "verdict": v,
+                                                   "untriaged": untriaged})
         g["where"].append(r["id"])
         if r["signal"] not in g["signals"]:
             g["signals"].append(r["signal"])
@@ -123,6 +130,8 @@ def join(observed: list[dict], rows: list[dict], gaps: dict[str, list[int]], req
         elif known:
             item["tracking"] = "tracked" if all(k["issues"] for k in known) or not require_issue else "tracked-no-issue"
             item["no_issue"] = [k["row"] for k in known if not k["issues"]]
+        elif o.get("untriaged"):
+            item["tracking"] = "pending"  # not triaged on the base registry: listed, not gated
         else:
             item["tracking"] = "untracked"
         items.append(item)
@@ -158,12 +167,33 @@ def tracked_text(it: dict) -> str:
     return "; ".join(parts)
 
 
+def pending_lines(pending: list[dict], max_rows: int = 60) -> list[str]:
+    """The collapsed section of the differences on rows nobody has triaged yet: visible, counted, never gated."""
+    by_signal: dict[str, int] = {}
+    for it in pending:
+        by_signal[it["signal"]] = by_signal.get(it["signal"], 0) + 1
+    lines = ["", f"<details><summary>{len(pending)} differences from hot VL/VT on rows not triaged yet (`pending: true` in the base registry, or rows the base "
+                 f"does not have): listed, not gated ({', '.join(f'{n} {s}' for s, n in sorted(by_signal.items()))})</summary>", "",
+             "A pending row is flipped to executed in a reviewed registry batch; from then on a difference on it must be recorded in the registry or it fails the check. "
+             "A NEW difference (the pull request made the answer worse than the base's, in every sample) fails on a pending row too.", "",
+             "| signal | row | what differs |", "|---|---|---|"]
+    for it in sorted(pending, key=lambda i: (i["signal"], i["what"]))[:max_rows]:
+        lines.append(f"| {it['signal']} | `{it['what']}` | {it.get('detail', '').strip() or '-'} |")
+    if len(pending) > max_rows:
+        lines.append(f"| | {len(pending) - max_rows} more in the JSON artifact | |")
+    return lines + ["", "</details>"]
+
+
 def render(known: dict, stats: dict | None = None, max_rows: int = 40) -> list[str]:
     """Markdown lines of the 'Known differences and gaps' section."""
     lines = ["#### Known differences and gaps", ""]
-    items = known["items"]
-    if not items:
+    all_items = known["items"]
+    pending = [i for i in all_items if i["tracking"] == "pending"]
+    items = [i for i in all_items if i["tracking"] != "pending"]
+    if not all_items:
         lines += ["No difference from hot VictoriaLogs / VictoriaTraces in the cells and rows of this run."]
+    elif not items:
+        lines += ["No tracked, new or untracked difference; the differences below are on rows not triaged yet."]
     else:
         order = {"new": 0, "untracked": 1, "tracked-no-issue": 2, "tracked": 3, "flaky": 3.5, "unstable": 4, "fixed": 5}
         items = sorted(items, key=lambda i: (order.get(i["tracking"], 9), i["source"], i["what"]))
@@ -201,6 +231,8 @@ def render(known: dict, stats: dict | None = None, max_rows: int = 40) -> list[s
     lines += ["", "Differences found: " + (", ".join(f"{n} {k}" for k, n in sorted(counts.items())) if counts else "none") + "."]
     if stats:
         lines += ["", stats_line(stats)]
+    if pending:
+        lines += pending_lines(pending)
     return lines
 
 

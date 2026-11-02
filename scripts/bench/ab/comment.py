@@ -26,6 +26,8 @@ import known as knownmod  # noqa: E402
 
 PERF_MARKER = "<!-- lh-perf-smoke -->"
 API_MARKER = "<!-- lh-api-matrix -->"
+PERF_TITLE = "Performance A/B vs main, against VictoriaLogs / VictoriaTraces"
+API_TITLE = "API endpoints: Lakehouse base vs PR vs VictoriaLogs / VictoriaTraces"
 REF_INVALID_SHARE = 0.10  # more than this share of a signal's cells (and more than 2) without a hot answer: the reference stack is broken
 ICON = {"broken": "BROKEN", "unstable": "UNSTABLE", "slower": "SLOWER", "fixed": "fixed", "faster": "faster", "same": "same", "n/a": "n/a"}
 ORDER = {"broken": 0, "unstable": 1, "slower": 2, "fixed": 3, "faster": 4, "same": 5, "n/a": 6}
@@ -175,7 +177,8 @@ def skipped(selection: dict, marker: str, title: str) -> tuple[str, dict]:
 def errored(selection: dict, meta: dict, message: str, marker: str, title: str) -> tuple[str, dict]:
     shapes = sum(len(v) for v in selection.get("sets", {}).values())
     lines = [marker, f"### {title}: did not complete", "",
-             f"The run for {shapes} selected shape(s) stopped before a result: `{message[:300]}`. The job log and the uploaded artifact have the details.", "",
+             f"{'The run for ' + str(shapes) + ' selected shape(s)' if shapes else 'The run'} stopped before a result: `{message[:300]}`. "
+             "The job log and the uploaded artifact have the details.", "",
              f"<sub>{meta_stamp(meta)}</sub>"]
     return "\n".join(lines) + "\n", {"state": "error", "failed": True, "exit": 3}
 
@@ -215,7 +218,7 @@ def where(c: dict) -> str:
 def render_perf(summary: dict | None, selection: dict, meta: dict, known: dict | None = None, components: dict | None = None,
                 extra: dict | None = None, gate_s3_all: bool = False) -> tuple[str, dict]:
     """`extra` holds the summaries of the other S3 latency profiles ({"50": summary}): their cells fail the check like the 0 ms ones."""
-    title = "Performance A/B vs main, against VictoriaLogs / VictoriaTraces"
+    title = PERF_TITLE
     if summary is None:
         return skipped(selection, PERF_MARKER, title)
     cells = summary["cells"]
@@ -317,29 +320,72 @@ def score(v) -> str:
     return "-" if v is None else (f"{v:.0f}%" if v < 99.995 else "100%")
 
 
+def reference_unanswered(r: dict) -> bool:
+    """Hot VictoriaLogs/VictoriaTraces gave no answer to an upstream row: a transport error (0) or a 5xx in some round. Lakehouse-only rows have no reference."""
+    if r.get("lh_only"):
+        return False
+    return any(t in ("", "0") or t.startswith("5") for t in str((r.get("status") or {}).get("ref", "200")).split("/"))
+
+
+def api_reference_broken(results: list[dict]) -> bool:
+    """As `reference_broken` for the perf cells, per signal: hot did not answer more than max(2, 10 %) of the upstream rows of a signal."""
+    for sig in {r["signal"] for r in results if not r.get("lh_only")}:
+        up = [r for r in results if r["signal"] == sig and not r.get("lh_only")]
+        if sum(1 for r in up if reference_unanswered(r)) > max(2, REF_INVALID_SHARE * len(up)):
+            return True
+    return False
+
+
+API_QUIET = ("exact", "arbitrary", "vacuous", "unusable")
+
+
+def signal_line(results: list[dict], failing_ids: set) -> str:
+    bits = []
+    for sig in ("logs", "traces"):
+        rs = [r for r in results if r["signal"] == sig]
+        if rs:
+            pend = sum(1 for r in rs if r.get("untriaged") and r["verdict"] not in API_QUIET)
+            bits.append(f"{sig}: {len(rs)} rows, {sum(1 for r in rs if r['verdict'] == 'exact')} exact, {sum(1 for r in rs if r['id'] in failing_ids)} failing, "
+                        f"{pend} differing on pending rows")
+    return "; ".join(bits)
+
+
 def render_api(matrix: dict | None, selection: dict, meta: dict, known: dict | None = None) -> tuple[str, dict]:
-    title = "API endpoints: Lakehouse base vs PR vs VictoriaLogs / VictoriaTraces"
+    title = API_TITLE
     if matrix is None:
         return skipped(selection, API_MARKER, title)
     results = matrix["results"]
     s = matrix["summary"]
     counts = s["verdicts"]
-    failing = [r for r in results if r["id"] in set(s["failing"])]
+    failing_ids = set(s["failing"])
+    failing = [r for r in results if r["id"] in failing_ids]
     known_failed = bool(known and known.get("failed"))
     failed = bool(failing) or known_failed
-    if failed:
+    ref_broken = api_reference_broken(results)
+    invalid = ref_broken or not results
+    if invalid:
+        head, state = ("WARNING API matrix: invalid run, no registry row was exercised" if not results else
+                       "WARNING API matrix: invalid run, hot VL/VT did not answer most rows; re-run the job"), "invalid"
+    elif failed:
         head, state = "RED API matrix: a regression, a status change or a new difference", "failed"
     elif counts.get("fixed") or counts.get("improved"):
         head, state = "GREEN API matrix: fixed or improved, no regression", "passed"
     else:
         head, state = "NEUTRAL API matrix: no change in any endpoint", "passed"
     exact = [r for r in results if r["verdict"] == "exact"]
+    pending_rows = [r for r in results if r.get("untriaged")]
     bits = [f"{n} {k}" for k, n in sorted(counts.items(), key=lambda kv: -kv[1])]
     lines = [API_MARKER, f"### {head}", "",
              f"**{len(results)} registry rows exercised** against base, PR and hot VL/VT (read-only requests, {matrix.get('rounds', '?')} rounds each): " + ", ".join(bits) +
-             f". **{s['not_exercised']} rows not exercised** (listed below by reason).", ""]
-    shown = [r for r in results if r["verdict"] not in ("exact", "arbitrary", "vacuous", "unusable") or r["status_changed"] or r.get("latency") == "slower"]
-    shown.sort(key=lambda r: (0 if r["id"] in s["failing"] else 1, r["surface"], r["id"]))
+             f". **{s['not_exercised']} rows not exercised** (listed below by reason).", "",
+             f"**{len(results) - len(pending_rows)} rows are gated** (triaged on the base registry); **{len(pending_rows)} are pending triage** (their differences from hot are "
+             f"listed, a new regression still fails). By signal, never averaged: {signal_line(results, failing_ids) or 'no row'}.", ""]
+    if ref_broken:
+        lines += ["**Hot VictoriaLogs/VictoriaTraces gave no valid answer to most upstream rows of a signal: the reference stack is broken, the run proves nothing.** "
+                  "Rows without a hot answer: " + ", ".join(f"`{r['id']}`" for r in results if reference_unanswered(r))[:400], ""]
+    shown = [r for r in results if (r["verdict"] not in API_QUIET or r["status_changed"] or r.get("latency") == "slower")
+             and not (r.get("untriaged") and r["verdict"] in ("same", "improved") and r["id"] not in failing_ids)]
+    shown.sort(key=lambda r: (0 if r["id"] in failing_ids else 1, r["surface"], r["id"]))
     if shown:
         lines += ["| surface | row | base status | PR status | VL/VT status | base % | PR % | worst facet | base p50 | PR p50 | VL/VT p50 | verdict |",
                   "|---|---|---|---|---|--:|--:|---|--:|--:|--:|---|"]
@@ -347,7 +393,8 @@ def render_api(matrix: dict | None, selection: dict, meta: dict, known: dict | N
             st, lat = r["status"], r["p50_ms"]
             lines.append(f"| {r['surface']} | `{r['id']}` | {st.get('base', '-')} | {st.get('pr', '-')} | {st.get('ref', '-')} | {score(r['base_score'])} | {score(r['pr_score'])} | "
                          f"{r['pr_worst'] or '-'} | {ms(lat.get('base'))} | {ms(lat.get('pr'))} | {ms(lat.get('ref'))} | {r['verdict']}"
-                         f"{' (status changed)' if r['status_changed'] else ''}{' (slower)' if r.get('latency') == 'slower' else ''} |")
+                         f"{' (status changed)' if r['status_changed'] else ''}{' (slower)' if r.get('latency') == 'slower' else ''}"
+                         f"{' (re-sent ' + str(r['confirmed']) + ' more times)' if r.get('confirmed') else ''}{' (pending)' if r.get('untriaged') else ''} |")
         if len(shown) > 80:
             lines.append(f"| | {len(shown) - 80} more rows in the JSON artifact | | | | | | | | | | |")
     else:
@@ -373,9 +420,12 @@ def render_api(matrix: dict | None, selection: dict, meta: dict, known: dict | N
         lines += [""] + knownmod.render(known, meta.get("registry_gap_stats") or known.get("registry"))
     stamp = meta_stamp(meta)
     lines += ["", "<sub>" + stamp + ". Verdicts and percentages are scripts/proof's (status, error text, rows, values, series, traces, schema; 100% only when exact). "
-              "How to read and reproduce: `docs/pr-perf-smoke.md`.</sub>"]
-    verdict = {"state": state, "failed": failed, "exit": 1 if failed else 0, "counts": counts, "failing": s["failing"],
+              "Rows are judged by the base branch's registry. How to read and reproduce: `docs/pr-perf-smoke.md`.</sub>"]
+    exit_code = 2 if invalid else (1 if failed else 0)
+    verdict = {"state": state, "failed": failed or invalid, "exit": exit_code, "counts": counts, "failing": s["failing"],
                "status_changes": s["status_changes"], "known": (known or {}).get("counts", {}), "rows": len(results),
+               "gated_rows": len(results) - len(pending_rows), "pending_rows": len(pending_rows),
+               "signals": {sig: sum(1 for r in results if r["signal"] == sig) for sig in ("logs", "traces")},
                "not_exercised": s["not_exercised"]}
     return "\n".join(lines) + "\n", verdict
 
