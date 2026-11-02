@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.19] - 2026-11-02
+
+### Fixed
+
+- **A committed insert-buffer segment is no longer served after compaction merged its objects, so an insert pod and the select pods reading it answer each row once (#611).** The flusher retired a committed segment (after its grace) only when its tick had finished draining the pending segments, but compaction on any writer may merge a segment's objects 2 x grace after its commit. A drain that lasts longer, because the object store is slow or a backlog is being written after an outage, therefore kept serving the segment next to the merged object, and `count()` and `stats` on that pod, and on a select pod reading it over the buffer bridge, returned those rows twice while the set of distinct rows stayed whole. The flusher now retires the segments on its own loop at its check interval (both binaries), so a segment is served at most the grace plus one second after its commit. The two-writer, two-select multi-instance tests no longer age the bucket's markers while the writer's segments are live, and check every row once on the writer too.
+
+- **The API matrix of the PR proof workflow no longer fails a pull request because a port of the runner was in use (tooling only, no change to the Lakehouse binaries or to runtime behaviour).** The proof stack's port block is now chosen by probing, preferring ports below the host's ephemeral range, and a run that stopped because its ports were in use is re-attempted once on another block. The infrastructure state (exit 4) has its own message in the check and in the comment and is never reported as a regression; see `docs/pr-perf-smoke.md`.
+
 ## [0.167.18] - 2026-11-02
 
 ### Changed
