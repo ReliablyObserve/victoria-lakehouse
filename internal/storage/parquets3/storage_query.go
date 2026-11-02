@@ -580,10 +580,10 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 		return nil
 	}
 	if isObjectGone(err, fi.Key) {
-		// Listed, then removed by a compaction or a retention run: its rows are
-		// in the compacted object or deleted on purpose.
-		s.handle404Recovery(ctx, fi, filter, hasTombstones, filteredWriteBlock)
-		return nil
+		// Listed, then removed by a compaction or a retention run (#772). Its rows
+		// are in a compacted object this query did not list, or deleted: the answer
+		// is complete only if the manifest alone gives them exactly, else it fails.
+		return s.handle404Recovery(ctx, fi, startNs, endNs, filter, hasTombstones, filteredWriteBlock, err)
 	}
 	if ctx.Err() != nil {
 		// The query was stopped (its caller, or the row ceiling); the stop is
@@ -3376,18 +3376,45 @@ func isFileNotFoundError(err error) bool {
 		strings.Contains(s, "file not found")
 }
 
-func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock func(uint, *logstorage.DataBlock)) {
+// handle404Recovery decides the read of an object that was listed and is gone
+// (NoSuchKey). It is counted in lakehouse_query_file_not_found_total either way.
+//
+// The object's rows may be anywhere (a compaction moved them into an object this
+// query did not list, a retention run deleted them), so the read does not go on
+// without them: the answer is complete only when the manifest alone gives the
+// object's rows exactly, a timestamp-only query that covers the whole object with
+// the object entirely inside the window, no filter, no delete that can touch it
+// and exact bounds. Then the rows come from the manifest and the read goes on.
+// In every other case it fails with 502 (goneObjectError), the status upstream
+// gives a read whose storage node cannot serve it. cause is the read's own error.
+func (s *Storage) handle404Recovery(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock func(uint, *logstorage.DataBlock), cause error) error {
 	metrics.QueryFileNotFoundTotal.Inc()
 	plan := metadataOnlyPlanFromContext(ctx)
 	if storage.IsTimestampOnly(ctx) && filter == nil && !hasTombstones &&
-		fi.RowCount > 0 && !fi.BoundsInferred && fi.MinTimeNs > 0 && fi.MaxTimeNs > 0 &&
+		fileFullyInRange(fi, startNs, endNs) &&
 		fi.RowCount <= maxPlausibleRowCount && plan.coversFile(fi) {
 		if s.streamConstTimeBlocks(ctx, fi, filteredWriteBlock) {
 			metrics.MetadataOnlyFiles.Inc()
+			logger.Infof("query recovered removed object via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)
+			return nil
 		}
-		logger.Infof("query recovered compacted file via manifest metadata; key=%s rows=%d", fi.Key, fi.RowCount)
-	} else {
-		logger.Infof("query skipped compacted/deleted file; key=%s", fi.Key)
+		if ctx.Err() != nil {
+			// Stopped by its caller while the rows were emitted: reported by RunQuery.
+			return nil
+		}
+	}
+	logger.Warnf("query failed: object was removed while the query ran (compaction or retention); key=%s", fi.Key)
+	return goneObjectError(fi.Key, cause)
+}
+
+// goneObjectError is the failure of a read whose listed object was removed while
+// it ran: "cannot read <key>: the object was removed while this query ran; retry
+// the query: <cause>", answered 502 Bad Gateway like an unreadable object
+// (unreadableObjectError). The S3 error stays in the chain.
+func goneObjectError(key string, cause error) error {
+	return &httpserver.ErrorWithStatusCode{
+		Err:        fmt.Errorf("cannot read %s: the object was removed while this query ran; retry the query: %w", key, cause),
+		StatusCode: http.StatusBadGateway,
 	}
 }
 

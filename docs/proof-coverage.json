@@ -13,10 +13,10 @@
     "upstream_pass_rows_differential": 108,
     "upstream_pass_rows_other_test": 33,
     "upstream_pass_rows_no_test": 246,
-    "rows_total": 1375,
-    "rows_pending": 1285,
-    "rows_pending_waiting_for_runner": 501,
-    "rows_pending_executed_elsewhere": 784,
+    "rows_total": 1378,
+    "rows_pending": 1288,
+    "rows_pending_waiting_for_runner": 500,
+    "rows_pending_executed_elsewhere": 788,
     "rows_pending_unclassified": 0,
     "shipped_features": 156,
     "shipped_features_no_rows": 110,
@@ -1982,26 +1982,26 @@
     }
   ],
   "registry": {
-    "rows": 1375,
+    "rows": 1378,
     "by_surface": {
-      "lh": 138,
+      "lh": 141,
       "vl": 684,
       "vt": 553
     },
     "by_expect": {
       "absent": 3,
-      "differ": 68,
-      "pass": 1278,
+      "differ": 69,
+      "pass": 1280,
       "unsupported": 26
     },
     "by_origin": {
-      "lh-addition": 114,
+      "lh-addition": 117,
       "lh-shim": 28,
       "native": 1233
     },
     "perf_cells": 768,
-    "non_perf_rows": 607,
-    "pending_rows": 1285,
+    "non_perf_rows": 610,
+    "pending_rows": 1288,
     "pending_perf_cells": 768
   },
   "features": {
@@ -2678,8 +2678,8 @@
       {
         "id": "lh.feature.query.parallel_file_workers",
         "area": "query",
-        "rows": 3,
-        "rows_pending": 3,
+        "rows": 6,
+        "rows_pending": 6,
         "rows_targeting_hot": 0,
         "tests": 4,
         "bench": [],
@@ -4388,7 +4388,7 @@
     },
     {
       "reason": "durability-cell",
-      "rows": 16,
+      "rows": 20,
       "executed_elsewhere": true,
       "description": "kind `durability`: backed by the cited Go tests, no HTTP request",
       "refs_doc": [
@@ -4398,7 +4398,7 @@
     },
     {
       "reason": "chaos-or-ui-harness",
-      "rows": 25,
+      "rows": 24,
       "executed_elsewhere": false,
       "description": "layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner",
       "refs_doc": [

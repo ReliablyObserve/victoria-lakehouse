@@ -5,7 +5,9 @@ package parquets3
 // failed with anything but a 404 (an S3 error, a corrupt footer, a truncated
 // body), (b) its caller cancelled it or its deadline passed while the last object
 // was being read, or (c) the per-query live-bytes budget cancelled it. A listed
-// object that a compaction or a retention run removed (404) stays tolerated.
+// object that a compaction or a retention run removed (404) used to be skipped
+// silently; it fails the read with 502 too (issue #772, R1), unless the manifest
+// alone gives its rows exactly.
 //
 // Mirrored in lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go.
 
@@ -34,8 +36,10 @@ import (
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/format"
 
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/cache"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/smartcache"
 )
@@ -362,55 +366,151 @@ func TestRowRead_UnreadableObject_FailsInsteadOfPartial(t *testing.T) {
 	}
 }
 
-// A listed object that was removed meanwhile (compaction, retention) is
-// tolerated: the read answers with the rows of the other objects, as before.
-func TestRowRead_RemovedObject_StaysTolerated(t *testing.T) {
+// partitionOf is the manifest partition registerFileInMockS3 files key under.
+func (fx *rcFixture) partitionOf(key string) string { return partitionFromKey(key) }
+
+// removeObject deletes a key from the mock bucket, as a compaction's or a
+// retention run's DELETE does.
+func (fx *rcFixture) removeObject(key string) {
+	fx.fs.mock.mu.Lock()
+	delete(fx.fs.mock.files, key)
+	fx.fs.mock.mu.Unlock()
+}
+
+// goneReadError checks the failure of a read whose listed object was removed:
+// 502 Bad Gateway, naming the object and saying it was removed, with the S3 error
+// still in the chain, and not a deadline or a cancellation.
+func goneReadError(t *testing.T, err error, key string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("the read answered without error although %s was removed: a removed object must fail the read", key)
+	}
+	var esc *httpserver.ErrorWithStatusCode
+	if !errors.As(err, &esc) || esc.StatusCode != http.StatusBadGateway {
+		t.Fatalf("error %v: want httpserver.ErrorWithStatusCode with status 502", err)
+	}
+	if !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), "removed while this query ran") {
+		t.Fatalf("error %q does not name %s and say it was removed", err, key)
+	}
+	if gone, typed := s3reader.IsNotFound(err); !typed || !gone {
+		t.Fatalf("the S3 NoSuchKey error is lost from the chain of %v", err)
+	}
+}
+
+// A listed object that was removed meanwhile (compaction, retention) fails the
+// read with 502 (#772, R1), whatever its position among the objects, however many
+// workers read them and whether or not its footer is cached. It is counted in
+// lakehouse_query_file_not_found_total and not in lakehouse_query_file_errors_total.
+func TestRowRead_RemovedObject_FailsWith502(t *testing.T) {
+	for _, workers := range []int{1, 4} {
+		for _, warm := range []bool{false, true} {
+			for _, idx := range []int{0, rcFiles - 1} {
+				t.Run(fmt.Sprintf("workers=%d/warm_footer=%v/object=%d", workers, warm, idx), func(t *testing.T) {
+					fx := newRCFixture(t, workers, rcKeyFmt)
+					if warm {
+						if rows, err := fx.query(t, context.Background(), "*", nil); err != nil || rows != rcFiles*rcRowsPerFile {
+							t.Fatalf("warm-up: %d rows, err %v", rows, err)
+						}
+						// Footers stay cached; the object bodies do not (a body still in
+						// the cache is a complete read, not a removed object).
+						fx.s.memCache = cache.NewLRU(64 * 1024 * 1024)
+					}
+					fx.removeObject(fx.keys[idx])
+					gone := metrics.QueryFileNotFoundTotal.Get()
+					errs := metrics.QueryFileErrorsTotal.Get()
+					_, err := fx.query(t, context.Background(), "*", nil)
+					goneReadError(t, err, fx.keys[idx])
+					if got := metrics.QueryFileNotFoundTotal.Get(); got <= gone {
+						t.Fatalf("the removed object was not counted as not found (%d -> %d)", gone, got)
+					}
+					if got := metrics.QueryFileErrorsTotal.Get(); got != errs {
+						t.Fatalf("a removed object was counted as an unreadable one (%d -> %d)", errs, got)
+					}
+				})
+			}
+		}
+	}
+}
+
+// The control of the failure above: an object that was never listed changes
+// nothing, and a read of the same listing without the removed key is complete.
+func TestRowRead_RemovedObject_ListingWithoutItIsComplete(t *testing.T) {
+	fx := newRCFixture(t, 4, rcKeyFmt)
+	fx.removeObject(fx.keys[1])
+	if _, err := fx.query(t, context.Background(), "*", nil); err == nil {
+		t.Fatal("premise: the read of a listing that names a removed object must fail")
+	}
+	// The next listing (a manifest refresh) no longer names it.
+	fx.s.manifest.RemoveFile(fx.partitionOf(fx.keys[1]), fx.keys[1])
+	rows, err := fx.query(t, context.Background(), "*", nil)
+	if err != nil || rows != (rcFiles-1)*rcRowsPerFile {
+		t.Fatalf("after the refresh: %d rows, err %v; want %d rows", rows, err, (rcFiles-1)*rcRowsPerFile)
+	}
+}
+
+// The compaction swap (#772): a source object the compactor deleted just before
+// the query read it, while the merged object that now holds its rows is not in the
+// query's listing. The query fails with 502 instead of answering with 1,400 of
+// 2,100 rows and no error. (The rows arrive in full once the listing names the
+// merged object and not the sources, see TestRowRead_RemovedSourceMidQuery_TwoReaders.)
+func TestRowRead_RemovedSourceMidQuery_Fails502(t *testing.T) {
 	for _, workers := range []int{1, 4} {
 		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
 			fx := newRCFixture(t, workers, rcKeyFmt)
-			fx.fs.mock.mu.Lock()
-			delete(fx.fs.mock.files, fx.keys[1])
-			fx.fs.mock.mu.Unlock()
-			before := metrics.QueryFileNotFoundTotal.Get()
-			rows, err := fx.query(t, context.Background(), "*", nil)
-			if err != nil {
-				t.Fatalf("RunQuery: %v, a removed object must stay tolerated", err)
-			}
-			if want := (rcFiles - 1) * rcRowsPerFile; rows != want {
-				t.Fatalf("rows = %d, want the %d of the objects still there", rows, want)
-			}
-			if got := metrics.QueryFileNotFoundTotal.Get(); got <= before {
-				t.Fatalf("the removed object was not counted as not found (%d -> %d)", before, got)
-			}
+			source := fx.keys[1]
+			// The merged object holds the source's rows; the query's listing does not have it.
+			fx.fs.mock.putFile("logs/dt=2026-05-10/hour=14/compacted-merge.parquet", fx.datas[1])
+			fx.fs.setFault(source, func(w http.ResponseWriter, r *http.Request) {
+				// The compactor deletes the source just before the query reads it.
+				fx.removeObject(source)
+				fx.fs.clearFault(source)
+				fx.fs.mock.handler(w, r)
+			})
+			_, err := fx.query(t, context.Background(), "*", nil)
+			goneReadError(t, err, source)
 		})
 	}
 }
 
-// KNOWN GAP (#772): a source object a compaction deleted while the query ran is
-// skipped silently, though its rows are in the merged object. The compactor
-// publishes the merge and deletes its sources at once, and a query lists once, so
-// the query answers without those rows and without an error. This test pins that
-// behaviour so that the gap stays visible; when #772 is fixed it must be turned
-// into the assertion that every row arrives.
-func TestRowRead_RemovedSourceMidQuery_KnownGap772(t *testing.T) {
-	fx := newRCFixture(t, 1, rcKeyFmt) // one worker: the objects are read one after the other
-	source := fx.keys[1]
-	// The merged object holds the source's rows; the query's listing does not have it.
-	fx.fs.mock.putFile("logs/dt=2026-05-10/hour=14/compacted-merge.parquet", fx.datas[1])
-	fx.fs.setFault(source, func(w http.ResponseWriter, r *http.Request) {
-		// The compactor deletes the source just before the query reads it.
-		fx.fs.mock.mu.Lock()
-		delete(fx.fs.mock.files, source)
-		fx.fs.mock.mu.Unlock()
-		fx.fs.clearFault(source)
-		fx.fs.mock.handler(w, r)
-	})
-	rows, err := fx.query(t, context.Background(), "*", nil)
-	if err != nil {
-		t.Fatalf("RunQuery: %v; the gap pinned here is a silent skip", err)
+// Two readers over one bucket (two select pods, or a select and an insert pod)
+// that planned on the same listing both fail on the swapped-away source and neither
+// answers short; once each has a listing with the merged object in place of the
+// source, both answer exactly. Nothing is shared between the readers but the
+// bucket and the listing.
+func TestRowRead_RemovedSourceMidQuery_TwoReaders(t *testing.T) {
+	fx := newRCFixture(t, 4, rcKeyFmt)
+	second := testStorageWithS3(t, fx.fs.srv.URL)
+	second.cfg.Query.FileWorkers = 4
+	second.manifest = fx.s.manifest // the same listing, as a second reader pod would plan it
+	readers := []*Storage{fx.s, second}
+	run := func(s *Storage) (int, error) {
+		q := mustParseQueryWithTime(t, "*", fx.start, fx.end)
+		var rows atomic.Int64
+		err := s.RunQuery(context.Background(), nil, q, func(_ uint, db *logstorage.DataBlock) { rows.Add(int64(db.RowsCount())) })
+		return int(rows.Load()), err
 	}
-	if want := (rcFiles - 1) * rcRowsPerFile; rows != want {
-		t.Fatalf("rows = %d, want %d (the rows of the deleted source are missing: known gap #772)", rows, want)
+
+	// The swap: the merged object appears, the source is deleted.
+	merged := "logs/dt=2026-05-10/hour=14/compacted-merge.parquet"
+	fx.fs.mock.putFile(merged, fx.datas[1])
+	fx.removeObject(fx.keys[1])
+	for i, r := range readers {
+		rows, err := run(r)
+		if err == nil {
+			t.Fatalf("reader %d answered %d rows without error although a listed source was deleted", i, rows)
+		}
+		goneReadError(t, err, fx.keys[1])
+	}
+
+	// The refresh: the listing names the merged object and not the source.
+	fi := registerFileInMockS3(t, fx.s, fx.fs.mock, merged, fx.datas[1], fx.now)
+	_ = fi
+	fx.s.manifest.RemoveFile(fx.partitionOf(fx.keys[1]), fx.keys[1])
+	for i, r := range readers {
+		rows, err := run(r)
+		if err != nil || rows != rcFiles*rcRowsPerFile {
+			t.Fatalf("reader %d after the refresh: %d rows, err %v; want %d rows", i, rows, err, rcFiles*rcRowsPerFile)
+		}
 	}
 }
 
@@ -459,12 +559,9 @@ func TestRowRead_ClassifiedByTheS3Error_NotByItsText(t *testing.T) {
 	}
 
 	fx2 := newRCFixture(t, 2, rcKeyFmt)
-	fx2.fs.mock.mu.Lock()
-	delete(fx2.fs.mock.files, fx2.keys[1])
-	fx2.fs.mock.mu.Unlock()
-	if rows, err := fx2.query(t, context.Background(), "*", nil); err != nil || rows != (rcFiles-1)*rcRowsPerFile {
-		t.Fatalf("a NoSuchKey must stay tolerated: %d rows, err %v", rows, err)
-	}
+	fx2.removeObject(fx2.keys[1])
+	_, err = fx2.query(t, context.Background(), "*", nil)
+	goneReadError(t, err, fx2.keys[1]) // a NoSuchKey is a removed object: 502, never a silent skip
 }
 
 // (b) The caller's cancellation or deadline during the last object's read is not
@@ -589,8 +686,8 @@ func TestRowRead_MultiReader_FailAndRecover(t *testing.T) {
 	}
 }
 
-// Every read surface that scans objects fails on an unreadable object, and
-// tolerates a removed one.
+// Every read surface that scans objects fails on an unreadable object and on a
+// removed one.
 func TestRowRead_EverySurface_FailsOnUnreadableObject(t *testing.T) {
 	surfaces := map[string]func(fx *rcFixture) error{
 		"field_names": func(fx *rcFixture) error {
@@ -652,12 +749,8 @@ func TestRowRead_EverySurface_FailsOnUnreadableObject(t *testing.T) {
 		})
 		t.Run(name+"/removed", func(t *testing.T) {
 			fx := newRCFixture(t, 4, rcKeyFmt)
-			fx.fs.mock.mu.Lock()
-			delete(fx.fs.mock.files, fx.keys[1])
-			fx.fs.mock.mu.Unlock()
-			if err := surface(fx); err != nil {
-				t.Fatalf("%s: %v, a removed object must stay tolerated", name, err)
-			}
+			fx.removeObject(fx.keys[1])
+			goneReadError(t, surface(fx), fx.keys[1])
 		})
 	}
 }

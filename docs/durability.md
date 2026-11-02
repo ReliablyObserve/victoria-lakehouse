@@ -271,6 +271,7 @@ and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 | **A select pod lists a committed segment's objects only after the insert pod retired the segment** | Known gap, #391: the segment's rows are in Parquet, but the select pod's answers miss them (HTTP 200) until its next complete listing; nothing counts it (§2.3, `lh.durability.select_pod_lists_after_segment_retired_*`). |
 | **Pod loses its disk before a segment drained** | The rows of undrained segments are lost (§2.4). |
 | **Already-written data** | Immutable Parquet on S3; survives everything. |
+| **A compaction or retention run deletes an object a running read listed** | The read fails with 502 (`cannot read <key>: the object was removed while this query ran; retry the query`) instead of answering without the object's rows; a retry on a fresh listing succeeds. The data is not lost: the rows are in the merged object. The deferred delete that lets such a read finish is the rest of #772 (§2.6, `lh.durability.compaction_swap_past_bound_*`, `lh.durability.compaction_swap_within_bound_*`). |
 | **A delete (tombstone)** | The definition object is created in S3 before the API returns (never overwritten); every pod rebuilds its view from the bucket, so it survives `kill -9`, a lost disk and a pod move. See §3.1. |
 
 ### 2.1 Failed uploads
@@ -786,6 +787,46 @@ Proof: `TestSegmentGuard_Released`, `TestSegmentGuard_ReleasedFilesKeepsOnlyTheF
   `insert.buffer_dir`) is moved aside to `legacy-<unix>/` with a warning at
   startup. It is not read or flushed (the earlier release wrote those rows to
   Parquet); delete it when it is no longer needed.
+
+### 2.6 A read that overlaps a compaction swap or a retention delete
+
+A query lists its objects once. The compactor publishes a merged object and deletes
+its sources right after (`internal/compaction/compactor.go`, no grace period), and
+retention deletes expired objects the same way, so an object a running read listed
+can be gone when the read gets to it. Its rows are in the merged object, which that
+read did not list, or were deleted on purpose.
+
+- **Never a short answer.** A listed object that is gone (`NoSuchKey`) or cannot be
+  read fails the read with **502 Bad Gateway** on every surface of both binaries
+  (`/select/logsql/*`, the field and stream enumerations, Jaeger and Tempo search),
+  naming the object. It used to be skipped with a log line, and the read answered
+  200 without its rows (Jaeger trace-by-ID: 404 "trace not found" for a trace that
+  exists). Jaeger and Tempo trace-by-ID answer 400 for the same reason as for an
+  unreadable object ([#773](https://github.com/ReliablyObserve/victoria-lakehouse/issues/773)),
+  never 404 and never 200. 502 is upstream's status for a read whose storage node
+  cannot serve it; the S3 error stays in the error chain and
+  `lakehouse_query_file_not_found_total` keeps counting (an increase means a read
+  met a swap).
+- **Exact from the manifest, or an error.** The only object a read goes on without
+  is one the manifest gives exactly: a timestamp-only query (count, `_time`
+  bucketing) with no filter and no delete that can touch the object, the object
+  entirely inside the window, its bounds exact. Everything else fails.
+- **Not yet complete.** The sources are still deleted at once, so a read that
+  overlaps a swap fails and the client retries (the retry plans on the refreshed
+  listing). Making it succeed means deferring the delete past the longest read, and
+  pods learning the swap without the push: the remaining work of
+  [#772](https://github.com/ReliablyObserve/victoria-lakehouse/issues/772). The cell
+  that states the goal, `lh.durability.compaction_swap_within_bound_*` (no loss, no
+  duplicate), is a known gap until then; `lh.durability.compaction_swap_past_bound_*`
+  (no duplicate, rejected with 502) holds now and stays.
+- **Multi-instance.** Readers share only the bucket and the listing. Every reader
+  whose listing names a deleted object fails alike, and every reader with a
+  refreshed listing answers exactly; a select pod and an insert pod behave the
+  same. Proven by `TestRowRead_RemovedSourceMidQuery_TwoReaders` (both modules).
+- **Per signal.** The rule is the same code in both binaries. Traces add the
+  trace-by-ID footer lookup: a gone object leaves its index entry unknown, like an
+  unreadable footer, so the lookup reports a miss and the span scan fails for it
+  instead of searching a time bound the other objects narrowed.
 
 ---
 

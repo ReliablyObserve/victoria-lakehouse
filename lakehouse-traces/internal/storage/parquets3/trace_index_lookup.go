@@ -113,10 +113,11 @@ func (s *Storage) LookupTraceIndex(ctx context.Context, tenantIDs []logstorage.T
 					aggEnd = entry.EndNs
 				}
 				hit = true
-			} else if lookupErr != nil && !isObjectGone(lookupErr, fi.Key) {
-				// A file that is gone (removed by a compaction or retention run)
-				// holds no span the scan could still find; any other failure
-				// means this file's index entry is unknown.
+			} else if lookupErr != nil {
+				// A footer that cannot be read means this file's index entry is
+				// unknown, whether the object is unreadable or gone (removed by a
+				// compaction or retention run): the spans a gone file held are in an
+				// object this lookup did not list, not nowhere (#772).
 				anyErr = lookupErr
 			}
 		}()

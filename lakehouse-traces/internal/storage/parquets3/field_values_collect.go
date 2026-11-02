@@ -226,10 +226,15 @@ func (s *Storage) scanFieldValuesParallel(ctx context.Context, files []manifest.
 						return // stopped by the caller; reported below
 					}
 					if isObjectGone(err, fi.Key) {
-						// Listed, then removed by a compaction or a retention
-						// run: its rows are in the compacted object or deleted.
+						// Listed, then removed by a compaction or a retention run
+						// (#772): its values and hits may be anywhere else, and the
+						// manifest has no per-value counts for it (fileAggregate was
+						// tried before the scan). Fail the read, as for an unreadable
+						// object, instead of answering without them.
 						metrics.QueryFileNotFoundTotal.Inc()
-						continue
+						logger.Warnf("scan projected %s: object was removed while the query ran; key=%s", r.op, fi.Key)
+						recordReadError(&failure, goneObjectError(fi.Key, err))
+						return
 					}
 					// An object that cannot be read leaves values and hits out of
 					// the answer: fail the read, as the query path does.

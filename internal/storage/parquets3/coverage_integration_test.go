@@ -1596,11 +1596,9 @@ func TestInteg_RunQuery_FileNotFound(t *testing.T) {
 
 	q := mustParseQueryWithTime(t, "*", startNs, endNs)
 
-	// Should not error; missing files are logged but query continues
+	// A listed object that is gone fails the read with 502 (#772), it is not skipped.
 	err := s.RunQuery(context.Background(), nil, q, func(_ uint, db *logstorage.DataBlock) {})
-	if err != nil {
-		t.Fatalf("RunQuery with missing file should not error: %v", err)
-	}
+	goneReadError(t, err, "logs/dt=2026-05-10/hour=14/missing.parquet")
 }
 
 // ---------------------------------------------------------------------------
