@@ -296,6 +296,74 @@ Two queries that read the same object share one download; the one that joins it 
 
 **A listed object that is gone fails the read too** (`NoSuchKey` / 404, counted in `lakehouse_query_file_not_found_total`). A query lists its objects once, and a compaction deletes the sources it merged right after publishing the merged object (`internal/compaction/compactor.go`; retention deletes the same way), so an object a running query listed can be gone when it is read. Its rows are in a merged object this query did not list, or deleted on purpose, and the query cannot tell which. It used to skip the object silently ("query skipped compacted/deleted file" in the log) and answer `200` with those rows missing: 1,400 of 2,100 rows in `RunQuery` and `field_values`, and Jaeger trace-by-ID answered 404 "trace not found" for a trace that exists. Now `RunQuery` and the scans of `field_names`, `field_values`, `streams`, `stream_ids`, `stream_field_names` and `stream_field_values` return `cannot read <key>: the object was removed while this query ran; retry the query: <S3 error>` with **status 502 Bad Gateway** (`httpserver.ErrorWithStatusCode`), the status of an unreadable object and the status upstream gives a read whose storage node cannot serve it; the S3 error stays in the chain, and the other file workers stop. A retry plans on a fresh listing and succeeds once the manifest has refreshed. The one exception is exact: when the query is timestamp-only (a count or a `_time` bucketing), has no filter and no delete that can touch the object, the object lies entirely inside the window and its bounds are exact (not inferred from a listing), the manifest gives its rows (`FileInfo.RowCount`) and the read goes on. This branch is unreachable through `RunQuery` today (`manifestFastPath` answers that predicate first, without reading the object); it is kept as the exact rule for any other caller. The trace-by-ID footer lookup (`LookupTraceIndex`, traces binary) treats a gone object like an unreadable footer: it reports a miss, so that the span scan answers and fails for it, because the time bound of the other objects could be narrower than the trace and hide the spans of the removed one. The lookup lists the tenant's objects over all time, so a gone object anywhere in that listing costs a trace-by-ID the span scan of its window instead of a scan narrowed by the bound: measured on a 3-object mock-S3 fixture with cold footers (`TestTraceByID_GoneObject_S3Reads`), one Jaeger trace-by-ID takes 4 GETs before this change and 5 now when a gone object lies outside the window (the same complete answer), and 5 GETs with a complete answer before against 7 GETs and a 400 now when the gone object lies inside the window; with warm footers and cached bodies it takes none either way. Jaeger and Tempo trace-by-ID answer `400` as for an unreadable object (upstream VictoriaTraces behaviour: its handlers stringify the storage error with `%s` and drop the status), never `404` and never `200`; the Jaeger and Tempo search endpoints answer `502`. This turns the silent short answer into an error and does not make the answer complete: compaction still deletes its sources at once, so a read that overlaps a swap fails and is retried, and the deferred delete that makes it succeed is the rest of [#772](https://github.com/ReliablyObserve/victoria-lakehouse/issues/772) (registry cells `lh.durability.compaction_swap_past_bound_*` pass, `lh.durability.compaction_swap_within_bound_*` is the known gap). Multi-instance: nothing is shared between readers but the bucket and the listing, so every reader that planned on a listing naming the object fails alike and every reader with a refreshed listing answers exactly (`TestRowRead_RemovedSourceMidQuery_TwoReaders`). A failure is classified by the S3 error it carries (`s3reader.IsNotFound`: `NoSuchKey`, `NotFound`, HTTP 404), never by its text, so a request id or a key that spells `404` (`part-404.parquet`) cannot turn an unreadable object into a missing one; only an error with no S3 error in its chain is judged by its message, with the object's own key cut out. The trace-by-ID footer index (`LookupTraceIndex`) follows the same rule for an unreadable footer: it reports a miss, so that the span scan (which fails if it cannot read the file either) answers, instead of returning the bound of the files that could be read.
 
+#### A gone object: the flows and the S3 reads
+
+Trace-by-ID (traces binary): stage 1 asks every listed object's footer for the trace's index entry, stage 2 fetches the spans inside the resulting time bound. A listed object that is gone leaves its entry unknown. Before this change (PR 845) it always made stage 1 a miss; now the in-RAM pmeta bloom facet is asked first (no S3 read), exactly as `checkFileBloom` asks it:
+
+```mermaid
+sequenceDiagram
+    participant C as Client (Jaeger or Tempo)
+    participant H as VT handler (upstream code)
+    participant L as LookupTraceIndex
+    participant F as pmeta bloom facet (RAM)
+    participant S as S3
+    C->>H: GET trace by ID
+    H->>L: stage 1 with the trace id
+    loop every listed object of the tenant, all time
+        L->>S: footer GET (a cached footer needs no GET)
+        alt object present
+            S-->>L: footer with the trace index entry
+        else object gone, NoSuchKey
+            S-->>L: 404
+            Note over L,F: PR 845 - always an unknown entry. NEW - ask the facet first
+            L->>F: may this object hold the trace id? (no S3 read)
+            alt facet excludes the object
+                F-->>L: no, ignore the object
+            else facet may contain it, or cannot answer
+                F-->>L: unknown, the entry stays unknown
+            end
+        end
+    end
+    alt every entry known or excluded
+        L-->>H: hit with the time bound
+        H->>S: stage 2 spans inside the bound
+    else an entry is unknown
+        L-->>H: miss
+        H->>S: stage 2 span scan of the whole window, a gone object inside it fails
+    end
+    H-->>C: 200 with the trace, or 400 where VT stringifies the error, or 502 on search
+```
+
+What one Jaeger trace-by-ID reads (measured, 3-object mock S3, cold footers, `TestTraceByID_GoneObject_S3Reads`; the GETs are the same before and after this change, see the note below):
+
+| Gone object | Bloom facet | S3 GETs | Answer |
+|---|---|---|---|
+| none | any | 3 | 200, 7 spans |
+| inside the window | excludes the object | 3 | 200, 7 spans |
+| inside the window | may contain it | 5 | 400, retry |
+| inside the window | off (no facet) | 7 | 400, retry |
+| outside the window | excludes or may contain | 4 | 200, 7 spans |
+| outside the window | off (no facet) | 5 | 200, 7 spans |
+| any | warm footers and cached bodies | 0 | 200, 7 spans |
+
+Note: with a facet the fallback span scan prunes through the same facet, so the end-to-end GETs of this small fixture are the same before and after the gate; what the gate restores is the stage-1 hit (unit test `TestLookupTraceIndex_UnreadableFooterBeatsTheAggregateOfTheOthers`), that is the bound-narrowed scan instead of a window scan when many in-window objects lie outside the trace's bound. That production effect is assumed, not measured.
+
+What `processOneFile` does with a failed read (logs and traces share the code; the differences are marked):
+
+```mermaid
+flowchart TD
+    A["queryFile returned an error"] --> B{"caller context done?"}
+    B -- yes --> C["return nil, RunQuery reports the cancellation or deadline"]
+    B -- no --> D{"S3 NoSuchKey, object gone?"}
+    D -- no --> E["count file_errors, fail with 502 cannot read key"]
+    D -- yes --> F["count file_not_found"]
+    F --> G{"timestamp-only, no filter, no tombstone, object inside the window, exact bounds, plan covers it?"}
+    G -- yes --> H["emit the manifest row count, the read goes on"]
+    G -- no --> I["fail with 502 the object was removed while this query ran"]
+    J["field_values and stream scans, both binaries"] --> K["gone object: count file_not_found, fail with 502, no manifest branch"]
+    L["traces only: LookupTraceIndex before stage 2"] --> M["gone footer: facet excludes it, or the lookup is a miss"]
+```
+
 `query.max_live_bytes` no longer cancels a read, and now bounds the ESTIMATED decoded bytes in flight. Before it decodes a row group, a file worker **reserves** an estimate of that row group's decoded size against the ceiling and waits when the reserved bytes would pass it (`lakehouse_query_memory_budget_exceeded_total` counts the waits, not cancelled queries; the name is kept). The estimate comes from the footer the worker has already read (`decodedEstimate`), so cold and warm footers behave alike and **no request is added**: per projected column the larger of the footer's uncompressed size and the value count times the longest min/max statistic (or the text width of a number), summed over the row group; never the compressed size; a row group without sizes falls back to the object's stored size times an assumed 4. The unit is the row group, what is decoded at once (8-16 MiB in production), not the object, so a 128 MiB object does not take a 512 MiB ceiling for itself. The reserved bytes never pass the ceiling, except by one row group larger than it, which is admitted alone; the wait (and the row-group-decoder wait) ends when the read's context ends; no block is dropped. The estimate is an estimate: it does not include parquet-go's buffers or the strings' headers, and it **under-counts a dictionary-encoded byte-array column whose min and max statistics are short while its frequent values are long** (the footer carries no size for the dictionary's entries): 461x under on a constructed row group (logs `exception.message`, traces `status.message`: 1.3 KB estimated, 592 KB decoded), so such a column can pass the ceiling ([#807](https://github.com/ReliablyObserve/victoria-lakehouse/issues/807), registry row `lh.query.dictionary_column_estimate_gap`, pinned by a test). **A ceiling of fewer than about four row groups slows a query**: a row group is reserved whole, so when the ceiling holds only one or two row groups the process's row-group decoders (`GOMAXPROCS/2`, between 2 and 8) wait for each other, and a query runs longer than it did before the ceiling counted decoded bytes. Measured on the scaled model (`BenchmarkScaledRead_CeilingInRowGroups`: 8 decoders, 20 ms of S3 latency, mock S3, one macOS arm64 host, n=8 per point): the warm phrase read takes 155 ms at a ceiling of 1 or 2 row groups and 87-88 ms at 4 or 8 (+78 %, none from 4 up); the cold wildcard read is flat (583-600 ms from 1 to 16 row groups) because the S3 latency and the file budget dominate it. The independent review of this change measured +49 % on the cold wildcard read at no S3 latency and +77 % on the warm phrase read at 20 ms (sourced, not re-run). At the 512 MiB default the knee is a row group estimated over about 128 MiB (a 16 MiB stored row group of log text decodes to 64-160 MiB, assumed). Registry row `lh.query.live_bytes_large_row_group_throughput`. That is the ceiling doing its job, not a defect: set `query.max_live_bytes` to at least four times the decoded size of a row group for full speed (`docs/operations/sizing.md`); `lakehouse_query_memory_budget_exceeded_total` counts the waits and the first wait of a query is logged. **A worker that waits has opened its object, so it holds that object's file-budget slot**; a stalled consumer of one query can therefore still hold slots other queries need, at any ceiling, as before this change ([#793](https://github.com/ReliablyObserve/victoria-lakehouse/issues/793), registry row `lh.query.stalled_consumer_starves_slots`, pinned by a test at the default ceiling). Until now the budget counted blocks after they were decoded, which bounded nothing (each worker already holds one decoded block while the consumer is busy). `query.max_rows` is a different, explicit ceiling and is unchanged; logs and traces differ in how a read that reaches it ends ([#774](https://github.com/ReliablyObserve/victoria-lakehouse/issues/774)).
 
 Measured on one host (macOS arm64, mock S3 over HTTP). **Decoded bytes in flight** (`TestRowRead_LiveBytesCeiling_InFlightDecodedBytesAreBounded`; 12 objects, 16 workers, a slow consumer; the ceiling is three row groups as measured in `writeBlock` by a run with no ceiling, never taken from the estimator; the bytes in flight are the blocks between decoder and consumer, limit = ceiling + one block): compressible and incompressible data, cold and warm footer cache, unfiltered and filtered, in both binaries, the peak stays under the limit in the two cases per binary (compressible, cold footer cache, unfiltered; and incompressible, warm, filtered: each dimension appears in one of them, the full cross costs the package its CI time budget): logs 62.6 KB (compressible) and 38.9 KB (incompressible) under ceilings of 93.4 KB and 57.4 KB, where the same run with no ceiling peaks at 249 KB and 153 KB; traces 80.3 KB and 56.3 KB under 120.0 KB and 84.0 KB, against 200-240 KB and 140-195 KB with no ceiling. **Throughput** (`BenchmarkScaledRead_*`: objects at 1/64 of production, 40 objects, 8 workers, a ceiling of 4.5 objects, a file budget of 2.5 objects, 20 ms of S3 latency; `benchstat`, n=10, interleaved): cold wildcard read 653.6 ms before #503, 655.4 ms on #751, 649.4 ms with this change; warm phrase read 172.2 / 169.6 / 150.4 ms; all within noise. A per-object reservation (the first attempt at the follow-up) measured +122 % and +149 %, which is why the unit is the row group.
