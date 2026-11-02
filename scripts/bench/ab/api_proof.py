@@ -126,10 +126,14 @@ def run_with_retry(out: str, pick, attempt) -> int:
     rec = {"first_base": first, "busy_ports": busy, "second_base": None, "outcome": "no other free block"}
     try:
         rec["second_base"] = pick((first,))
-        rc = attempt(rec["second_base"])
-        rec["outcome"] = "busy again" if rc == EXIT_BUSY else "recovered"
     except NoFreeBlock:
-        pass
+        return finish_reattempt(out, rec, rc)  # nowhere else to go: the first stop stands
+    rc = attempt(rec["second_base"])
+    rec["outcome"] = "busy again" if rc == EXIT_BUSY else "recovered"
+    return finish_reattempt(out, rec, rc)
+
+
+def finish_reattempt(out: str, rec: dict, rc: int) -> int:
     with open(os.path.join(out, REATTEMPT_FILE), "w", encoding="utf-8") as f:
         json.dump(rec, f)
     return rc

@@ -19,6 +19,16 @@ def free(_ports):
     return []
 
 
+def read_json(path):
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def read_text(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
 # ------------------------------------------------------------------------------------------------ choosing a block
 def test_the_ports_of_a_block_are_the_six_lakehouse_and_hot_ports_and_the_overlay_ones():
     ports = stack.ports_at(30000)
@@ -102,28 +112,32 @@ def pick_from(*bases):
 
 def test_a_run_that_does_not_find_busy_ports_is_not_re_attempted(tmp_path):
     fake = Fake(tmp_path, [0])
-    assert api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake) == 0
+    rc = api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake)
+    assert rc == 0
     assert fake.bases == [24000] and not os.path.exists(os.path.join(fake.out, "reattempt.json"))
 
 
 def test_a_regression_is_never_re_attempted(tmp_path):
     fake = Fake(tmp_path, [1])
-    assert api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake) == 1 and fake.bases == [24000]
+    rc = api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake)
+    assert rc == 1 and fake.bases == [24000]
 
 
 def test_busy_ports_are_re_attempted_once_on_another_block_and_recorded(tmp_path):
     fake = Fake(tmp_path, [4, 0])
-    assert api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake) == 0
+    rc = api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake)
+    assert rc == 0
     assert fake.bases == [24000, 24100]
-    rec = json.load(open(os.path.join(fake.out, "reattempt.json")))
+    rec = read_json(os.path.join(fake.out, "reattempt.json"))
     assert rec == {"first_base": 24000, "busy_ports": [38762], "second_base": 24100, "outcome": "recovered"}
 
 
 def test_busy_again_after_the_re_attempt_stays_exit_four_and_a_third_attempt_is_never_made(tmp_path):
     fake = Fake(tmp_path, [4, 4, 0])
-    assert api_proof.run_with_retry(fake.out, pick_from(24000, 24100, 24200), fake) == 4
+    rc = api_proof.run_with_retry(fake.out, pick_from(24000, 24100, 24200), fake)
+    assert rc == 4
     assert fake.bases == [24000, 24100]
-    assert json.load(open(os.path.join(fake.out, "reattempt.json")))["outcome"] == "busy again"
+    assert read_json(os.path.join(fake.out, "reattempt.json"))["outcome"] == "busy again"
 
 
 def test_no_other_free_block_for_the_re_attempt_keeps_exit_four(tmp_path):
@@ -133,14 +147,16 @@ def test_no_other_free_block_for_the_re_attempt_keeps_exit_four(tmp_path):
         if exclude:
             raise stack.NoFreeBlock("none left")
         return 24000
-    assert api_proof.run_with_retry(fake.out, pick, fake) == 4 and fake.bases == [24000]
-    assert json.load(open(os.path.join(fake.out, "reattempt.json")))["outcome"] == "no other free block"
+    rc = api_proof.run_with_retry(fake.out, pick, fake)
+    assert rc == 4 and fake.bases == [24000]
+    assert read_json(os.path.join(fake.out, "reattempt.json"))["outcome"] == "no other free block"
 
 
 def test_a_stack_busy_for_another_reason_is_not_a_port_collision_and_is_not_re_attempted(tmp_path):
     other = "<!-- lh-api-matrix -->\n`StackBusy: a stack of project lh-apimx is already running`\n"
     fake = Fake(tmp_path, [4, 0], busy_text=other)
-    assert api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake) == 4 and fake.bases == [24000]
+    rc = api_proof.run_with_retry(fake.out, pick_from(24000, 24100), fake)
+    assert rc == 4 and fake.bases == [24000]
 
 
 def test_no_free_block_at_all_writes_a_did_not_complete_comment_with_exit_four(tmp_path):
@@ -151,10 +167,11 @@ def test_no_free_block_at_all_writes_a_did_not_complete_comment_with_exit_four(t
 
     def attempt(base):
         raise AssertionError("nothing may be started")
-    assert api_proof.run_with_retry(out, pick, attempt) == 4
-    text = open(os.path.join(out, "api-matrix.md"), encoding="utf-8").read()
+    rc = api_proof.run_with_retry(out, pick, attempt)
+    assert rc == 4
+    text = read_text(os.path.join(out, "api-matrix.md"))
     assert "did not complete" in text and "46 candidate" in text and "Infrastructure state, not a regression" in text
-    assert json.load(open(os.path.join(out, "api-verdict.json")))["exit"] == 4
+    assert read_json(os.path.join(out, "api-verdict.json"))["exit"] == 4
 
 
 # ------------------------------------------------------------------------------------------------ what the comment says
@@ -195,5 +212,19 @@ def test_the_text_of_the_ports_preflight_is_what_the_wrapper_looks_for(tmp_path,
 def test_the_options_after_the_double_dash_reach_pr_smoke_unchanged(monkeypatch):
     seen = {}
     monkeypatch.setattr(api_proof, "cmd_run", lambda a: seen.update(out=a.out, smoke=a.smoke) or 0)
-    assert api_proof.main(["run", "--out", "o", "--", "--base", "abc", "--head", "HEAD", "--rounds", "3"]) == 0
+    rc = api_proof.main(["run", "--out", "o", "--", "--base", "abc", "--head", "HEAD", "--rounds", "3"])
+    assert rc == 0
     assert seen == {"out": "o", "smoke": ["--base", "abc", "--head", "HEAD", "--rounds", "3"]}
+
+
+def test_pr_smoke_calls_a_busy_stack_an_infrastructure_state_and_a_crash_not(tmp_path, monkeypatch):
+    import test_api_only as t
+    t.Fake(monkeypatch, tmp_path, running=True, base_rows=[])
+    rc = t.run(tmp_path)
+    busy_text = read_text(str(tmp_path / "out" / "api-matrix.md"))
+    assert rc == 4 and "Infrastructure state, not a regression" in busy_text
+    t.Fake(monkeypatch, tmp_path / "x", boom=RuntimeError("boom"), base_rows=[])
+    (tmp_path / "x").mkdir()
+    rc = t.run(tmp_path / "x")
+    crash_text = read_text(str(tmp_path / "x" / "out" / "api-matrix.md"))
+    assert rc == 3 and "Infrastructure state" not in crash_text
