@@ -336,6 +336,11 @@ def run(repo, tmp_path, reg, docker=None, **kw):
                         loader=docker.loader, **{"pause_s": 0, "sleep": lambda s: None, **kw}), docker
 
 
+def recorded(tmp_path, tag="v1.2.3"):
+    with open(prev.record_path(str(tmp_path / "cache"), tag), encoding="utf-8") as f:
+        return json.load(f)
+
+
 def full_registry(tag="v1.2.3"):
     return FakeRegistry({("logs", tag): D1, ("traces", tag): D2})
 
@@ -347,7 +352,7 @@ def test_prev_is_pulled_by_digest_and_the_digests_are_pinned_in_the_cache(releas
     assert rec["digests"] == {"logs": D1, "traces": D2}
     assert docker.pulled == [("logs", D1), ("traces", D2)] and not docker.built
     assert rec["images"]["logs"] == {"source": "registry", "digest": D1, "ref": "lh-prev-logs:prev"}
-    pinned = json.load(open(prev.record_path(str(tmp_path / "cache"), "v1.2.3"), encoding="utf-8"))
+    pinned = recorded(tmp_path)
     assert pinned["pins"] == {"logs": {"digest": D1}, "traces": {"digest": D2}}
 
 
@@ -359,7 +364,7 @@ def test_a_second_resolution_with_the_same_digests_is_fine_and_a_changed_digest_
     rec, docker = run(released, tmp_path, moved)
     assert rec["state"] == prev.INVALID and rec["reason"] == "digest-changed"
     assert not docker.pulled  # nothing is pulled once the pin is broken
-    pinned = json.load(open(prev.record_path(str(tmp_path / "cache"), "v1.2.3"), encoding="utf-8"))
+    pinned = recorded(tmp_path)
     assert pinned["pins"]["traces"]["digest"] == D2  # the first resolution stays the pin
 
 
@@ -400,7 +405,7 @@ def test_an_image_the_registry_lacks_is_built_from_the_tag_and_pinned_by_sha256(
     assert docker.pulled == [("logs", D1)] and docker.built == [("v1.2.3", "traces")]
     assert rec["images"]["traces"]["source"] == "build"
     sha = rec["images"]["traces"]["sha256"]
-    pinned = json.load(open(prev.record_path(str(tmp_path / "cache"), "v1.2.3"), encoding="utf-8"))
+    pinned = recorded(tmp_path)
     assert pinned["pins"]["traces"] == {"sha256": sha} and pinned["pins"]["logs"] == {"digest": D1}
     # the next run loads the cached tarball instead of building again
     rec2, docker2 = run(released, tmp_path, FakeRegistry({("logs", "v1.2.3"): D1}))
