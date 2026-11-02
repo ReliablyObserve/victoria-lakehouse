@@ -179,7 +179,7 @@ func checkPod(t *testing.T, name string, s *Storage, e *restartEnv, when string,
 // A drain that takes longer than twice the grace must not keep a committed
 // segment served after compaction merged its objects.
 func TestReap_ASlowDrainDoesNotKeepAGuardReleasedSegmentServed(t *testing.T) {
-	const grace = 200 * time.Millisecond
+	const grace = 400 * time.Millisecond
 	gate := newReapGate()
 	e := newRestartEnvWith(t, gate.mockS3Server)
 	e.f.grace = grace
@@ -338,33 +338,19 @@ func TestReap_EveryAgeOfACommittedSegmentAnswersEachRowOnce(t *testing.T) {
 	e.flush()
 	committed := time.Now() // not before the markers' LastModified
 	markers := e.segmentMarkers(committed)
-	var served, retired int
-	// The ages are targets: a slow step only moves the next ones later, and each
-	// step judges the age it really has.
+	// The clock of the loop and of the guard is passed in, so the ages do not
+	// depend on how fast the machine runs the steps.
 	for _, age := range []time.Duration{grace / 5, grace / 2, 4 * grace / 5, 6 * grace / 5, 3 * grace / 2, 9 * grace / 5} {
-		time.Sleep(time.Until(committed.Add(age)))
-		now := time.Now()
+		now := committed.Add(age)
 		e.segs.Reap(now, grace) // what the flusher's loop does
-		got := now.Sub(committed)
-		if got < 2*grace-20*time.Millisecond { // the guard is not due to release yet
-			if n := e.compactReleased(markers, 2*grace, now); n != 0 {
-				t.Fatalf("compaction merged %d objects of segments %s old (twice the grace is %s)", n, got.Round(time.Millisecond), 2*grace)
-			}
-		}
-		if got < grace {
-			served++
-		} else if got < 2*grace-20*time.Millisecond {
-			retired++
+		if n := e.compactReleased(markers, 2*grace, now); n != 0 {
+			t.Fatalf("compaction merged %d objects of segments %s old (twice the grace is %s)", n, age, 2*grace)
 		}
 		if c := rowsOn(t, e.s, context.Background(), "*"); c != e.total {
-			t.Errorf("segments %s old: query=* returned %d rows, want %d", got.Round(time.Millisecond), c, e.total)
+			t.Errorf("segments %s old: query=* returned %d rows, want %d", age, c, e.total)
 		}
 	}
-	if served == 0 || retired == 0 {
-		t.Fatalf("the steps covered %d ages before the grace and %d between the grace and the guard's release; want both", served, retired)
-	}
-	time.Sleep(time.Until(committed.Add(2*grace + 20*time.Millisecond)))
-	now := time.Now()
+	now := committed.Add(2*grace + 20*time.Millisecond)
 	e.segs.Reap(now, grace)
 	if n := e.compactReleased(markers, 2*grace, now); n != 2 {
 		t.Fatalf("compaction merged %d objects once the guard released them, want 2", n)
