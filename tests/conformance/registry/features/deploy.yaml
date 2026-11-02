@@ -7,6 +7,7 @@
   surfaces: [cli]
   rows:
     - lh.flag.vmauth_default_routing
+    - lh.flag.vmauth_traces_insert_routing
   tests:
     - charts/victoria-lakehouse/test_templates.sh
     - charts/victoria-lakehouse/test_images.sh
@@ -16,7 +17,8 @@
     and the Helm drift check (`scripts/ci/helmdrift`). The template test also renders the default
     vmauth config and checks, by vmauth's first-match rule, which service each path and
     `X-Lakehouse-Signal` header combination reaches (traces deletes and traces-header queries go to
-    the traces select pods, not the logs ones).
+    the traces select pods, not the logs ones; traces inserts go to the traces insert pods by path for
+    OTLP traces and by header for the paths both signals serve).
   docs:
     - docs/kubernetes-deployment.md
   changelog_bullets:
