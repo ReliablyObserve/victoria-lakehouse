@@ -304,7 +304,7 @@ row and the NEW-difference rule on the pending ones; its protection grows with e
 
 **Not in this change (follow-ups, owner decisions where marked).** Committed contracts for the Lakehouse-only APIs
 (`tests/conformance/contracts/`) and the CHANGELOG-fragment exemption for a deliberate schema change: today a base-vs-PR schema or status change fails and
-needs the owner's waiver. The `proof-base-<sha>` cache of the base side from `main` (the base image is built in the job, about two minutes). An alias
+needs the owner's waiver. The `proof-base-<sha>` cache of the base side from `main` (the base image is built in the job; measured on `ubuntu-latest` in three runs on identical code, the whole `api` job took 14.5, 12.3 and 17.1 minutes, of which the matrix step 13.8, 11.5 and 16.0). An alias
 tenant in the seed beyond `acme-corp` (1001:0). Making `gate-deterministic` a required check, and running the harness from the base branch when it is one
 (the harness is the pull request's own code today): owner decisions.
 
