@@ -249,9 +249,10 @@ func TestReap_ASlowDrainDoesNotKeepAGuardReleasedSegmentServed(t *testing.T) {
 	}
 
 	// A committed segment is served for the grace plus one check interval and no
-	// longer, whatever the drain is doing: by 1.5 x grace (compaction merges at
-	// 2 x grace) the first two segments are retired while the drain still waits.
-	for retiredBy := committed.Add(grace * 3 / 2); e.segs.Stats(time.Now()).Committed > 0 && time.Now().Before(retiredBy); {
+	// longer, whatever the drain is doing: 250 ms (25 check intervals) after the
+	// grace, well before compaction merges at 2 x grace, the first two segments
+	// are retired while the drain still waits.
+	for retiredBy := committed.Add(grace + 250*time.Millisecond); e.segs.Stats(time.Now()).Committed > 0 && time.Now().Before(retiredBy); {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if n := e.segs.Stats(time.Now()).Committed; n != 0 {
@@ -382,11 +383,15 @@ func TestReap_FleetAnswersEveryRowOnce_RandomSchedules(t *testing.T) {
 				record(e)
 				e.ingest("C", at(rwHour, 30*time.Minute), at(rwHour, 31*time.Minute))
 				total += 6
+				// The gate is armed before the seal: the running flusher's tick may
+				// start the segment's drain the moment it is sealed.
+				nonce := e.segs.Active().Nonce()
+				bucket.block("/" + nonce + "-")
 				third, ok := e.segs.Seal()
-				if !ok {
-					t.Fatal("no segment to seal")
+				if !ok || third.Nonce() != nonce {
+					bucket.open()
+					t.Fatalf("sealed segment %v (sealed=%v), want the active segment %s", third, ok, nonce)
 				}
-				bucket.block("/" + third.Nonce() + "-")
 				select { // the flusher's tick starts the drain and stays in it
 				case <-bucket.hit:
 				case <-time.After(10 * time.Second):
