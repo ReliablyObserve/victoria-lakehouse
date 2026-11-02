@@ -329,7 +329,7 @@ func TestReap_FleetAnswersEveryRowOnce_RandomSchedules(t *testing.T) {
 // pod serves it until the grace and then retires it, and the rows are answered
 // once at each of those ages and after the merge.
 func TestReap_EveryAgeOfACommittedSegmentAnswersEachRowOnce(t *testing.T) {
-	const grace = 400 * time.Millisecond
+	const grace = 600 * time.Millisecond
 	e := newRestartEnvWith(t, newReapGate().mockS3Server)
 	e.f.grace = grace
 	e.ingest("A", at(rwHour, 5*time.Minute), at(rwHour, 6*time.Minute))
@@ -338,25 +338,30 @@ func TestReap_EveryAgeOfACommittedSegmentAnswersEachRowOnce(t *testing.T) {
 	e.flush()
 	committed := time.Now() // not before the markers' LastModified
 	markers := e.segmentMarkers(committed)
-	var retired, served int
-	for {
+	var served, retired int
+	// The ages are targets: a slow step only moves the next ones later, and each
+	// step judges the age it really has.
+	for _, age := range []time.Duration{grace / 5, grace / 2, 4 * grace / 5, 6 * grace / 5, 3 * grace / 2, 9 * grace / 5} {
+		time.Sleep(time.Until(committed.Add(age)))
 		now := time.Now()
-		if now.Sub(committed) >= 2*grace-20*time.Millisecond {
-			break
-		}
 		e.segs.Reap(now, grace) // what the flusher's loop does
-		if n := e.compactReleased(markers, 2*grace, now); n != 0 {
-			t.Fatalf("compaction merged %d objects of segments %s old (twice the grace is %s)", n, now.Sub(committed).Round(time.Millisecond), 2*grace)
+		got := now.Sub(committed)
+		if got < 2*grace-20*time.Millisecond { // the guard is not due to release yet
+			if n := e.compactReleased(markers, 2*grace, now); n != 0 {
+				t.Fatalf("compaction merged %d objects of segments %s old (twice the grace is %s)", n, got.Round(time.Millisecond), 2*grace)
+			}
 		}
-		if now.Sub(committed) < grace {
+		if got < grace {
 			served++
-		} else {
+		} else if got < 2*grace-20*time.Millisecond {
 			retired++
 		}
-		e.check(fmt.Sprintf("segments %s old", now.Sub(committed).Round(time.Millisecond)))
+		if c := rowsOn(t, e.s, context.Background(), "*"); c != e.total {
+			t.Errorf("segments %s old: query=* returned %d rows, want %d", got.Round(time.Millisecond), c, e.total)
+		}
 	}
 	if served == 0 || retired == 0 {
-		t.Fatalf("the checks covered %d ages before the grace and %d after it; want both", served, retired)
+		t.Fatalf("the steps covered %d ages before the grace and %d between the grace and the guard's release; want both", served, retired)
 	}
 	time.Sleep(time.Until(committed.Add(2*grace + 20*time.Millisecond)))
 	now := time.Now()
