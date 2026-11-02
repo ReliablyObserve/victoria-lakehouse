@@ -176,12 +176,14 @@ def skipped(selection: dict, marker: str, title: str) -> tuple[str, dict]:
     return "\n".join(lines) + "\n", {"state": "skipped", "failed": False, "exit": 0}
 
 
-def errored(selection: dict, meta: dict, message: str, marker: str, title: str) -> tuple[str, dict]:
+def errored(selection: dict, meta: dict, message: str, marker: str, title: str, infra: bool = False) -> tuple[str, dict]:
     shapes = sum(len(v) for v in selection.get("sets", {}).values())
     lines = [marker, f"### {title}: did not complete", "",
              f"{'The run for ' + str(shapes) + ' selected shape(s)' if shapes else 'The run'} stopped before a result: `{message[:300]}`. "
-             "The job log and the uploaded artifact have the details.", "",
-             f"<sub>{meta_stamp(meta)}</sub>"]
+             "The job log and the uploaded artifact have the details.", ""]
+    if infra:
+        lines += ["**Infrastructure state, not a regression:** the proof stack could not start on this runner, so nothing about this pull request was measured. Re-run the job.", ""]
+    lines.append(f"<sub>{meta_stamp(meta)}</sub>")
     return "\n".join(lines) + "\n", {"state": "error", "failed": True, "exit": 3}
 
 

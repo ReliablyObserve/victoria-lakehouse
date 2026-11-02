@@ -253,7 +253,7 @@ the twins agree, that a loss-counted cell names a registered metric and that thi
 document names every cell) are `lh.durability.pre1970_rows_*`,
 `lh.durability.pre1970_stored_*` (the known difference from hot VictoriaLogs/VictoriaTraces),
 `lh.durability.restart_cardinality_gate_*`, `lh.durability.drain_plan_mismatch_*`,
-`lh.durability.kill_during_segment_reap_*`
+`lh.durability.kill_during_segment_reap_*`, `lh.durability.slow_drain_outlasts_grace_*`
 and `lh.durability.kill_between_upload_and_commit_*` (a known gap, #497).
 
 ### 2.0 Durability matrix — what survives what
@@ -617,6 +617,108 @@ or once the nonce is older than 7 days (an owner that never committed — it los
 its disk). A failed marker listing releases nothing
 (`lakehouse_compaction_segment_guard_errors_total`). Markers older than
 8 days are deleted by the compaction scan.
+
+The segment is retired by a loop of its own, not by the flusher's tick: the tick
+reaps after it has drained the pending segments, and a drain can last longer than
+the guard's twice the grace (a slow object store, a backlog after an outage). With
+the reap in the tick only, a pod went on serving a committed segment while
+compaction, on any writer, had already merged its objects, and answered the rows
+twice, once from the segment and once from the merged object (#611). A committed
+segment is now served for at most the grace plus one flusher check interval
+(1 s) after its commit, whatever a drain is doing. This needs the object store's
+clock and the pod's to agree within the margin between the grace and twice the
+grace (the 'clock skew' above); a test that ages the markers of the bucket by hours must
+have the pod's segments retired too. `lh.durability.slow_drain_outlasts_grace_*`
+pin it.
+
+#### Retiring a committed segment: before and after (#611)
+
+The flow from the buffer to the compacted object, with the part that changed
+(`reapLoop`, new) and the part that did not (the guard at twice the grace).
+A row must be answered once at every stage, as hot VictoriaLogs/VictoriaTraces do
+(upstream swaps the source parts for the merged part atomically under one lock:
+`lib/logstorage/datadb.go` `swapSrcWithDstParts`).
+
+Before: the segment is retired only after the tick's drain loop.
+
+```mermaid
+sequenceDiagram
+    participant F as Flusher (writer pod)
+    participant B as Segment S1 (buffer, committed)
+    participant S3 as S3 bucket
+    participant C as Compaction (any writer)
+    participant Q as Query (writer or bridged select)
+    F->>S3: PUT S1 objects + marker (t0)
+    F->>B: Commit(S1)
+    Note over F: tick: drain S2 starts (slow S3), Reap runs only AFTER the drain
+    Note over F,B: t0+grace: S1 should be retired, REAPER NOT RUN (unchanged: grace)
+    C->>S3: t0+2 x grace: guard releases S1 objects, merge into compacted-L1, delete inputs (unchanged)
+    Q->>B: rows of S1 (still served)
+    Q->>S3: compacted-L1 (S1 rows again, not excluded: no nonce in key)
+    Note over Q: count() = 2 x S1 rows (the bug)
+    F->>B: drain returns, tick reaps S1 (too late)
+```
+
+After: the segment is retired by a loop of its own.
+
+```mermaid
+sequenceDiagram
+    participant F as Flusher tick (writer pod)
+    participant R as reapLoop (NEW, same pod)
+    participant B as Segment S1 (buffer, committed)
+    participant S3 as S3 bucket
+    participant C as Compaction (any writer)
+    participant Q as Query (writer or bridged select)
+    F->>S3: PUT S1 objects + marker (t0)
+    F->>B: Commit(S1)
+    Note over F: tick: drain S2 starts (slow S3), may run for minutes
+    R->>B: every check interval: Reap(now, grace)
+    Note over R,B: t0+grace+1 s at most: S1 retired (served by nobody)
+    C->>S3: t0+2 x grace: guard releases S1 objects, merge (unchanged)
+    Q->>S3: compacted-L1 only (S1 rows once)
+    Note over Q: count() = S1 rows once
+```
+
+Row lifecycle, before and after:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Buffered: ingest into the active segment
+    Buffered --> Flushed: drain writes objects and marker, then Commit
+    Flushed --> Compacted: guard releases at marker + 2 x grace (unchanged)
+    state Flushed {
+        [*] --> ServedFromBuffer: until grace
+        ServedFromBuffer --> Retired: Reap, only at the end of the tick (before)
+    }
+    note right of Flushed
+        before - a slow drain delays Reap,
+        so ServedFromBuffer can outlive the merge
+        and a row is seen twice (buffer and compacted object)
+    end note
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Buffered: ingest into the active segment
+    Buffered --> Flushed: drain writes objects and marker, then Commit
+    Flushed --> Compacted: guard releases at marker + 2 x grace (unchanged)
+    state Flushed {
+        [*] --> ServedFromBuffer: until grace
+        ServedFromBuffer --> Retired: reapLoop every check interval (NEW)
+    }
+    note right of Flushed
+        after - served at most grace + one check interval,
+        so it never overlaps the merge window (2 x grace)
+        and a row is seen once at every stage
+    end note
+```
+
+| Per pod, steady state | Before | After | Logs vs traces |
+|---|---|---|---|
+| S3 requests (reads, PUTs, LISTs) | unchanged | unchanged (no S3 call in the loop) | same in both |
+| RAM | unchanged | unchanged (one goroutine, no allocation) | same in both |
+| CPU | one `Reap` per tick | plus one `Reap` per check interval (1 s): one mutex acquisition and a pass over the pod's live segments (tens at most) (assumed, not measured) | same in both |
+| Disk | a segment is removed after the tick that retires it | removed within one check interval of its grace (never later than before) | same in both |
 
 The grace counts from the real commit, also across a restart. The flusher's state
 file (`buffer_flush_state.json`) records the commit time of every segment

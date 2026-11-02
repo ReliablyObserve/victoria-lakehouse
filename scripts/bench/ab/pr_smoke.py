@@ -283,12 +283,13 @@ def render_api_only(out: str, result: dict, sel: dict, meta: dict, args, judged:
 
 def finish_errored(args, out: str, sel: dict, meta: dict, reason: str, exit_code: int | None = None) -> int:
     """The "did not complete" comments of a run that stopped (exit 3, or `exit_code`); --api-only writes only the API one."""
-    api_text, api_v = comment.errored(sel, meta, reason, comment.API_MARKER, comment.API_TITLE)
+    infra = exit_code == stack.EXIT_BUSY  # the stack could not start: an infrastructure state, never a regression
+    api_text, api_v = comment.errored(sel, meta, reason, comment.API_MARKER, comment.API_TITLE, infra=infra)
     if exit_code is not None:
         api_v["exit"] = exit_code
     if args.api_only:
         return finish_api(out, api_text, api_v, meta)
-    perf_text, perf_v = comment.errored(sel, meta, reason, comment.PERF_MARKER, comment.PERF_TITLE)
+    perf_text, perf_v = comment.errored(sel, meta, reason, comment.PERF_MARKER, comment.PERF_TITLE, infra=infra)
     if exit_code is not None:
         perf_v["exit"] = exit_code
     return finish(out, perf_text, api_text, perf_v, api_v, meta)

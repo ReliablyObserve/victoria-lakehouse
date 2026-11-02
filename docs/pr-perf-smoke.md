@@ -256,7 +256,7 @@ python3 -m pytest scripts/bench/ab/tests/test_quality*.py -q
 
 `.github/workflows/pr-proof.yaml` (name `PR proof`) runs the API matrix on every pull request and turns its state into the check
 `gate-deterministic`. The job `api` builds the base and PR images, brings up the proof stack in its own compose project (`lh-apimx`; the
-host ports derive from the project name and sit in the 38000s, the runner is isolated), seeds it, checks that hot VL/VT, base and PR hold
+host port block is chosen by probing, see below), seeds it, checks that hot VL/VT, base and PR hold
 the same rows, sends every executable registry row to the three targets (`pr_smoke.py --api-only`: no perf cells, no components), and writes
 the comment artifact. It tears the project and its images down by exact name. Nothing in it can write: the job has `contents: read`; the
 sticky comment `<!-- lh-api-matrix -->` is posted by the commenter workflow from the artifact `lh-proof-comment` (see `docs/ci-proof-comment.md`).
@@ -291,10 +291,19 @@ Pending rows are flipped to executed in reviewed registry batches; from then on 
 
 **States.** The exit code of `pr_smoke.py --api-only` is the state of the check: 0 passed, 1 a regression, a status change or a new difference,
 2 an invalid run (hot VL/VT gave no answer to more than max(2, 10 %) of a signal's upstream rows, or no row was exercised), 3 the run did not
-complete (the comment says "did not complete" and why), 4 the project's stack belongs to another run. The comment starts with the verdict
+complete (the comment says "did not complete" and why), 4 the stack could not start because its ports were in use (or a stack of the project already
+runs): an infrastructure state, never a regression. The comment starts with the verdict
 and counts rows per signal, never averaged. The manifest verdict is `pass`, `fail`, `skipped` or `incomplete`: 2, 3 and 4 are `incomplete`, and the body
 says which. `gate-deterministic` is green for 0 and for a skip, red for 1, 2 and 3: a missing proof is not a pass. The job `api` itself stays green when it
-measured something, so a regression is one red check, not two.
+measured something, so a regression is one red check, not two. Exit 4 has its own message in the gate ("infrastructure state ... not a regression") and
+is red like any run that measured nothing.
+
+**Port block and the one re-attempt.** The block derived from the project name (38300 to 38762) lies inside Linux's ephemeral range (32768 to 60999), and on a
+GitHub-hosted runner an outgoing connection held port 38762 (measured: PR 853, `StackBusy: ports already in use on 127.0.0.1: [38762]`, exit 4, a red gate on a
+pull request that was fine). `api_proof.py run` therefore probes for a free block (`stack.pick_port_base`): blocks wholly below the host's ephemeral range
+(read from `/proc/sys/net/ipv4/ip_local_port_range`) first, none in a range other stacks use, the derived block first within each group, and the block must have all
+its published ports free. If the run still stops with exit 4 because its ports were in use, it is re-attempted once on another block; the comment says so
+("Re-attempted once ..."). A regression, an invalid run, a stack of the project that already runs, or a second port collision is never re-attempted.
 
 **Measured on the first run of the existing harness (an A/A run on `ubuntu-latest`, base and PR the same code; the trim is the fixture of
 `scripts/bench/ab/tests/test_api_triage.py`):** 227 registry rows exercised, 172 exact, 29 same as the base but different from hot, 1 regressed,
@@ -304,7 +313,7 @@ row and the NEW-difference rule on the pending ones; its protection grows with e
 
 **Not in this change (follow-ups, owner decisions where marked).** Committed contracts for the Lakehouse-only APIs
 (`tests/conformance/contracts/`) and the CHANGELOG-fragment exemption for a deliberate schema change: today a base-vs-PR schema or status change fails and
-needs the owner's waiver. The `proof-base-<sha>` cache of the base side from `main` (the base image is built in the job, about two minutes). An alias
+needs the owner's waiver. The `proof-base-<sha>` cache of the base side from `main` (the base image is built in the job; measured on `ubuntu-latest` in three runs on identical code, the whole `api` job took 14.5, 12.3 and 17.1 minutes, of which the matrix step 13.8, 11.5 and 16.0). An alias
 tenant in the seed beyond `acme-corp` (1001:0). Making `gate-deterministic` a required check, and running the harness from the base branch when it is one
 (the harness is the pull request's own code today): owner decisions.
 

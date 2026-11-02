@@ -17,9 +17,9 @@ What the conformance registry proves, how, and what is missing. Computed from `t
 | ... linking a differential test (hot target, tests/parity or tests/e2e) | 108 |
 | ... linking only another test | 33 |
 | ... linking no test at all | 246 |
-| Registry rows / pending rows | 1380 / 1288 |
+| Registry rows / pending rows | 1382 / 1290 |
 | ... pending and waiting for the HTTP runner or a harness | 500 |
-| ... pending but executed by another CI job or by cited Go tests | 788 |
+| ... pending but executed by another CI job or by cited Go tests | 790 |
 | ... pending, reason unclassified | 0 |
 | Shipped features | 156 |
 | ... citing no registry row | 109 |
@@ -338,7 +338,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.ingest.adaptive_file_sizing` | ingest | 0 (0) | 0 | 31 | none | unproven |
 | `lh.feature.ingest.atomic_s3_writes` | ingest | 0 (0) | 0 | 3 | none | unproven |
 | `lh.feature.ingest.buffer_query_bridge` | ingest | 4 (4) | 0 | 6 | none | lh-extension |
-| `lh.feature.ingest.crash_safe_durability` | ingest | 16 (16) | 0 | 13 | none | lh-extension |
+| `lh.feature.ingest.crash_safe_durability` | ingest | 18 (18) | 0 | 15 | none | lh-extension |
 | `lh.feature.ingest.label_extraction` | ingest | 0 (0) | 0 | 4 | none | unproven |
 | `lh.feature.ingest.logstore_buffer` | ingest | 0 (0) | 0 | 6 | none | unproven |
 | `lh.feature.ingest.optin_listeners` | ingest | 0 (0) | 0 | 4 | none | unproven |
@@ -575,7 +575,7 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 | Reason | Rows | Executed elsewhere | Meaning |
 |---|--:|---|---|
 | `perf-cell` | 768 | yes | layer `perf`: a measurement cell run by a perf CI job (its `refs.doc` names the harness), not by the registry runner |
-| `durability-cell` | 20 | yes | kind `durability`: backed by the cited Go tests, no HTTP request |
+| `durability-cell` | 22 | yes | kind `durability`: backed by the cited Go tests, no HTTP request |
 | `chaos-or-ui-harness` | 24 | no | layer `chaos` or `ui`: needs a fault or browser harness, not the HTTP runner |
 | `flag-row` | 36 | no | kind `flag`: no HTTP request; the flag drift checks and cited tests apply |
 | `http-runner-test-linked` | 147 | no | has an HTTP request; waits for the registry HTTP runner, a cited Go test covers part of it |
@@ -587,7 +587,7 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 
 ## 6. Registry totals and what is not inventoried
 
-1380 rows: lh 143, vl 684, vt 553; expect absent 3, differ 69, pass 1282, unsupported 26; origin lh-addition 119, lh-shim 28, native 1233. 768 perf cells (768 pending), 612 other rows.
+1382 rows: lh 145, vl 684, vt 553; expect absent 3, differ 69, pass 1284, unsupported 26; origin lh-addition 121, lh-shim 28, native 1233. 768 perf cells (768 pending), 614 other rows.
 
 Surfaces with no inventory, so no completeness number can be computed for them:
 

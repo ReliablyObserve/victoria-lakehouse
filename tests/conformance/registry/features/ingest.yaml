@@ -47,9 +47,12 @@
     - lh.durability.kill_between_upload_and_commit_traces
     - lh.durability.kill_during_segment_reap_logs
     - lh.durability.kill_during_segment_reap_traces
+    - lh.durability.slow_drain_outlasts_grace_logs
+    - lh.durability.slow_drain_outlasts_grace_traces
   tests:
     - internal/storage/parquets3/buffer_flusher_segments_test.go
     - internal/storage/parquets3/buffer_restart_test.go
+    - internal/storage/parquets3/buffer_reap_independent_test.go
     - internal/vlstorage/insert_adapter_test.go
     - internal/manifest/segments_test.go
     - internal/compaction/scheduler_segments_test.go
@@ -60,6 +63,7 @@
     - tests/e2e/chaos_durability_traces_test.go#TestChaos_TracesKill9LosesNothingBeyondTheUpstreamWindow
     - lakehouse-traces/internal/storage/parquets3/buffer_flusher_segments_test.go
     - lakehouse-traces/internal/storage/parquets3/buffer_restart_test.go
+    - lakehouse-traces/internal/storage/parquets3/buffer_reap_independent_test.go
     - lakehouse-traces/internal/vlstorage/insert_adapter_test.go
   docs:
     - docs/durability.md

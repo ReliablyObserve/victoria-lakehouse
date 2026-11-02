@@ -415,6 +415,52 @@
       - lakehouse-traces/internal/storage/parquets3/buffer_flusher_reap_crash_test.go#TestSegments_RestartAfterAnInterruptedReap
   notes: "Same fix and tests in the traces binary."
 
+- id: lh.durability.slow_drain_outlasts_grace_logs
+  title: "Logs: a drain that outlasts the grace does not keep a committed segment served after compaction merged its objects; every row is answered once on every insert and select pod"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: slow_drain_outlasts_grace
+    mode: buffer-flush
+    signal: logs
+    guarantees: [no-duplicate]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_ASlowDrainDoesNotKeepAGuardReleasedSegmentServed
+      - internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_FleetAnswersEveryRowOnce_RandomSchedules
+      - internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_EveryAgeOfACommittedSegmentAnswersEachRowOnce
+      - internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_TheOtherSignalIsUnaffected
+  notes: "Fixes #611. The flusher reaped the committed segments only after its drain loop, so a drain that outlasted the grace (a slow object store, a backlog after an outage) kept serving segments whose objects compaction was already free to merge (the segment guard releases them 2 x grace after the commit): a writer, and a select pod reading it over the buffer bridge, answered the rows once from the segment and once from the merged object. The flusher now reaps on its own cadence (BufferFlusher.reapLoop). The first test fails on the code before the fix (10 rows, want 6) with real clocks; the second runs random schedules of ingest, flush, waits and guarded compaction over two insert pods and two select pods on one bucket, every pod bridged to both insert pods, and checks the count on three surfaces after every step."
+
+- id: lh.durability.slow_drain_outlasts_grace_traces
+  title: "Traces: a drain that outlasts the grace does not keep a committed segment served after compaction merged its objects; every span is answered once on every insert and select pod"
+  surface: lh
+  kind: durability
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  layers: [chaos]
+  pending: true
+  durability:
+    fault: slow_drain_outlasts_grace
+    mode: buffer-flush
+    signal: traces
+    guarantees: [no-duplicate]
+  refs:
+    doc: docs/durability.md
+    tests:
+      - lakehouse-traces/internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_ASlowDrainDoesNotKeepAGuardReleasedSegmentServed
+      - lakehouse-traces/internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_FleetAnswersEveryRowOnce_RandomSchedules
+      - lakehouse-traces/internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_EveryAgeOfACommittedSegmentAnswersEachRowOnce
+      - lakehouse-traces/internal/storage/parquets3/buffer_reap_independent_test.go#TestReap_TheOtherSignalIsUnaffected
+  notes: "Same fix and tests in the traces binary (spans, trace_id and name instead of rows and level)."
+
 - id: lh.durability.drain_plan_config_change_logs
   title: "Logs: a restart with another insert.target_file_size in the middle of a drain finishes the drain with the plan it started with and loses no acknowledged row"
   surface: lh
