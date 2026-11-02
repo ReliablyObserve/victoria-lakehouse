@@ -101,9 +101,14 @@ def help_of(main, capsys, *args):
 def test_the_scripts_are_called_with_options_they_have(wf, capsys):
     job = wf["jobs"]["api"]
     matrix = step(job, "Up, seed and API matrix")["run"]
-    assert "pr_smoke.py --api-only" in matrix and "set +e" in matrix and 'echo "rc=$rc" >> "$GITHUB_OUTPUT"' in matrix and matrix.rstrip().endswith("exit 0")
+    assert "api_proof.py run --out \"$OUT\" -- " in matrix and "set +e" in matrix and 'echo "rc=$rc" >> "$GITHUB_OUTPUT"' in matrix and matrix.rstrip().endswith("exit 0")
+    run_part = matrix.split("api_proof.py run", 1)[1].split("\n", 1)[0]
+    before, after = run_part.split(" -- ", 1)
+    run_help = help_of(api_proof.main, capsys, "run")
+    for o in re.findall(r"(?<![\w-])(--[a-z][a-z-]*)", before):
+        assert o in run_help, o
     smoke_help = help_of(pr_smoke.main, capsys)
-    for o in re.findall(r"(?<![\w-])(--[a-z][a-z-]*)", matrix.split("pr_smoke.py", 1)[1]):
+    for o in re.findall(r"(?<![\w-])(--[a-z][a-z-]*)", after):
         assert o in smoke_help, o
     bundle = step(job, "Write the comment artifact")["run"].replace("\\\n", " ")
     bundle_help = help_of(api_proof.main, capsys, "bundle")
@@ -127,8 +132,10 @@ def test_the_gate_reports_on_every_pull_request_and_maps_the_exit_codes(wf):
     assert gate["name"] == "gate-deterministic" and gate["needs"] == ["plan", "api"]
     assert gate["if"] == "${{ !cancelled() && github.event_name == 'pull_request' }}" and gate["permissions"] == {}
     run = step(gate, "State of the API matrix")["run"]
-    for code in ("0)", "1)", "2)", "*)"):
+    for code in ("0)", "1)", "2)", "4)", "*)"):
         assert code in run
+    four = next(ln for ln in run.splitlines() if ln.strip().startswith("4)"))
+    assert "infrastructure state" in four and "not a regression" in four and "exit 3" in four, "exit 4 is its own did-not-complete message, never a regression"
     assert 'exit 1' in run and 'exit 2' in run and 'exit 3' in run
     assert gate["steps"][0]["env"]["RC"] == "${{ needs.api.outputs.rc }}" and wf["jobs"]["api"]["outputs"]["rc"] == "${{ steps.matrix.outputs.rc }}"
 

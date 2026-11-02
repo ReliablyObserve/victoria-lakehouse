@@ -63,7 +63,8 @@ BUFFER_TENANTS = [("t0", "0", "0", 41, 1600, 400), ("t1001", "1001", "0", 42, 40
 COMPACTED_HOURS = 4  # the oldest hours of the cold window that are force-compacted; the newest ones stay as flushed
 COLD_HOURS = HOURS_BACK - COMPACTED_HOURS
 PEER_KEY = P.PEER_KEY
-EXIT_BUSY = 4  # the stack of this project belongs to another run: nothing was started, built or removed
+EXIT_BUSY = 4  # the stack of this project belongs to another run, or its ports are in use: nothing was started, built or removed
+PORTS_BUSY = "ports already in use"  # the text of the StackBusy for ports; api_proof.py tells a port collision (re-attempted on another block) by it
 
 # While a layer is measured nothing may touch S3 in the background: the manifest is read once at startup and
 # the compaction scheduler is parked, so a per-query S3 delta is the query's. While seeding, the manifest
@@ -98,6 +99,48 @@ def allowed_bases() -> list[int]:
     span = max(max(P.PORT_OFFSETS.values()), max(EXTRA_OFFSETS.values()))
     return [b for b in range(24000, P.EPHEMERAL_FLOOR, 100)
             if b + span < P.EPHEMERAL_FLOOR and not any(b <= hi and b + span >= lo for lo, hi in P.RESERVED_PORTS)]
+
+
+def ephemeral_low(path: str = "/proc/sys/net/ipv4/ip_local_port_range") -> int:
+    """The first port the operating system hands out to outgoing connections: 32768 on Linux (a GitHub-hosted runner), else scripts.proof's floor."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return P.EPHEMERAL_FLOOR
+
+
+def ports_at(base: int) -> list[int]:
+    """The host ports this stack publishes when its block starts at `base` (what the preflight probes)."""
+    own = [base + P.PORT_OFFSETS[k] for k in ("ref-logs", "ref-traces", "base-logs", "base-traces", "pr-logs", "pr-traces")]
+    return own + list(extra_ports(base).values())
+
+
+class NoFreeBlock(RuntimeError):
+    """Every candidate port block has a port in use."""
+
+
+def candidate_bases(exclude=(), low: int | None = None) -> list[int]:
+    """The port blocks to try, in order: the block derived from the project name first, then the others; blocks wholly below the host's ephemeral range
+    (`low`) before the rest, because a port inside that range can be taken by any outgoing connection at any moment (a runner held 38762)."""
+    low = ephemeral_low() if low is None else low
+    bases = [b for b in allowed_bases() if b not in set(exclude)]
+    derived = P.port_base()
+    if derived in bases:
+        i = bases.index(derived)
+        bases = bases[i:] + bases[:i]
+    span = max(max(P.PORT_OFFSETS.values()), max(EXTRA_OFFSETS.values()))
+    return [b for b in bases if b + span < low] + [b for b in bases if b + span >= low]
+
+
+def pick_port_base(exclude=(), busy=None, low: int | None = None) -> int:
+    """The first candidate block none of whose ports has anything listening (or cannot be bound). Raises NoFreeBlock when there is none."""
+    busy = P.busy_ports if busy is None else busy
+    cands = candidate_bases(exclude, low)
+    for b in cands:
+        if not busy(ports_at(b)):
+            return b
+    raise NoFreeBlock(f"every one of {len(cands)} candidate port blocks has a port in use on 127.0.0.1")
 
 
 def check_block() -> None:
@@ -277,7 +320,7 @@ def preflight(reuse: bool = False) -> bool:
     check_block()
     busy = P.busy_ports(published_ports().values())
     if busy:
-        raise StackBusy(f"ports already in use on 127.0.0.1: {busy}; set PROOF_PORT_BASE or another AB_PROJECT")
+        raise StackBusy(f"{PORTS_BUSY} on 127.0.0.1: {busy}; set PROOF_PORT_BASE or another AB_PROJECT")
     return False
 
 
