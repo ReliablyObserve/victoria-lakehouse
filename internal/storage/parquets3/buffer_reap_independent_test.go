@@ -324,6 +324,49 @@ func TestReap_FleetAnswersEveryRowOnce_RandomSchedules(t *testing.T) {
 	t.Logf("%d segment objects merged over the schedules", merges)
 }
 
+// The two halves of the contract meet at every age of a committed segment, on
+// the real clock: compaction merges nothing of it before twice the grace, the
+// pod serves it until the grace and then retires it, and the rows are answered
+// once at each of those ages and after the merge.
+func TestReap_EveryAgeOfACommittedSegmentAnswersEachRowOnce(t *testing.T) {
+	const grace = 400 * time.Millisecond
+	e := newRestartEnvWith(t, newReapGate().mockS3Server)
+	e.f.grace = grace
+	e.ingest("A", at(rwHour, 5*time.Minute), at(rwHour, 6*time.Minute))
+	e.flush()
+	e.ingest("B", at(rwHour, 20*time.Minute), at(rwHour, 21*time.Minute))
+	e.flush()
+	committed := time.Now() // not before the markers' LastModified
+	markers := e.segmentMarkers(committed)
+	var retired, served int
+	for {
+		now := time.Now()
+		if now.Sub(committed) >= 2*grace-20*time.Millisecond {
+			break
+		}
+		e.segs.Reap(now, grace) // what the flusher's loop does
+		if n := e.compactReleased(markers, 2*grace, now); n != 0 {
+			t.Fatalf("compaction merged %d objects of segments %s old (twice the grace is %s)", n, now.Sub(committed).Round(time.Millisecond), 2*grace)
+		}
+		if now.Sub(committed) < grace {
+			served++
+		} else {
+			retired++
+		}
+		e.check(fmt.Sprintf("segments %s old", now.Sub(committed).Round(time.Millisecond)))
+	}
+	if served == 0 || retired == 0 {
+		t.Fatalf("the checks covered %d ages before the grace and %d after it; want both", served, retired)
+	}
+	time.Sleep(time.Until(committed.Add(2*grace + 20*time.Millisecond)))
+	now := time.Now()
+	e.segs.Reap(now, grace)
+	if n := e.compactReleased(markers, 2*grace, now); n != 2 {
+		t.Fatalf("compaction merged %d objects once the guard released them, want 2", n)
+	}
+	e.check("merged, segments retired")
+}
+
 // The other signal is unaffected: the bridge of this binary answers the other
 // signal's query with no rows and no segments, so a fleet of this signal's pods
 // cannot add or hide a row of the other.
