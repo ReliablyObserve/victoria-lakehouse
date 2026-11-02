@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.18] - 2026-11-02
+
+### Changed
+
+- **The PR proof workflow runs the API matrix on every pull request and reports it as the check `gate-deterministic` (tooling only, no change to the Lakehouse binaries or to runtime behaviour).** The job sends every executable registry row to the base build, the PR build and hot VictoriaLogs / VictoriaTraces and posts the comment `lh-api-matrix` through the commenter workflow. Rows are judged by the registry of the base commit, so a pull request cannot excuse its own difference with a `pending` flag, a new row or a gap entry; differences on `pending` rows are listed, and a new regression still fails. The states are the exit codes of `scripts/bench/ab/pr_smoke.py --api-only` (passed, regression or new difference, invalid run, did not complete); see `docs/pr-perf-smoke.md`.
+
+### Fixed
+
+- **The chart's default vmauth config routes traces inserts to the traces insert service (#843).** The traces insert rule listed `X-Lakehouse-Signal: traces` under `headers`, which only sets a header on the proxied request, and sat after the logs insert rule, which lists `/insert/.*` with no condition, so with both signals enabled every `/insert/*` request, the OTLP traces endpoint included, went to the logs insert pods. The traces insert rules now come first: `/insert/opentelemetry/v1/traces` (served by the traces binary only) goes to the traces insert pods by path, and any other `/insert/*` path goes there when the request carries `X-Lakehouse-Signal: traces` (`src_headers`), otherwise to the logs insert pods. With no logs insert pods every `/insert/*` path still goes to the traces insert pods. The chart test renders the config for each mode and checks the route of each insert path and header.
+
 ## [0.167.17] - 2026-11-02
 
 ### Fixed
