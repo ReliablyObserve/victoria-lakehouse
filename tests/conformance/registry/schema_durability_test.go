@@ -37,6 +37,17 @@ func TestDurability_ValidCells(t *testing.T) {
 	if err := n.Validate(); err != nil {
 		t.Fatalf("a cell with no loss-counted guarantee and no metric: %v", err)
 	}
+	// The compaction mode and the rejected-502 guarantee (#772): a read that
+	// cannot be answered completely fails with 502, never short.
+	c := durabilityRow()
+	c.ID = "lh.durability.compaction_swap_past_bound_logs"
+	c.Durability.Fault = "compaction_swap_past_bound"
+	c.Durability.Mode = "compaction"
+	c.Durability.Guarantees = []string{"no-duplicate", "rejected-502"}
+	c.Durability.Metric = ""
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a compaction cell that rejects with 502: %v", err)
+	}
 }
 
 func TestDurability_InvalidCells(t *testing.T) {

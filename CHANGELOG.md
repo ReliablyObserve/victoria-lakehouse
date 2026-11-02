@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.16] - 2026-11-02
+
+### Changed
+
+- **The PR proof harness can resolve and fetch the previous release as a comparison target (tooling only, no change to the Lakehouse binaries or to runtime behaviour).** `scripts/bench/ab/prev.py` picks the newest release tag that is an ancestor of the commit a pull request is tested on top of, resolves the logs and traces images of that tag to a registry digest with an anonymous token, pulls them by digest (building from the tag when the registry has no image), caches them by tag with the first digest pinned, and reports a distinct `not-evaluated` or `invalid` state, never a pass, when it cannot. Nothing calls it yet; the format and states are documented in `docs/pr-perf-smoke.md`.
+
+- **The conformance registry schema accepts optional proof fields (#817).** Rows may carry `data_layers`, `tenant_forms` and `tier`, perf rows a `scenario`, `baseline`, `gate` and `tolerance`, a schema-compare row a `contract`, and the new kinds `visual` and `shared-code` describe UI pages and code shared with VictoriaLogs/VictoriaTraces; features may state `perf_na` or `proof_na` with a reason class. All fields are optional, no existing row or feature changes, and `CheckProofRefs` verifies that every pointer resolves in the repository.
+
+### Fixed
+
+- **The chart's default vmauth config routes traces deletes and traces-header queries to the traces select pods (#598).** The traces select rule listed no delete path and sat after the logs select rule, which has no condition on the signal, so `/delete/logsql/*` and `/select/logsql/*` requests with `X-Lakehouse-Signal: traces` and every `/delete/tracessql/*` request went to a logs pod; the rule's `headers` option, which only sets a header on the proxied request, was never a match condition. The traces rules now come first, `/delete/tracessql/*` joins the Jaeger and Tempo paths, and `/select/logsql/*` and `/delete/logsql/*` go to the traces pods only with the header (`src_headers`). The chart test renders the config and checks the route of each header and path pair in logs-only, traces-only and both-signal modes.
+
 ## [0.167.15] - 2026-10-26
 
 ### Changed

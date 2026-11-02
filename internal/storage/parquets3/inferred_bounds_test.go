@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"testing"
 	"time"
 
@@ -44,7 +45,10 @@ func TestResolveFaults_InferredObjectIsNotAnsweredFromMetadata(t *testing.T) {
 	s := &Storage{}
 	ctx := withMetadataOnlyPlan(storage.WithTimestampOnlyHint(context.Background()), planMetadataOnly(mustParseQuery(t, "* | stats count() n")))
 	emitted := 0
-	s.handle404Recovery(ctx, inferred, nil, false, func(uint, *logstorage.DataBlock) { emitted++ })
+	err := s.handle404Recovery(ctx, inferred, 0, 1<<62, nil, false, func(uint, *logstorage.DataBlock) { emitted++ }, errors.New("NoSuchKey"))
+	if err == nil {
+		t.Error("handle404Recovery let a read go on without an object with inferred bounds: it must fail the read")
+	}
 	if emitted != 0 {
 		t.Errorf("handle404Recovery served %d blocks for an object with inferred bounds", emitted)
 	}
