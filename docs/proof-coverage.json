@@ -13,15 +13,15 @@
     "upstream_pass_rows_differential": 108,
     "upstream_pass_rows_other_test": 33,
     "upstream_pass_rows_no_test": 246,
-    "rows_total": 1378,
+    "rows_total": 1379,
     "rows_pending": 1288,
     "rows_pending_waiting_for_runner": 500,
     "rows_pending_executed_elsewhere": 788,
     "rows_pending_unclassified": 0,
     "shipped_features": 156,
-    "shipped_features_no_rows": 110,
+    "shipped_features_no_rows": 109,
     "shipped_features_no_perf_scenario": 149,
-    "shipped_features_unproven": 107,
+    "shipped_features_unproven": 106,
     "shared_code_items": 41,
     "shared_code_unguarded": 3
   },
@@ -1982,25 +1982,25 @@
     }
   ],
   "registry": {
-    "rows": 1378,
+    "rows": 1379,
     "by_surface": {
-      "lh": 141,
+      "lh": 142,
       "vl": 684,
       "vt": 553
     },
     "by_expect": {
       "absent": 3,
       "differ": 69,
-      "pass": 1280,
+      "pass": 1281,
       "unsupported": 26
     },
     "by_origin": {
-      "lh-addition": 117,
+      "lh-addition": 118,
       "lh-shim": 28,
       "native": 1233
     },
     "perf_cells": 768,
-    "non_perf_rows": 610,
+    "non_perf_rows": 611,
     "pending_rows": 1288,
     "pending_perf_cells": 768
   },
@@ -2012,14 +2012,14 @@
       "shipped": 156
     },
     "shipped": 156,
-    "shipped_no_rows": 110,
+    "shipped_no_rows": 109,
     "shipped_no_tests": 1,
     "shipped_no_perf_scenario": 149,
     "shipped_citing_a_hot_row": 11,
     "shipped_by_proof_class": {
-      "lh-extension": 40,
+      "lh-extension": 41,
       "perf-proven": 3,
-      "unproven": 107,
+      "unproven": 106,
       "upstream-exact": 6
     },
     "shipped_features": [
@@ -3789,14 +3789,14 @@
       {
         "id": "lh.feature.deploy.helm",
         "area": "deploy",
-        "rows": 0,
+        "rows": 1,
         "rows_pending": 0,
         "rows_targeting_hot": 0,
         "tests": 3,
         "bench": [],
         "perf_cells": 0,
         "perf_scenario": false,
-        "proof_class": "unproven"
+        "proof_class": "lh-extension"
       },
       {
         "id": "lh.feature.deploy.release_image_patches",

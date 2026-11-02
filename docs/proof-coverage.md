@@ -17,14 +17,14 @@ What the conformance registry proves, how, and what is missing. Computed from `t
 | ... linking a differential test (hot target, tests/parity or tests/e2e) | 108 |
 | ... linking only another test | 33 |
 | ... linking no test at all | 246 |
-| Registry rows / pending rows | 1378 / 1288 |
+| Registry rows / pending rows | 1379 / 1288 |
 | ... pending and waiting for the HTTP runner or a harness | 500 |
 | ... pending but executed by another CI job or by cited Go tests | 788 |
 | ... pending, reason unclassified | 0 |
 | Shipped features | 156 |
-| ... citing no registry row | 110 |
+| ... citing no registry row | 109 |
 | ... citing no perf scenario (bench id or perf cell) | 149 |
-| ... unproven (no row and no perf scenario) | 107 |
+| ... unproven (no row and no perf scenario) | 106 |
 | Shared upstream code items (pins, patches, imported packages) | 41 |
 | ... unguarded (no test or gate names them) | 3 |
 
@@ -319,7 +319,7 @@ Rows on the `vl` and `vt` surfaces that expect `pass`, excluding perf cells, spl
 
 168 features: 156 shipped, 3 in-progress, 9 planned. Of the 156 shipped:
 
-- no registry row cited: 110
+- no registry row cited: 109
 - no perf scenario cited (a bench id or a perf cell): 149
 - no test cited: 1
 - a cited row targets hot: 11
@@ -329,9 +329,9 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | Proof class | Shipped features |
 |---|--:|
 | upstream-exact | 6 |
-| lh-extension | 40 |
+| lh-extension | 41 |
 | perf-proven | 3 |
-| unproven | 107 |
+| unproven | 106 |
 
 | Feature | Area | Rows (pending) | Hot rows | Tests | Perf scenario | Proof class |
 |---|---|--:|--:|--:|---|---|
@@ -480,7 +480,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.deploy.az_aware` | deploy | 0 (0) | 0 | 5 | none | unproven |
 | `lh.feature.deploy.compose` | deploy | 0 (0) | 0 | 2 | none | unproven |
 | `lh.feature.deploy.discovery` | deploy | 0 (0) | 0 | 4 | none | unproven |
-| `lh.feature.deploy.helm` | deploy | 0 (0) | 0 | 3 | none | unproven |
+| `lh.feature.deploy.helm` | deploy | 1 (0) | 0 | 3 | none | lh-extension |
 | `lh.feature.deploy.release_image_patches` | deploy | 0 (0) | 0 | 3 | none | unproven |
 | `lh.feature.deploy.ring_self_resolution` | deploy | 4 (0) | 0 | 46 | none | lh-extension |
 | `lh.feature.deploy.role_separation` | deploy | 0 (0) | 0 | 5 | none | unproven |
@@ -587,7 +587,7 @@ A row is *pending* while the registry HTTP runner does not execute it (`tests/co
 
 ## 6. Registry totals and what is not inventoried
 
-1378 rows: lh 141, vl 684, vt 553; expect absent 3, differ 69, pass 1280, unsupported 26; origin lh-addition 117, lh-shim 28, native 1233. 768 perf cells (768 pending), 610 other rows.
+1379 rows: lh 142, vl 684, vt 553; expect absent 3, differ 69, pass 1281, unsupported 26; origin lh-addition 118, lh-shim 28, native 1233. 768 perf cells (768 pending), 611 other rows.
 
 Surfaces with no inventory, so no completeness number can be computed for them:
 
