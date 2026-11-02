@@ -1876,7 +1876,7 @@ The chart encodes the operational rules that keep a stateful cold tier safe unde
 - Verification: tests: `charts/victoria-lakehouse/test_templates.sh`, `charts/victoria-lakehouse/test_images.sh`, `scripts/ci/tests/test_release_image_tags.py`
 - Docs: `docs/kubernetes-deployment.md`
 - Changelog: `0.10.0`, `0.37.1`
-- Note: CI runs the linked chart template and exact image-reference tests, strict `helm lint`, and the Helm drift check (`scripts/ci/helmdrift`).
+- Note: CI runs the linked chart template and exact image-reference tests, strict `helm lint`, and the Helm drift check (`scripts/ci/helmdrift`). The template test also renders the default vmauth config and checks, by vmauth's first-match rule, which service each path and `X-Lakehouse-Signal` header combination reaches (traces deletes and traces-header queries go to the traces select pods, not the logs ones).
 
 ### ✅ Released images apply every patch the tests ran with
 

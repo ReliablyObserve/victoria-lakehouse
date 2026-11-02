@@ -11,7 +11,10 @@
     - scripts/ci/tests/test_release_image_tags.py
   notes: >-
     CI runs the linked chart template and exact image-reference tests, strict `helm lint`,
-    and the Helm drift check (`scripts/ci/helmdrift`).
+    and the Helm drift check (`scripts/ci/helmdrift`). The template test also renders the default
+    vmauth config and checks, by vmauth's first-match rule, which service each path and
+    `X-Lakehouse-Signal` header combination reaches (traces deletes and traces-header queries go to
+    the traces select pods, not the logs ones).
   docs:
     - docs/kubernetes-deployment.md
   changelog_bullets:
