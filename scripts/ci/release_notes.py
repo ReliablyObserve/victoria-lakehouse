@@ -25,7 +25,8 @@ Rules that keep it safe to run in the release job:
 * A bullet is one line, as upstream: wrapped lines are joined. Nested bullets and
   further paragraphs of a bullet stay under it.
 * `#123` becomes a link to the issue or pull request of this repository. Code
-  spans, existing links, URLs and references to other repositories are left alone.
+  spans, existing links, URLs, references to other repositories and numbers cited
+  after an upstream project's name ("VictoriaLogs #1603") are left alone.
 * The bold lead-in of a bullet stays its first words. Removed and deprecated
   items say so (`removed: `, `deprecated: `) right after the prefix.
 """
@@ -59,9 +60,21 @@ BULLET = re.compile(r"^[-*] ")
 NESTED_BULLET = re.compile(r"^(?P<indent> {2,})[-*] (?P<text>.*)$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# A number cited after the name of an upstream project ("VictoriaLogs #1603", "upstream PR #12",
+# "VictoriaLogs master (unreleased, #1635)", "VictoriaLogs #1749, #1764") belongs to that project's
+# tracker, not to this repository's. The name may be followed by words that only qualify the number
+# (issue, PR, master, unreleased, a version); a bare parenthesis before the number ("VictoriaTraces
+# (#434)") is this repository's own reference and stays linked. A list of numbers is upstream as a whole.
+UPSTREAM_PROJECT = r"(?i:victorialogs|victoriatraces|victoriametrics|vmauth|vmagent|vmalert|upstream)"
+UPSTREAM_REFERENCE = (
+    rf"\b{UPSTREAM_PROJECT}(?:\s*(?:/|,|and|or)\s*{UPSTREAM_PROJECT})*(?:['\u2019]s)?"
+    r"(?:[\s,:(]*(?i:issues?|prs?|pull requests?|master|main|unreleased|v?\d+(?:\.\d+)+)\b)*"
+    r"[\s,:]*#\d{1,5}(?!\w)(?:\s*(?:,|and|&)\s*#\d{1,5}(?!\w))*"
+)
+
 # Spans that must not be touched, then the references to turn into links.
 REFERENCE = re.compile(
-    r"(?P<skip>`[^`\n]*`|\[[^\]\n]*\]\([^)\n]*\)|https?://\S+|[\w.-]+/[\w.-]+#\d+)"
+    r"(?P<skip>`[^`\n]*`|\[[^\]\n]*\]\([^)\n]*\)|https?://\S+|[\w.-]+/[\w.-]+#\d+|" + UPSTREAM_REFERENCE + r")"
     r"|(?<![\w&#/\[])#(?P<number>\d{1,5})(?!\w)"
 )
 
