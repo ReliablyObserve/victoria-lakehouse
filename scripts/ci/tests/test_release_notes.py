@@ -224,6 +224,49 @@ class Links(unittest.TestCase):
         ):
             self.assertEqual(rn.link_refs(text), text)
 
+    def test_upstream_numbers_are_not_linked_to_this_repository(self):
+        # Real v0.145.5 text of the changelog (issue #823) and the other forms the rule covers.
+        for text in (
+            "(VictoriaLogs #1603, #1604); the insert buffer",
+            "kill the process from the listener goroutine (VictoriaLogs #1786); `unpack_syslog`",
+            "instead of adding to it (VictoriaLogs #1749, #1764). The",
+            "VictoriaTraces 0.12 and VictoriaLogs master (unreleased, #1635), so a GET",
+            "VictoriaTraces v0.12.0, PR #256).",
+            "matches VictoriaLogs issue #12",
+            "see upstream PR #12 and upstream #13",
+            "upstream's #14",
+            "victorialogs #15",
+            "VictoriaMetrics pull request #16",
+            "vmauth #17 and #18",
+            "VictoriaLogs/VictoriaTraces #19",
+            "VictoriaLogs #1, #2 and #3",
+        ):
+            self.assertEqual(rn.link_refs(text), text, text)
+
+    def test_own_numbers_next_to_upstream_names_are_still_linked(self):
+        for text, want in (
+            ("lakehouse #12 is ours", f"lakehouse [#12]({ISSUES}12) is ours"),
+            ("VictoriaTraces keeps them (#434)", f"VictoriaTraces keeps them ([#434]({ISSUES}434))"),
+            ("matches VictoriaTraces (#434)", f"matches VictoriaTraces ([#434]({ISSUES}434))"),
+            ("upstream-exact fix (#9)", f"upstream-exact fix ([#9]({ISSUES}9))"),
+            ("VictoriaLogs v1.52.0 fix (#700)", f"VictoriaLogs v1.52.0 fix ([#700]({ISSUES}700))"),
+            ("closes #12 as VictoriaLogs does", f"closes [#12]({ISSUES}12) as VictoriaLogs does"),
+            ("VictoriaLogs, fixed in #12", f"VictoriaLogs, fixed in [#12]({ISSUES}12)"),
+            ("VictoriaLogs #1603 and ours #12", f"VictoriaLogs #1603 and ours [#12]({ISSUES}12)"),
+            ("VictoriaLogs #1603; ours #12", f"VictoriaLogs #1603; ours [#12]({ISSUES}12)"),
+            ("VictoriaLogs #1603. Fixes #12", f"VictoriaLogs #1603. Fixes [#12]({ISSUES}12)"),
+            ("(PR #122)", f"(PR [#122]({ISSUES}122))"),
+        ):
+            self.assertEqual(rn.link_refs(text), want, text)
+
+    def test_bullet_without_upstream_names_renders_as_before(self):
+        src = changelog("## [1.0.0] - 2026-01-02\n\n### Fixed\n\n- **Fix (#5).** Closes #6 and (#7).\n")
+        body, _ = rn.render(src, "1.0.0")
+        self.assertEqual(
+            body,
+            f"Released at 2026-01-02\n\n* BUGFIX: **Fix ([#5]({ISSUES}5)).** Closes [#6]({ISSUES}6) and ([#7]({ISSUES}7)).\n",
+        )
+
     def test_several_references_and_idempotent(self):
         once = rn.link_refs("see #1, #22 and #333")
         self.assertEqual(

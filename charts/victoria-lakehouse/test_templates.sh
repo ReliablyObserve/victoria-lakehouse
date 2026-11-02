@@ -632,6 +632,135 @@ for var_path in "POD_NAME:metadata.name" "POD_IP:status.podIP" "POD_IPS:status.p
 done
 
 # ---------------------------------------------------------------------------
+# vmauth routing (default config). The test models vmauth: the first url_map entry whose
+# src_paths (a regex that must match the whole path) and src_headers (any listed header
+# equals the request's) both match wins; the `headers` key only sets a header on the
+# proxied request and is never part of the match. Rows: mode, path, header, service.
+# Out of scope here: the traces insert rule (see the PR that added this check).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- vmauth default routing ---"
+
+VMAUTH_ROUTING_PY="$(mktemp)"
+cat > "${VMAUTH_ROUTING_PY}" <<'PY'
+import re
+import sys
+
+import yaml
+
+TRACES = {"X-Lakehouse-Signal": "traces"}
+# mode -> [(path, request headers, expected service or None for "no rule matches")]
+CASES = {
+    "logs-only": [
+        ("/select/logsql/query", {}, "logs-select"),
+        ("/select/logsql/query", TRACES, "logs-select"),
+        ("/delete/logsql/delete", {}, "logs-select"),
+        ("/delete/logsql/delete", TRACES, "logs-select"),
+        ("/delete/tracessql/delete", {}, "logs-select"),
+        ("/insert/jsonline", {}, "logs-insert"),
+        ("/select/vmui/", {}, "logs-select"),
+    ],
+    "both": [
+        ("/select/logsql/query", {}, "logs-select"),
+        ("/select/logsql/query", TRACES, "traces-select"),
+        ("/delete/logsql/delete", {}, "logs-select"),
+        ("/delete/logsql/delete", TRACES, "traces-select"),
+        ("/delete/logsql/tombstones", TRACES, "traces-select"),
+        ("/delete/tracessql/delete", {}, "traces-select"),
+        ("/delete/tracessql/delete", TRACES, "traces-select"),
+        ("/select/jaeger/api/traces", {}, "traces-select"),
+        ("/select/jaeger/api/traces", TRACES, "traces-select"),
+        ("/tempo/api/search", {}, "traces-select"),
+        ("/insert/jsonline", {}, "logs-insert"),
+        ("/select/vmui/", {}, "logs-select"),
+        ("/select/vmui/", TRACES, "logs-select"),
+    ],
+    "traces-only": [
+        ("/select/logsql/query", {}, None),
+        ("/select/logsql/query", TRACES, "traces-select"),
+        ("/delete/logsql/delete", {}, None),
+        ("/delete/logsql/delete", TRACES, "traces-select"),
+        ("/delete/tracessql/delete", {}, "traces-select"),
+        ("/select/jaeger/api/traces", {}, "traces-select"),
+        ("/tempo/api/search", TRACES, "traces-select"),
+    ],
+    "both, traces select disabled": [
+        ("/select/logsql/query", TRACES, "logs-select"),
+        ("/delete/logsql/delete", TRACES, "logs-select"),
+        ("/delete/tracessql/delete", {}, "logs-select"),
+        ("/select/jaeger/api/traces", {}, "logs-select"),
+    ],
+}
+
+
+def service(entry):
+    prefix = entry["url_prefix"]
+    prefix = prefix[0] if isinstance(prefix, list) else prefix
+    return re.match(r"http://[^:/]+?-((?:logs|traces)-(?:insert|select)):", prefix).group(1)
+
+
+def matches(entry, path, headers):
+    paths = entry.get("src_paths")
+    if paths is not None and not any(re.fullmatch(p, path) for p in paths):
+        return False
+    wanted = entry.get("src_headers")
+    if wanted is not None:
+        have = {k.lower(): v for k, v in headers.items()}
+        for line in wanted:
+            name, _, value = line.partition(":")
+            if have.get(name.strip().lower()) == value.strip():
+                break
+        else:
+            return False
+    return True
+
+
+def route(url_map, path, headers):
+    for entry in url_map:
+        if matches(entry, path, headers):
+            return service(entry)
+    return None
+
+
+mode, rendered = sys.argv[1], sys.argv[2]
+secret = next(d for d in yaml.safe_load_all(open(rendered)) if d and d.get("kind") == "Secret")
+url_map = yaml.safe_load(secret["stringData"]["auth.yml"])["unauthorized_user"]["url_map"]
+bad = 0
+for path, headers, want in CASES[mode]:
+    got = route(url_map, path, headers)
+    if got != want:
+        bad += 1
+        print(f"         {path} headers={headers or '-'}: routes to {got}, want {want}")
+sys.exit(1 if bad else 0)
+PY
+
+run_vmauth_routing() {
+  local mode="$1"
+  shift
+  local rendered
+  rendered="$(mktemp)"
+  if ! helm template test-release "${CHART_DIR}" --set "vmauth.enabled=true" "$@" \
+      --show-only templates/vmauth-secret.yaml >"${rendered}" 2>"${ERROR_FILE}"; then
+    echo "  FAIL  vmauth routing (${mode}): helm template failed"
+    sed 's/^/         /' "${ERROR_FILE}"
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  elif python3 -I "${VMAUTH_ROUTING_PY}" "${mode}" "${rendered}" >"${ERROR_FILE}" 2>&1; then
+    echo "  PASS  vmauth routing (${mode})"; PASSED=$((PASSED + 1))
+  else
+    echo "  FAIL  vmauth routing (${mode})"
+    cat "${ERROR_FILE}"
+    FAILED=$((FAILED + 1)); ERRORS=$((ERRORS + 1))
+  fi
+  rm -f "${rendered}"
+}
+
+run_vmauth_routing "logs-only"
+run_vmauth_routing "both" --set "traces.enabled=true"
+run_vmauth_routing "traces-only" --set "logs.enabled=false" --set "traces.enabled=true"
+run_vmauth_routing "both, traces select disabled" --set "traces.enabled=true" --set "traces.select.enabled=false"
+rm -f "${VMAUTH_ROUTING_PY}"
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 echo ""
