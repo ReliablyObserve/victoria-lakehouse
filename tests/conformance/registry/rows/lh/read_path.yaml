@@ -146,6 +146,7 @@
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_NoFault_ReturnsEveryRow
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_UnreadableObject_FailsInsteadOfPartial
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RemovedObject_FailsWith502
+      - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RemovedObject_StaysTolerated
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_KeyContaining404_IsNotAMissingObject
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_ClassifiedByTheS3Error_NotByItsText
       - internal/storage/parquets3/row_read_complete_test.go#TestRowRead_CallerStopsDuringLastObject_Fails
@@ -158,6 +159,7 @@
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_NoFault_ReturnsEveryRow
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_UnreadableObject_FailsInsteadOfPartial
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RemovedObject_FailsWith502
+      - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_RemovedObject_StaysTolerated
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_KeyContaining404_IsNotAMissingObject
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_ClassifiedByTheS3Error_NotByItsText
       - lakehouse-traces/internal/storage/parquets3/row_read_complete_test.go#TestRowRead_CallerStopsDuringLastObject_Fails

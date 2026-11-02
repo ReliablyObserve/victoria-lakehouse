@@ -96,11 +96,13 @@ func TestGoneObject_ManifestAnswersOnlyWhenExact(t *testing.T) {
 	})
 }
 
-// Through RunQuery: a timestamp-only count over objects whose rows the manifest
-// knows is exact although one object was removed (the manifest answers, no read),
-// and fails with 502 as soon as the window cuts the removed object (its rows inside
-// the window are unknown).
-func TestGoneObject_CountFromManifest_ThroughRunQuery(t *testing.T) {
+// checkCountFromManifestWithRemovedObject is the one case in which a removed
+// object is tolerated, through RunQuery: a timestamp-only count over objects whose
+// rows the manifest knows is exact although one object was removed (the manifest
+// answers, no read), and fails with 502 as soon as the window cuts the removed
+// object (its rows inside the window are unknown). Run by
+// TestRowRead_RemovedObject_StaysTolerated.
+func checkCountFromManifestWithRemovedObject(t *testing.T) {
 	fx := newRCFixture(t, 4, rcKeyFmt)
 	for i, key := range fx.keys {
 		fi := manifest.FileInfo{Key: key, Size: int64(len(fx.datas[i])), RowCount: rcRowsPerFile,
