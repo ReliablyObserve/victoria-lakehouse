@@ -1,0 +1,36 @@
+# Example visual rows: a UI page of tests/playwright/proof/spec.json as a registry row.
+- id: lh.visual.explore_logs_volume
+  title: "Grafana Explore with the VictoriaLogs datasource: logs and volume"
+  surface: lh
+  kind: visual
+  origin: lh-addition
+  expect: pass
+  targets: [hot, cold]
+  compare: { type: ui }
+  layers: [ui]
+  data_layers: [cold, buffer]
+  tier: core
+  visual: { page: vl-explore-logs, signals: [logs], reference: hot-vl }
+- id: lh.visual.jaeger_trace_view
+  title: "Jaeger UI trace view of a cold trace"
+  surface: lh
+  kind: visual
+  origin: lh-addition
+  expect: pass
+  targets: [hot, cold]
+  compare: { type: ui }
+  layers: [ui]
+  data_layers: [cold]
+  tier: focused
+  visual: { page: jaeger-ui-trace, ranges: [cold], signals: [traces], reference: hot-vt }
+- id: lh.visual.lakehouse_ui_storage
+  title: "Lakehouse UI storage page against the previous release"
+  surface: lh
+  kind: visual
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  compare: { type: ui }
+  layers: [ui]
+  tier: daily
+  visual: { page: lh-ui-storage, signals: [logs, traces], reference: release }

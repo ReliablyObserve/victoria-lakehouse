@@ -466,7 +466,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.ops.benchmark_harness` | ops | 0 (0) | 0 | 4 | count_by_service, count_total, scan, trace_by_id | perf-proven |
 | `lh.feature.ops.config_drift_gate` | ops | 1 (1) | 0 | 5 | none | lh-extension |
 | `lh.feature.ops.config_profiles` | ops | 0 (0) | 0 | 3 | none | unproven |
-| `lh.feature.ops.conformance_registry` | ops | 0 (0) | 0 | 111 | none | unproven |
+| `lh.feature.ops.conformance_registry` | ops | 0 (0) | 0 | 112 | none | unproven |
 | `lh.feature.ops.datagen` | ops | 0 (0) | 0 | 1 | none | unproven |
 | `lh.feature.ops.feature_catalog` | ops | 0 (0) | 0 | 9 | none | unproven |
 | `lh.feature.ops.hot_cold_parity_suite` | ops | 0 (0) | 0 | 10 | none | unproven |
@@ -516,12 +516,12 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 
 | File | Kind | Named by | Directory named by |
 |---|---|---|---|
-| `patches/vl-logs/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
-| `patches/vl-logs/external_query.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/parity/servicegraph_parity_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
-| `patches/vl-logs/vl-const-timestamps-parse.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/pins_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go` |
-| `patches/vl-logs/vl-export-severity.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
-| `patches/vl-logs/vl-export-streamtags-get.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
-| `patches/vl-logs/vlstorage-dispatch.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `scripts/ci/check_patches_equal.sh` | `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go` |
+| `patches/vl-logs/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | many (more than 3 files) |
+| `patches/vl-logs/external_query.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/parity/servicegraph_parity_test.go` | many (more than 3 files) |
+| `patches/vl-logs/vl-const-timestamps-parse.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/conformance/pins_test.go` | `scripts/ci/check_patches_equal.sh`, `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/registry/proof_ext_test.go` |
+| `patches/vl-logs/vl-export-severity.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | many (more than 3 files) |
+| `patches/vl-logs/vl-export-streamtags-get.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `internal/vlstorage/severity_fallback_test.go` | many (more than 3 files) |
+| `patches/vl-logs/vlstorage-dispatch.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `scripts/ci/check_patches_equal.sh` | `tests/conformance/cmd/confgen/main_test.go`, `tests/conformance/pins_test.go`, `tests/conformance/registry/proof_ext_test.go` |
 | `patches/vl-traces/external.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go` | many (more than 3 files) |
 | `patches/vl-traces/external_query.go.src` | src | `internal/upstreamreuse/upstreamreuse_test.go`, `tests/parity/servicegraph_parity_test.go` | many (more than 3 files) |
 | `patches/vl-traces/vl-allow-duplicate-stream-tags.patch` | patch | `internal/upstreamreuse/upstreamreuse_test.go`, `lakehouse-traces/internal/storage/parquets3/duplicate_stream_fields_test.go` | many (more than 3 files) |

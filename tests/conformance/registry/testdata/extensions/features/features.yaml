@@ -1,0 +1,55 @@
+# Example features: perf_na and proof_na with the closed reason classes.
+- id: lh.feature.query.count_pushdown_example
+  title: Count pushdown (the feature the others point at)
+  status: shipped
+  area: query
+  surfaces: [api]
+  rows: [lh.api.stats_overview.contract]
+  bench: [count_total]
+  highlight: "**Count pushdown**: one line."
+  description: >-
+    A shipped feature with a bench scenario and a row.
+- id: lh.feature.deploy.chart_example
+  title: Helm chart example
+  status: shipped
+  area: deploy
+  surfaces: [flag]
+  perf_na:
+    class: no-runtime-path
+    reason: A chart renders manifests; no query or ingest path runs through it.
+  proof_na:
+    class: deploy-only
+    reason: Proven by the chart lint and template tests, not by an API or a page.
+  highlight: "**Helm chart**: one line."
+  description: >-
+    A deploy feature with neither a perf scenario nor an API or visual proof.
+- id: lh.feature.cache.warm_example
+  title: Cache warm-up example
+  status: shipped
+  area: cache
+  surfaces: [api]
+  perf_na:
+    class: covered-by-feature
+    reason: The warm-up cost is part of the count pushdown scenario.
+    see: lh.feature.query.count_pushdown_example
+  proof_na:
+    class: covered-by-feature
+    reason: The pushdown rows already exercise it end to end.
+    see: lh.feature.query.count_pushdown_example
+  highlight: "**Cache warm-up**: one line."
+  description: >-
+    A feature proven through another feature.
+- id: lh.feature.tenancy.alias_example
+  title: Alias resolution example
+  status: shipped
+  area: tenancy
+  surfaces: [api]
+  perf_na:
+    class: constant-cost
+    reason: One map lookup per request, O(1) in tenants, files and days.
+  proof_na:
+    class: no-user-surface
+    reason: An internal step; the tenant routing rows prove the visible result.
+  highlight: "**Alias resolution**: one line."
+  description: >-
+    A feature with a constant-cost path and no surface of its own.

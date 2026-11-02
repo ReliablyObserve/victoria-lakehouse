@@ -134,6 +134,12 @@ type Feature struct {
 	Changelog        []string `yaml:"changelog,omitempty"`
 	ChangelogBullets []string `yaml:"changelog_bullets,omitempty"`
 
+	// PerfNA and ProofNA state, in a closed class plus a reason, why the feature
+	// has no perf scenario (PerfNA, instead of `bench:` or a perf row) or no
+	// API/visual proof (ProofNA). Optional; see proof_ext.go.
+	PerfNA  *NotApplicable `yaml:"perf_na,omitempty"`
+	ProofNA *NotApplicable `yaml:"proof_na,omitempty"`
+
 	Notes string `yaml:"notes,omitempty"`
 }
 
@@ -237,6 +243,18 @@ func (f *Feature) Validate() error {
 	}
 	if strings.TrimSpace(f.Description) == "" {
 		add("description required")
+	}
+
+	f.PerfNA.validate("perf_na", PerfNAClasses, add)
+	f.ProofNA.validate("proof_na", ProofNAClasses, add)
+	if f.PerfNA != nil && len(f.Bench) > 0 {
+		add("perf_na contradicts bench: a feature with a bench scenario has perf proof, remove one")
+	}
+	if f.PerfNA != nil && f.PerfNA.See == f.ID {
+		add("perf_na.see names the feature itself")
+	}
+	if f.ProofNA != nil && f.ProofNA.See == f.ID {
+		add("proof_na.see names the feature itself")
 	}
 
 	for _, list := range [][]string{f.Rows, f.Tests, f.Bench, f.Docs} {

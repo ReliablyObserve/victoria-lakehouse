@@ -1,0 +1,44 @@
+# Example rows for the data_layers, tenant_forms and tier fields (proof_ext.go).
+- id: vl.select.hits.layers_example
+  title: "hits answered from every data layer, both tenant forms"
+  surface: vl
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [logs.base]
+  upstream: { route: /select/logsql/hits }
+  request: { method: GET, path: /select/logsql/hits, params: { query: "*", step: 1h } }
+  compare: { type: exact-json }
+  layers: [api]
+  data_layers: [buffer, cold, compacted, after-restart]
+  tenant_forms: [numeric, alias]
+  tier: core
+- id: vt.jaeger.traces_by_id.layers_example
+  title: "trace by ID before and after a restart"
+  surface: vt
+  kind: select
+  origin: native
+  expect: pass
+  targets: [hot, cold]
+  seed: [traces.base]
+  upstream: { route: "/select/jaeger/api/traces/{traceID}" }
+  request: { method: GET, path: "/select/jaeger/api/traces/0123456789abcdef0123456789abcdef" }
+  compare: { type: trace }
+  layers: [api]
+  data_layers: [cold, after-restart]
+  tier: focused
+- id: lh.stats.layers.daily_example
+  title: "compacted layer, numeric tenants, daily tier"
+  surface: lh
+  kind: admin
+  origin: lh-addition
+  expect: pass
+  targets: [cold]
+  seed: [logs.base]
+  request: { method: GET, path: /lakehouse/api/v1/stats/overview }
+  compare: { type: schema }
+  layers: [api]
+  data_layers: [compacted]
+  tenant_forms: [numeric]
+  tier: daily

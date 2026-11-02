@@ -129,6 +129,7 @@
     - tests/conformance/registry/schema_durability_test.go#TestCheckDurability_Rejects
     - tests/conformance/registry/schema_durability_test.go#TestCheckDurability_MissingInputs
     - tests/conformance/registry/schema_durability_test.go#TestDurability_RealRegistry
+    - tests/conformance/registry/proof_ext_test.go#TestProofExtensions
     - tests/conformance/inventory/inventory_test.go#TestExtract_RealDeps
     - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_KindCounts
     - tests/conformance/report/proof_coverage_test.go#TestProofCoverage_AgreesWithUpstreamCoverageDoc
