@@ -297,6 +297,14 @@ def test_a_stray_system_exit_of_the_wrapper_is_exit_three_never_a_pass(tmp_path,
     assert rc == 3 and read_json(str(out / "api-verdict.json"))["exit"] == 3
 
 
+def test_files_that_cannot_be_written_are_reported_in_the_log_and_the_exit_stays_three(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(stack, "pick_port_base", lambda exclude=(): (_ for _ in ()).throw(RuntimeError("boom")))
+    blocker = tmp_path / "out"
+    blocker.write_text("a file where the directory must go")  # os.makedirs(out) fails
+    assert api_proof.main(["run", "--out", str(blocker), "--", "--base", "x"]) == 3
+    assert "could not write the did-not-complete files" in capsys.readouterr().err
+
+
 def test_an_argument_error_of_the_wrapper_is_exit_three_not_the_invalid_run_two(tmp_path):
     assert api_proof.main(["run", "--", "--base", "x"]) == 3  # no --out: argparse exits 2
 

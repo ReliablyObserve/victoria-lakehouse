@@ -26,6 +26,7 @@ commenter's own parser (`proof_comment.parse_manifest`, `check_files`) before th
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -133,10 +134,8 @@ def run_with_retry(out: str, pick, attempt) -> int:
     except stack.NoFreeBlock:
         return finish_reattempt(out, rec, rc)  # nowhere else to go: the first stop stands
     for name in ("api-matrix.md", *DATA_FILES):  # the busy first attempt's files must not stand in for a second attempt that dies without writing
-        try:
+        with contextlib.suppress(FileNotFoundError):  # a file the first attempt did not write
             os.remove(os.path.join(out, name))
-        except FileNotFoundError:
-            pass
     rc = attempt(rec["second_base"])
     rec["outcome"] = "busy again" if rc == EXIT_BUSY else f"second attempt exit {rc}"
     return finish_reattempt(out, rec, rc)
@@ -158,6 +157,15 @@ def finish_reattempt(out: str, rec: dict, rc: int) -> int:
     return rc
 
 
+def record_crash(out: str, e: BaseException) -> None:
+    """The wrapper itself crashed (not a stop of pr_smoke.py): the traceback to the log, and the "did not complete" files for the bundle and the gate."""
+    traceback.print_exception(e)
+    try:
+        write_infra_state(out, f"the API matrix wrapper crashed: {type(e).__name__}: {e}", infra=False)
+    except OSError as werr:
+        print(f"[api-proof] could not write the did-not-complete files: {werr}", file=sys.stderr, flush=True)
+
+
 def cmd_run(a) -> int:
     def attempt(base: int) -> int:
         print(f"[api-proof] API matrix on the port block starting at {base}", file=sys.stderr, flush=True)
@@ -165,14 +173,11 @@ def cmd_run(a) -> int:
     try:
         import stack  # noqa: PLC0415 - inside the try: its import reads files and needs PyYAML, and a failure there is a crash like any other
         rc = run_with_retry(a.out, lambda exclude: stack.pick_port_base(exclude), attempt)
-    except BaseException as e:  # a crash exits 1 (a regression to the gate): it is "did not complete", exit 3, whatever it was
-        traceback.print_exc()
-        try:
-            write_infra_state(a.out, f"the API matrix wrapper crashed: {type(e).__name__}: {e}", infra=False)
-        except OSError:
-            pass
-        if isinstance(e, KeyboardInterrupt):
-            raise  # the process dies by the interrupt (the gate's catch-all reads that as "did not complete"), with the files in place
+    except KeyboardInterrupt as e:
+        record_crash(a.out, e)
+        raise  # the process dies by the interrupt (the gate's catch-all reads that as "did not complete"), with the files in place
+    except (Exception, SystemExit) as e:  # a crash exits 1 (a regression to the gate): it is "did not complete", exit 3, whatever it was
+        record_crash(a.out, e)
         rc = 3  # including SystemExit: a stray sys.exit(0) must not make the step report a pass while the files say exit 3
     print(f"[api-proof] exit {rc}", file=sys.stderr, flush=True)
     return rc
