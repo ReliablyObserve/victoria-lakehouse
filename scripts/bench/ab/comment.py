@@ -149,6 +149,8 @@ def process_lines(proc: dict) -> list[str]:
 
 def meta_stamp(meta: dict, summary: dict | None = None) -> str:
     bits = [f"base `{str(meta.get('base', '?'))[:10]}` -> PR `{str(meta.get('head', '?'))[:10]}`"]
+    if meta.get("registry"):
+        bits.append(f"rows judged by the registry of the {meta['registry']}")
     if meta.get("versions"):
         bits.append("hot " + ", ".join(f"{k} {v}" for k, v in meta["versions"].items()))
     if meta.get("latency"):
