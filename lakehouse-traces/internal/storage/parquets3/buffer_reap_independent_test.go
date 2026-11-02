@@ -40,7 +40,7 @@ import (
 // segment.
 type reapGate struct {
 	*mockS3Server
-	mu      sync.Mutex
+	matchMu sync.Mutex
 	match   string
 	hit     chan struct{}
 	release chan struct{}
@@ -49,15 +49,15 @@ type reapGate struct {
 
 func newReapGate() *reapGate {
 	g := &reapGate{mockS3Server: newMockS3Server(), hit: make(chan struct{}, 1), release: make(chan struct{})}
-	g.mockS3Server.srv.Close()
-	g.mockS3Server.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
+	g.srv.Close()
+	g.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		g.matchMu.Lock()
 		match := g.match
-		g.mu.Unlock()
+		g.matchMu.Unlock()
 		if r.Method == http.MethodDelete {
-			g.mockS3Server.mu.Lock()
-			delete(g.mockS3Server.files, strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)[1])
-			g.mockS3Server.mu.Unlock()
+			g.mu.Lock()
+			delete(g.files, strings.SplitN(strings.TrimPrefix(r.URL.Path, "/"), "/", 2)[1])
+			g.mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -68,15 +68,15 @@ func newReapGate() *reapGate {
 			}
 			<-g.release
 		}
-		g.mockS3Server.handler(w, r)
+		g.handler(w, r)
 	}))
 	return g
 }
 
 func (g *reapGate) block(match string) {
-	g.mu.Lock()
+	g.matchMu.Lock()
 	g.match = match
-	g.mu.Unlock()
+	g.matchMu.Unlock()
 }
 
 func (g *reapGate) open() { g.once.Do(func() { close(g.release) }) }
