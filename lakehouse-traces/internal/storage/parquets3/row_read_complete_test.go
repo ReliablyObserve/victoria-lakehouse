@@ -53,12 +53,16 @@ type faultS3 struct {
 
 	mu     sync.Mutex
 	faults map[string]func(w http.ResponseWriter, r *http.Request)
+	gets   atomic.Int64 // GET requests received (object and range reads), for the S3-read counts of a test
 }
 
 func newFaultS3(t testing.TB) *faultS3 {
 	t.Helper()
 	f := &faultS3{mock: newMockS3Server(), faults: map[string]func(http.ResponseWriter, *http.Request){}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			f.gets.Add(1)
+		}
 		f.mu.Lock()
 		var fault func(http.ResponseWriter, *http.Request)
 		for key, fn := range f.faults {
@@ -101,6 +105,14 @@ func accessDenied(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(http.StatusForbidden)
 	_, _ = fmt.Fprint(w, `<?xml version="1.0"?><Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`)
+}
+
+// internalError is an S3 5xx: the SDK retries it with back-off and returns the
+// error when the attempts are used up (an object "unreadable after the retries").
+func internalError(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/xml")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = fmt.Fprint(w, `<?xml version="1.0"?><Error><Code>InternalError</Code><Message>We encountered an internal error. Please try again.</Message></Error>`)
 }
 
 // truncatedBody announces a long body and closes the connection after a few bytes.
@@ -313,6 +325,7 @@ func (fx *rcFixture) query(t *testing.T, ctx context.Context, qs string, onBlock
 	return int(rows.Load()), err
 }
 
+const rcMergedKey = "traces/dt=2026-10-23/hour=10/compacted-merge.parquet"
 const rcKeyFmt = "traces/dt=2026-10-23/hour=10/rc-%d.parquet"
 
 // A control: with no fault the read returns every row.
@@ -335,8 +348,9 @@ func TestRowRead_NoFault_ReturnsEveryRow(t *testing.T) {
 // the objects and however many workers read them.
 func TestRowRead_UnreadableObject_FailsInsteadOfPartial(t *testing.T) {
 	faults := map[string]func(t *testing.T, fx *rcFixture, idx int){
-		"s3_access_denied": func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], accessDenied) },
-		"truncated_body":   func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], truncatedBody) },
+		"s3_access_denied":  func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], accessDenied) },
+		"s3_internal_error": func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], internalError) },
+		"truncated_body":    func(t *testing.T, fx *rcFixture, idx int) { fx.fs.setFault(fx.keys[idx], truncatedBody) },
 		"corrupt_footer": func(t *testing.T, fx *rcFixture, idx int) {
 			fx.fs.mock.putFile(fx.keys[idx], bytes.Repeat([]byte{0xFF}, len(fx.datas[idx])))
 		},
@@ -351,8 +365,8 @@ func TestRowRead_UnreadableObject_FailsInsteadOfPartial(t *testing.T) {
 		for _, workers := range []int{1, 4} {
 			for _, idx := range []int{0, rcFiles - 1} { // the first and the last object read with 1 worker
 				t.Run(fmt.Sprintf("%s/workers=%d/object=%d", name, workers, idx), func(t *testing.T) {
-					if name == "truncated_body" && testing.Short() {
-						t.Skip("the SDK retries a truncated body with back-off")
+					if (name == "truncated_body" || name == "s3_internal_error") && testing.Short() {
+						t.Skip("the SDK retries a truncated body or a 5xx with back-off")
 					}
 					fx := newRCFixture(t, workers, rcKeyFmt)
 					inject(t, fx, idx)
@@ -363,6 +377,10 @@ func TestRowRead_UnreadableObject_FailsInsteadOfPartial(t *testing.T) {
 					}
 					if !strings.Contains(err.Error(), fx.keys[idx]) {
 						t.Fatalf("error %q does not name the unreadable object %s", err, fx.keys[idx])
+					}
+					var esc *httpserver.ErrorWithStatusCode
+					if !errors.As(err, &esc) || esc.StatusCode != http.StatusBadGateway {
+						t.Fatalf("error %v: want status 502 for an unreadable object", err)
 					}
 					if isObjectGone(err, fx.keys[idx]) {
 						t.Fatalf("the failure %q is classified as a missing object", err)
@@ -472,7 +490,7 @@ func TestRowRead_RemovedSourceMidQuery_Fails502(t *testing.T) {
 			fx := newRCFixture(t, workers, rcKeyFmt)
 			source := fx.keys[1]
 			// The merged object holds the source's rows; the query's listing does not have it.
-			fx.fs.mock.putFile("traces/dt=2026-10-23/hour=10/compacted-merge.parquet", fx.datas[1])
+			fx.fs.mock.putFile(rcMergedKey, fx.datas[1])
 			fx.fs.setFault(source, func(w http.ResponseWriter, r *http.Request) {
 				// The compactor deletes the source just before the query reads it.
 				fx.removeObject(source)
@@ -485,29 +503,39 @@ func TestRowRead_RemovedSourceMidQuery_Fails502(t *testing.T) {
 	}
 }
 
-// Two readers over one bucket (two select pods, or a select and an insert pod)
-// that planned on the same listing both fail on the swapped-away source and neither
-// answers short; once each has a listing with the merged object in place of the
-// source, both answer exactly. Nothing is shared between the readers but the
-// bucket and the listing.
+// Two readers over one bucket (two select pods, or a select and an insert pod),
+// each with its own copy of the listing, both planned on the listing that names a
+// source the compactor then deleted: both fail on it and neither answers short.
+// Once ONE of them has refreshed (the listing names the merged object and not the
+// source) it answers exactly while the other, still on the old listing, keeps
+// failing with 502 until its own refresh; then both answer exactly. Nothing is
+// shared between the readers but the bucket. Compaction and the writers are not
+// touched by this change.
 func TestRowRead_RemovedSourceMidQuery_TwoReaders(t *testing.T) {
 	fx := newRCFixture(t, 4, rcKeyFmt)
 	second := testStorageWithS3(t, fx.fs.srv.URL)
 	second.cfg.Query.FileWorkers = 4
-	second.manifest = fx.s.manifest // the same listing, as a second reader pod would plan it
-	readers := []*Storage{fx.s, second}
+	second.cfg.Mode = config.ModeTraces
+	for _, fi := range fx.s.manifest.GetFilesForRange(0, 1<<62) {
+		second.manifest.AddFile(fx.partitionOf(fi.Key), fi) // its own copy of the listing
+	}
 	run := func(s *Storage) (int, error) {
 		q := mustParseQueryWithTime(t, "*", fx.start, fx.end)
 		var rows atomic.Int64
 		err := s.RunQuery(context.Background(), nil, q, func(_ uint, db *logstorage.DataBlock) { rows.Add(int64(db.RowsCount())) })
 		return int(rows.Load()), err
 	}
+	refresh := func(s *Storage, merged string) {
+		registerFileInMockS3(t, s, fx.fs.mock, merged, fx.datas[1], fx.base)
+		s.manifest.RemoveFile(fx.partitionOf(fx.keys[1]), fx.keys[1])
+	}
+	wantRows := rcFiles * rcRowsPerFile
 
 	// The swap: the merged object appears, the source is deleted.
-	merged := "traces/dt=2026-10-23/hour=10/compacted-merge.parquet"
+	merged := rcMergedKey
 	fx.fs.mock.putFile(merged, fx.datas[1])
 	fx.removeObject(fx.keys[1])
-	for i, r := range readers {
+	for i, r := range []*Storage{fx.s, second} {
 		rows, err := run(r)
 		if err == nil {
 			t.Fatalf("reader %d answered %d rows without error although a listed source was deleted", i, rows)
@@ -515,14 +543,22 @@ func TestRowRead_RemovedSourceMidQuery_TwoReaders(t *testing.T) {
 		goneReadError(t, err, fx.keys[1])
 	}
 
-	// The refresh: the listing names the merged object and not the source.
-	fi := registerFileInMockS3(t, fx.s, fx.fs.mock, merged, fx.datas[1], fx.base)
-	_ = fi
-	fx.s.manifest.RemoveFile(fx.partitionOf(fx.keys[1]), fx.keys[1])
-	for i, r := range readers {
-		rows, err := run(r)
-		if err != nil || rows != rcFiles*rcRowsPerFile {
-			t.Fatalf("reader %d after the refresh: %d rows, err %v; want %d rows", i, rows, err, rcFiles*rcRowsPerFile)
+	// Only the first reader refreshes: it is exact, the second still fails.
+	refresh(fx.s, merged)
+	if rows, err := run(fx.s); err != nil || rows != wantRows {
+		t.Fatalf("refreshed reader: %d rows, err %v; want %d rows", rows, err, wantRows)
+	}
+	rows, err := run(second)
+	if err == nil {
+		t.Fatalf("stale reader answered %d rows without error", rows)
+	}
+	goneReadError(t, err, fx.keys[1])
+
+	// The second refreshes too: both are exact.
+	refresh(second, merged)
+	for i, r := range []*Storage{fx.s, second} {
+		if rows, err := run(r); err != nil || rows != wantRows {
+			t.Fatalf("reader %d after both refreshed: %d rows, err %v; want %d rows", i, rows, err, wantRows)
 		}
 	}
 }
