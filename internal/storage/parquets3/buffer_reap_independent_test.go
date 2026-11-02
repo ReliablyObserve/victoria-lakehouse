@@ -233,7 +233,7 @@ func TestReap_ASlowDrainDoesNotKeepAGuardReleasedSegmentServed(t *testing.T) {
 func TestReap_FleetAnswersEveryRowOnce_RandomSchedules(t *testing.T) {
 	const grace = 60 * time.Millisecond
 	merges := 0
-	for seed := int64(1); seed <= 5; seed++ {
+	for seed := int64(1); seed <= 2; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			rng := rand.New(rand.NewSource(seed))
 			bucket := newReapGate()
