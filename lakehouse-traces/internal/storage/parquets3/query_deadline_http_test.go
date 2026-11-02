@@ -100,6 +100,27 @@ func qdGet(mux *http.ServeMux, rt qdRoute, timeout string, safety time.Duration)
 }
 
 // qdFree waits for the file budget and the row-group decode slots to be free.
+// qdSettledGoroutines drops the keep-alive connections the fake S3 server holds
+// and returns the goroutine count once it stops falling. An idle connection is
+// three goroutines (client read and write loops, server conn), and how many are
+// pooled depends on how many requests ran at once, so a count taken with the pool
+// as it happens to be is not a leak signal.
+func qdSettledGoroutines(fx *rcFixture) int {
+	fx.fs.srv.CloseClientConnections()
+	prev, stable := -1, 0
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		n := runtime.NumGoroutine()
+		if n == prev {
+			if stable++; stable >= 5 {
+				return n
+			}
+		} else {
+			prev, stable = n, 0
+		}
+	}
+	return runtime.NumGoroutine()
+}
+
 func qdFree(t *testing.T, fx *rcFixture) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -188,7 +209,7 @@ func TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots(t *
 				// drop what the control read cached, so the stalled read has to go to S3
 				fx.s.ClearCaches()
 
-				goroutines := runtime.NumGoroutine()
+				goroutines := qdSettledGoroutines(fx)
 				stopSampling := qdSampleMax()
 				code, body, took := qdGet(mux, route, timeout.String(), 10*timeout)
 				heldBudget, _ := stopSampling()
@@ -222,11 +243,7 @@ func TestJaegerTempoDeadline_StalledObjectReadEndsAtTheDeadlineAndFreesSlots(t *
 				}
 				qdFree(t, fx)
 
-				end := time.Now().Add(3 * time.Second)
-				for runtime.NumGoroutine() > goroutines+2 && time.Now().Before(end) {
-					time.Sleep(20 * time.Millisecond)
-				}
-				if got := runtime.NumGoroutine(); got > goroutines+2 {
+				if got := qdSettledGoroutines(fx); got > goroutines+2 {
 					buf := make([]byte, 1<<16)
 					t.Fatalf("goroutines: %d before the stalled request, %d after the next one\n%s", goroutines, got, buf[:runtime.Stack(buf, true)])
 				}
