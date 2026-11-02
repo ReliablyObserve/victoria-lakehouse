@@ -37,6 +37,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -121,16 +122,24 @@ class NoFreeBlock(RuntimeError):
 
 
 def candidate_bases(exclude=(), low: int | None = None) -> list[int]:
-    """The port blocks to try, in order: the block derived from the project name first, then the others; blocks wholly below the host's ephemeral range
-    (`low`) before the rest, because a port inside that range can be taken by any outgoing connection at any moment (a runner held 38762)."""
+    """The port blocks to try, in order: blocks wholly below the host's ephemeral range (`low`) before the rest, because a port inside that range can
+    be taken by any outgoing connection at any moment (a busy port was measured on a runner). Each group starts at the block derived from the project
+    name when it holds it, else the below-range group starts at a block chosen by a hash of the project name, so different projects do not all start at
+    the same block (on Linux the derived block is never below the range)."""
     low = ephemeral_low() if low is None else low
     bases = [b for b in allowed_bases() if b not in set(exclude)]
-    derived = P.port_base()
-    if derived in bases:
-        i = bases.index(derived)
-        bases = bases[i:] + bases[:i]
     span = max(max(P.PORT_OFFSETS.values()), max(EXTRA_OFFSETS.values()))
-    return [b for b in bases if b + span < low] + [b for b in bases if b + span >= low]
+    below, above = [b for b in bases if b + span < low], [b for b in bases if b + span >= low]
+    derived = P.port_base(PROJECT)
+
+    def rotated(group: list[int], first: int) -> list[int]:
+        i = group.index(first)
+        return group[i:] + group[:i]
+    if below:
+        below = rotated(below, derived if derived in below else below[zlib.crc32(PROJECT.encode()) % len(below)])
+    if derived in above:
+        above = rotated(above, derived)
+    return below + above
 
 
 def pick_port_base(exclude=(), busy=None, low: int | None = None) -> int:
