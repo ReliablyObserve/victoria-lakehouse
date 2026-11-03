@@ -44,7 +44,7 @@ VT_VERSION := v0.12.0
 VT_REPO := https://github.com/VictoriaMetrics/VictoriaTraces.git
 VT_DIR := lakehouse-traces/deps/VictoriaTraces
 
-.PHONY: ab-test ab-check build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check registry-gate gate-replay config-surface config-docs config-drift
+.PHONY: ab-test ab-check build build-logs build-traces bench test test-logs test-traces test-full test-full-logs test-full-traces lint vet clean e2e deps-logs deps-traces deps-vt sync-vmui sync-vmui-traces conformance-gen conformance-check registry-gate pre-push gate-replay config-surface config-docs config-drift
 
 deps-logs: $(VL_DIR_LOGS)/go.mod
 
@@ -183,6 +183,16 @@ ab-test:
 GATE_BASE ?= origin/main
 registry-gate:
 	bash scripts/ci/gate_local.sh $(GATE_BASE)
+
+# The scoped fast tier of CI, locally, before a push (scripts/ci/pre_push.py): scope from
+# scripts/ci/pr_classify.py against origin/main, the registry and changelog gates, conformance-check,
+# workflow / chart / harness checks, golangci-lint --new-from-rev, go vet and a focused go test -short for
+# the Go packages the diff touches. SCOPE=all runs every step whatever the diff; RACE=1 adds -race to the
+# focused go test; PRE_PUSH_OFFLINE=1 skips the fetch of origin/main; PRE_PUSH_PYTHON=<python> picks the
+# interpreter that has pytest and PyYAML. A summary table, a non-zero exit on any FAIL. CONTRIBUTING.md.
+SCOPE ?= diff
+pre-push:
+	python3 scripts/ci/pre_push.py --base $(GATE_BASE) --scope $(SCOPE) $(if $(filter 1,$(RACE)),--race)
 
 # Replays the gate over the recorded pull requests and compares each verdict with
 # scripts/ci/tests/gate_replay_expected.txt (what CI runs when the gate changes).
