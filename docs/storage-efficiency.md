@@ -9,6 +9,12 @@ This page is for operators and contributors. It describes how the Parquet files 
 
 Every number is labelled **measured** (m), **sourced** (s, with the file or URL) or **assumed** (a). A table without a label is measured.
 
+Three kinds of content are mixed on this page, and each section says which one it is:
+
+- **Shipped (today):** what the code on `main` writes and does. The write-path section, the comparison with VictoriaLogs and VictoriaTraces, and the tuning guide describe this.
+- **Measured variant (not shipped):** what files would look like with a different sort order, level, row-group size or bloom sizing, measured with variant writers. These are measurements, not plans and not defaults.
+- **Projection:** a total that assumes work that does not exist yet (the stage ladder, a streaming merge, windowed listing of the object store). The cost section marks these columns.
+
 ## How the numbers were measured
 
 | Item | Value |
@@ -16,9 +22,11 @@ Every number is labelled **measured** (m), **sourced** (s, with the file or URL)
 | Datasets | 5, each 500,000 rows (the real Loghub set is 523,378 rows): a synthetic log generator (`logs-datagen`), a synthetic log generator with stable pods and a Zipf service mix (`logs-pool`), real logs (`logs-loghub`), a synthetic span generator (`traces-datagen`) and a synthetic span generator with fan-out traces and stable instances (`traces-pool`) |
 | Real data | 523,378 lines from Loghub (CC-BY-4.0, https://zenodo.org/records/8196385): the first 60,000 lines each of Apache, Hadoop, HealthApp, HPC, Linux, Mac, OpenStack, Proxifier, SSH and Zookeeper. Timestamps are synthetic: each source spans one synthetic day in its own line order |
 | Writers | The flush writers (`writeLogsParquet`, `writeTracesParquet`) of this repository, with the real insert field mapping. The compaction writers were used only for the flush-versus-compaction structure comparison |
+| Variant writers | The layout-variant, bloom-option and cost sections use variant writers that replicate the shipped flush writers (byte-identical on today's layout) with a different sort, level, row-group, page and bloom setting. Write CPU there is process CPU time including garbage collection, median of 2 runs |
 | Libraries | parquet-go v0.32.0, klauspost/compress v1.20.0 (see `go.mod`) |
 | Baselines | VictoriaLogs v1.53.0 and VictoriaTraces v0.12.0, built from the upstream tags with default flags except the data path and listen address, force-flushed and force-merged before the bytes were counted |
 | Timings | Single-core wall time on a shared host, one run or the median of 2. Treat them as +-15 % noise. They are not comparable with CI runners |
+| Prices | AWS us-east-1 on-demand list prices read on 2026-11-03 (cost section only) |
 | Row groups | 10,000 rows unless the table says otherwise (the shipped default) |
 
 Dataset sizes as sent (m, one pass over the export):
@@ -41,9 +49,13 @@ The sort-order tables in the measurement section use the raw size that the measu
 | On synthetic pooled logs the gap is small (1.07x larger). On traces Lakehouse files are smaller than VictoriaTraces (0.88x and 0.90x) | Same section |
 | Sorting the rows by (hour slice, `_stream_id`, time) before writing shrinks real logs by 26 % (17.1 to 12.7 MB) and keeps time pruning. Today's flush sorts by timestamp only. This is a measured variant, not shipped | Sort order |
 | Going from 10,000-row to 100,000-row groups saves 1 to 6 % but makes a needle lookup read about 10x more bytes | Row-group size |
-| zstd level 7 instead of 3 saves 4 to 25 % for -7 % to +26 % write time (single runs, +-15 % noise). Level 11 instead of 7 saves a further 0.5 to 8 % for +23 % to +250 % write time. Levels 11 to 22 are byte-identical in the pure-Go codec | zstd levels |
-| Parquet bloom filters on non-dictionary columns are sized by row count, not by distinct values. On real logs they are 2,571 KiB: about 15 % of today's 17.1 MB flush file (20 % of the 12.7 MB stream-ordered variant), mostly on columns that are empty | Bloom filter sizing |
+| zstd level 7 instead of 3 saves 5 to 25 % for -7 % to +26 % write CPU (median +8 %), with no measurable change in the writer's peak heap or in decode time. Level 11 instead of 7 saves a further 0.5 to 8 % for +23 % to +250 % write time. Levels 11 to 22 are byte-identical in the pure-Go codec | zstd levels |
+| Parquet bloom filters on non-dictionary columns are sized by row count, not by distinct values. On real logs they are 2,571 KiB: about 15 % of today's 17.1 MB flush file, mostly on columns that are empty. Sized by distinct values, in the old-stage variant (not shipped, 7 to 25 row groups), the same filters are 1 KB on the real logs, 815 KB on pooled logs and 1,653 KB on `traces-pool` | Bloom filter sizing |
 | Compacted log files carry no body token blooms; flush files do (issue #344, open) | Flush and compaction structure |
+| Measured stage-ladder variant (stream order, zstd 7 then 11, blooms sized by distinct values, byte row groups, 1 MiB pages; **not shipped**): real logs 17.1 to 7.3 MB (0.81x VictoriaLogs), pooled logs 49.2 to 36.4 MB (0.80x), `traces-pool` 45.1 to 30.0 MB (0.59x) | Layout variants measured per stage |
+| Dropping all blooms from old data would save 5 to 11 % of its bytes (measured) and turn a `trace_id` lookup into a scan of every row group of the object. The default stays keep; these are documented trade-offs, not settings | Bloom options measured |
+| Cost: on assumed sizing and AWS list prices of 2026-11-03, the stage-ladder variant is a **projection** of about $2.8k a month for 10 TB/day of logs kept 90 days, against $8.3k for VictoriaLogs on gp3 in one zone and $21.6k for a two-zone setup. Lakehouse as it is today costs $11.1k at that size and is not operable at 100 TB/day | Cost |
+| Where Lakehouse loses: ingest CPU per TB (about 4.5x VictoriaLogs on real logs, 1.5x on spans), token-bloom selectivity (about 1 % against about 0.1 %), small-object request cost, cold query latency, restore latency | Cost |
 | "10x to 16x" depends on the baseline. Today, against JSON as sent: pooled synthetic logs 13x, real logs 7.4x. Against raw text lines the real logs are 4.3x (VictoriaLogs 8.0x). Spans: 27x against OTLP/JSON, 8x against uncompressed Parquet | Compression ratio against different baselines |
 
 ## The write path today
@@ -286,7 +298,7 @@ File MB and write time in seconds (median of 2 runs, single core). L1, L3, L7, L
 
 Reading the table:
 
-- **Level 7 against level 3:** 4 to 25 % smaller. Write time ranged from -7 % to +26 % across these 20 single-core, 2-run-median rows (median about +10 %), which is the size of the +-15 % noise, so treat it as "roughly 0 to 25 % more writer time".
+- **Level 7 against level 3 (wall time, flush-writer runs):** 4 to 25 % smaller. Write time ranged from -7 % to +26 % across these 20 single-core, 2-run-median rows (median about +10 %), which is the size of the +-15 % noise, so treat it as "roughly 0 to 25 % more writer time".
 - **Level 11 against level 7:** 0.5 to 8 % smaller for +23 % to +250 % write time (median about +110 %; +36 % to +285 % against level 3). The gain is largest on sorted real text (up to 8 %) and smallest on identifiers.
 - **Level 1 and level 3 write at the same speed** inside the parquet-go writer, so the writer, not the codec, dominates CPU at those levels.
 - **Decoding does not depend on the level.** With reference libzstd, text decompresses at 1.5 to 3.5 GB/s at every level (m, table below). For this repository's reader, the read benchmark in [ZSTD Compression Benchmark](zstd-compression-benchmark.md) varies by 1.3x across levels (s). Higher levels cost write CPU, not read latency.
@@ -304,6 +316,43 @@ klauspost's `SpeedDefault` (levels 2 to 5) barely compresses hex strings, while 
 | traces-pool S4b `span.attributes` | 14.20 | 14.39 | 15.58 | 16.84 |
 
 This is why level 7 saves 23 to 25 % on the two synthetic generators whose rows are mostly random hex identifiers, and only 4 to 8 % on text.
+
+#### What level 7 costs against level 3
+
+Both levels were written by the same writer on the same rows, on today's layout and on the medium variant (m). Write CPU is process CPU time including the garbage collector, one writer goroutine, median of 2 runs. Peak heap is the sampled live heap (not RSS). Treat +-15 % as noise.
+
+| Dataset | Layout | File MB, L3 to L7 | Write CPU s, L3 to L7 | Peak heap MB, L3 to L7 | Decode all rows | Decode 3 largest columns |
+|---|---|---|---|---|---|---|
+| logs-loghub | today | 17.1 to 16.0 (-6.0 %) | 1.26 to 1.30 (+3 %) | 576 to 811 | -2 % | -5 % |
+| logs-loghub | medium variant | 9.4 to 8.9 (-5.3 %) | 1.26 to 1.27 (+1 %) | 809 to 731 | 0 % | +3 % |
+| logs-pool | today | 49.2 to 46.0 (-6.3 %) | 2.88 to 3.14 (+9 %) | 1,203 to 1,215 | +19 % | +22 % |
+| logs-pool | medium variant | 40.7 to 38.0 (-6.6 %) | 3.05 to 3.14 (+3 %) | 1,213 to 1,203 | -6 % | -6 % |
+| logs-datagen | today | 134.1 to 103.4 (-22.9 %) | 5.94 to 7.49 (+26 %) | 703 to 594 | -1 % | +7 % |
+| logs-datagen | medium variant | 127.8 to 111.8 (-12.5 %) | 10.76 to 11.90 (+11 %) | 632 to 540 | -9 % | -2 % |
+| traces-pool | today | 45.1 to 39.4 (-12.8 %) | 1.78 to 1.88 (+6 %) | 207 to 253 | +4 % | +13 % |
+| traces-pool | medium variant | 37.1 to 32.4 (-12.7 %) | 1.74 to 1.92 (+10 %) | 256 to 201 | +2 % | +10 % |
+| traces-datagen | today | 82.2 to 62.0 (-24.6 %) | 1.69 to 1.88 (+11 %) | 346 to 251 | +1 % | +4 % |
+| traces-datagen | medium variant | 70.2 to 64.7 (-7.8 %) | 2.17 to 2.51 (+16 %) | 549 to 427 | -2 % | +9 % |
+
+- **Size:** 5 to 25 % smaller (the medium variant gains 5 to 13 %, today's layout 6 to 25 %).
+- **Write CPU:** -7 % to +26 % over 15 cells (the 10 above plus the 5 young-variant cells), median about +8 %, at most 1.5 s more per 500,000 rows. The same cell varies by about +-15 % from run to run.
+- **Memory:** no measurable change in the writer's peak live heap. The sampled peak moves both ways by up to 40 %, which is garbage-collection timing, not the codec. The heap is not RSS and was not measured as RSS.
+- **Reading:** no change. Full-row and column decode times move between -21 % and +22 % with no direction.
+- Level 1 is not faster than level 3 inside the writer (1.29 against 1.26 s on `logs-loghub`, 2.82 against 2.88 s on `logs-pool`).
+
+#### Choosing level 11 from a sample (measured variant, not shipped)
+
+A level-11 rewrite costs 27 to 171 % more CPU than level 7 (old variant, table below) and gains 0.7 to 12.6 % of bytes depending on the data. The variant chooses per file: compress a 20,000-row sample at 7 and at 11 and use 11 only when the sample gains at least 2 %. Old variant (m):
+
+| Dataset | Sample gain of 11 over 7 (20,000 rows) | Whole-file gain | Level chosen at 2 % | Write CPU at 11 / at 7 (s) | Sample CPU (s) |
+|---|---|---|---|---|---|
+| logs-loghub | 11.1 % | 12.6 % | 11 | 1.75 / 1.38 | 0.06 |
+| logs-pool | 1.0 % | 1.0 % | 7 | 5.55 / 3.18 | 0.20 |
+| logs-datagen | 0.8 % | 0.7 % | 7 | 23.02 / 11.60 | 0.60 |
+| traces-pool | 4.2 % | 3.8 % | 11 | 4.11 / 1.89 | 0.21 |
+| traces-datagen | 1.7 % | 1.6 % | 7 | 6.67 / 2.46 | 0.33 |
+
+These gains differ from the 0.5 to 8 % of the level table above because the layout differs (stream order, byte row groups, 1 MiB pages). The sample picks 11 on the real logs and on `traces-pool`, and 7 on the other three. The 4 % sample predicts the full-file gain to within 1.5 points on every dataset. It costs 4 to 13 % of a level-7 write (0.06 to 0.6 s per 500,000 rows). Against always using level 11, the dynamic choice saves 40 to 60 % of the old-stage write CPU on the three datasets where 11 does not pay, and gives up 0.7 to 1.6 % of bytes there.
 
 #### Reference libzstd, for the ceiling
 
@@ -334,7 +383,7 @@ Level 11 only pays when the data is not rewritten afterwards and then stays stor
 
 ### Bloom filter sizing
 
-A Parquet split-block bloom filter (SBBF) written by parquet-go is sized by the number of **values in the column chunk** for non-dictionary columns, and by the dictionary length for dictionary columns. The effective bits per distinct value differ widely (m for bytes; modelled for the sizes in the second table):
+A Parquet split-block bloom filter (SBBF) written by parquet-go is sized by the number of **values in the column chunk** for non-dictionary columns, and by the dictionary length for dictionary columns. The effective bits per distinct value differ widely (m):
 
 - `span_id` (all unique): about 10 bits per value, about 1 % false positives.
 - Dictionary columns: about 10 bits per distinct value.
@@ -342,18 +391,19 @@ A Parquet split-block bloom filter (SBBF) written by parquet-go is sized by the 
 
 Real logs show the cost. On `logs-loghub` the `trace_id`, `span_id`, `container.id` and `service.instance.id` columns carry 656 KB of blooms each (12.4 KB per row group), although the dataset has no such values.
 
-Modelled size if each filter were sized by exact distinct counts at 10.5 bits per value and rounded to a power of two (a model, **assumed**, not something the writer can produce today; parquet-go has no such option, issue #570):
+Sized by distinct values instead (a measured variant, **not shipped**): one filter per column chunk at 16.9 bits per distinct non-empty value (about 0.1 % target), rounded up to a power of two, and no filter on an all-empty chunk. parquet-go v0.32.0 cannot write this (issue #570), so the measurement used a test-only patched copy that changes only the filter size; the filter type, hash and header stay standard split-block bloom filters. Filter bytes per file (m; KB here are 1,000 bytes, so 2,633 KB is the 2,571 KiB quoted elsewhere; `logs-datagen` from bytes per row times 500,000):
 
-| Dataset (S4b) | Rows per group | Bloom bytes today (m) | Modelled, sized by distinct values | Change |
+| Dataset | Today's layout | Bloom bytes today, sized by value count | Bloom bytes sized by distinct values (old-stage variant) | Of which on all-empty chunks today |
 |---|---|---|---|---|
-| logs-loghub | 10,000 | 2,571 KiB (20 % of the file) | 3 KiB | -99.9 % |
-| logs-pool | 10,000 | 2,468 KiB (5.8 %) | 446 KiB | -82 % |
-| traces-pool | 10,000 | 4,303 KiB (10.2 %) | 905 KiB | -79 % |
-| logs-datagen (all unique) | 10,000 | 3,070 KiB | 4,007 KiB | +31 % (power-of-two rounding) |
-| logs-pool | 100,000 | 2,444 KiB | 644 KiB | -74 % |
-| traces-pool | 100,000 | 4,276 KiB | 1,323 KiB | -69 % |
+| logs-loghub | 10,000-row groups | 2,633 KB (15 % of the 17.1 MB file) | 1 KB | 2,628 KB |
+| logs-pool | 10,000-row groups | 2,528 KB | 815 KB | 0 |
+| traces-pool | 10,000-row groups | 4,407 KB | 1,653 KB | 1,879 KB |
+| traces-datagen | 10,000-row groups | 5,026 KB | 6,497 KB | 1,879 KB |
+| logs-datagen (all ids unique) | 10,000-row groups | about 3.2 MB (6.3 B per row) | about 7.9 MB (15.7 B per row) | 0 |
 
-Sizing by distinct values is **not selectivity-neutral**: it would raise the false-positive rate from near 0 to about 1 % on the repeated columns, and it changes the number of S3 reads a lookup costs. Related open issues: #341 (the filter size is not a power of two, ClickHouse refuses it) and #570.
+Effect on the file with everything else equal (the old variant with the filters sized by value count instead, as today, against sized by distinct values): `logs-loghub` 8.7 against 7.3 MB, `logs-pool` 36.9 against 36.4, `traces-pool` 31.5 against 30.0, and the reverse on the two all-unique sets (`logs-datagen` 104.6 against 109.3, `traces-datagen` 60.1 against 61.6), where 16.9 bits per distinct value plus power-of-two rounding is more than today's 10 bits per row.
+
+Sizing by distinct values is **not selectivity-neutral**, and it was measured: it improves all-unique and dictionary columns and weakens repeated columns that today are oversized to a near-zero rate. The `trace_id` false-positive rate of `traces-pool` goes from 0.00 % to 0.02 % (0.05 % on `traces-datagen`), and with a 10.5-bit "shrink" sizing to 0.81 %. The full table is in the bloom options section. Related open issues: #341 (today's filter size is not a power of two, ClickHouse refuses it) and #570 (parquet-go has no sizing option).
 
 ### Memory: rows in RAM against compressed bytes
 
@@ -414,6 +464,264 @@ Pages are 256 KiB by default (parquet-go). The flush writer without the token en
 
 256 KiB to 1 MiB saves 2 to 5 %, and 4 MiB adds little. The page size is not a configuration key; this table is context for why the compression window is a page.
 
+## Layout variants measured per stage (not shipped)
+
+Everything in this section is a **measured variant of the writers, not shipped behaviour**. It answers "what would the files look like if the rows were ordered by stream, written at a different level, split into byte-sized row groups and rewritten in stages". Today's files are the first row of every table. Nothing here changes what `main` writes, and nothing here is a commitment.
+
+### The variants
+
+| Variant | Row order | zstd | Row group | Page | Parquet bloom filters | Token blooms |
+|---|---|---|---|---|---|---|
+| Today (shipped) | time | 3 | 10,000 rows | 256 KiB | 10 bits per value, sized by value count | 1 % per row group |
+| young | (tenant, `_stream_id`, time) in hour objects | 7 | 8 MiB by bytes | 256 KiB | sized by distinct values, 16.9 bits, power of two, none on an all-empty chunk | 1 % |
+| medium | (tenant, 1 h slice, `_stream_id`, time) in day objects | 7 | 8 or 32 MiB, cut at hour slices | 256 KiB | same | 1 % |
+| old | same | 11, or 7 when a 20,000-row sample gains under 2 % | 32 MiB | 1 MiB | same ("keep"), 10.5 bits ("shrink") or none ("skip") | 1 %, or none with skip |
+
+All variants also put a dictionary on `container.id` and `service.instance.id`, declare `sorting_columns` where every row group stays inside one hour slice, and use one writer for flush and compaction (today the compaction writer drops the body token blooms, issue #344).
+
+How they were measured:
+
+- The variant writers replicate `writeLogsParquet` and `writeTracesParquet` (same created-by string, `lh.trace_id_hex`, `_trace_idx` footer entry, same bloom column sets from `schema.LogBloomColumns` and `schema.TraceBloomColumns`). The replica of today's writer produced files **byte-identical** to the shipped writers on all five datasets (134,106,898 / 49,152,469 / 17,062,078 / 82,220,336 / 45,138,169 B; m).
+- Bloom filters sized by distinct values need a sizing option that parquet-go v0.32.0 does not have (issue #570). The measurement used a test-only patched copy of parquet-go that changes only the filter size; the filter type, hash and header stay standard split-block bloom filters. The sizes are measured, and the patch is not a proposal.
+- Byte row groups: rows per group = target bytes divided by the bytes per row of a 50,000-row pilot write with the same codec, page size and schema (the pilot is not counted in the write CPU). Groups are also cut at a one-hour slice boundary once they hold at least 1 MiB.
+- Young = the day split into 24 hour objects, each written as its own object. One day of each dataset is only 0.3 to 4.7 MB per hour stored, so the one-hour cut closes row groups before an 8 or 32 MiB target is reached; the last table of this section packs the same rows into one hour so the byte targets bind.
+- Dynamic level: write a 20,000-row contiguous sample from the middle of the file at levels 7 and 11 (no blooms), use 11 when the gain is at least 2 %. The sample CPU is added to the write CPU.
+- The logs exports reproduce the dataset hashes of the sort-order measurements exactly. The OTLP/JSON trace export is not byte-stable (attribute arrays come from Go map iteration), so the span rows are identified by today's file instead: 82,220,336 and 45,138,169 B, equal to the 82.2 and 45.1 MB used elsewhere on this page.
+- Write CPU is process CPU time (user plus system) around the write, including the garbage collector, one writer goroutine, median of 2 runs. Peak heap is the live heap sampled every 2 ms during the write minus the value before; it is **not RSS** and is noisy under GC. Treat +-15 % as noise.
+
+### Diagram: the layout by stage (measured variants and projected lifecycle, not shipped)
+
+This diagram shows the variant, **not** what the code does today (see the ladder diagram above for that). The stages are measured variants; the class moves to Glacier Instant Retrieval and Deep Archive were never measured and are projections (cost section).
+
+```mermaid
+flowchart LR
+    W["Writers<br/>upstream logstorage buffer<br/>single-zone volume"] -->|"flush, sealed by age"| Y["young: hour objects<br/>(tenant, _stream_id, time)<br/>zstd 7, 8 MiB row groups<br/>blooms by distinct values, token blooms<br/>STANDARD"]
+    Y -->|"hour closed: rewrite once<br/>same writer, same structures"| M["medium: day objects<br/>(tenant, 1 h slice, _stream_id, time)<br/>zstd 7, 32 MiB row groups<br/>blooms keep or shrink<br/>STANDARD"]
+    M -->|"final rewrite before the class move"| O["old: day or archive objects<br/>zstd 11 if a sample gains at least 2 %, else 7<br/>32 MiB row groups, 1 MiB pages<br/>blooms keep, shrink or skip (recorded)<br/>STANDARD"]
+    O -->|"same-key copy at 30 days, no rewrite"| G[("Glacier Instant Retrieval<br/>90-day minimum")]
+    G -.->|"optional, unqueryable"| D[("Deep Archive<br/>restore 12 to 48 h")]
+    Q["Query"] -->|"plan from memory: 0 reads"| P["candidate objects"]
+    P -->|"1 tail read per object<br/>(+1 per row group if bloom filters sit after each row group)"| R["row groups"]
+    R -->|"1 read per run of needed columns"| C["columns"]
+```
+
+### Size by variant
+
+One synthetic day of each dataset, MB (m). Change against today in brackets. VictoriaLogs and VictoriaTraces sizes are from the comparison section.
+
+| Variant | logs-loghub | logs-pool | logs-datagen | traces-pool | traces-datagen |
+|---|---|---|---|---|---|
+| VictoriaLogs / VictoriaTraces | 9.03 | 45.8 | 525.3 | 51.15 | 91.6 |
+| Today | 17.1 | 49.2 | 134.1 | 45.1 | 82.2 |
+| + zstd 7 | 16.0 (-6 %) | 46.0 (-6 %) | 103.4 (-23 %) | 39.4 (-13 %) | 62.0 (-25 %) |
+| + hour-slice stream order | 12.2 (-28 %) | 40.7 (-17 %) | 105.1 (-22 %) | 37.0 (-18 %) | 61.6 (-25 %) |
+| + blooms sized by distinct values | 9.6 (-44 %) | 39.1 (-21 %) | 110.2 (-18 %) | 34.5 (-24 %) | 63.7 (-23 %) |
+| + dictionary on medium columns | 9.6 (-44 %) | 38.9 (-21 %) | 112.3 (-16 %) | 33.8 (-25 %) | 66.3 (-19 %) |
+| young (24 hour objects) | 9.2 (-46 %) | 38.1 (-22 %) | 111.9 (-17 %) | 32.4 (-28 %) | 64.7 (-21 %) |
+| medium | 8.9 (-48 %) | 38.0 (-23 %) | 111.8 (-17 %) | 32.4 (-28 %) | 64.7 (-21 %) |
+| old (zstd 11) | 7.3 (-57 %) | 36.4 (-26 %) | 109.3 (-18 %) | 30.0 (-34 %) | 61.6 (-25 %) |
+| old, dynamic level | 7.3 (11 chosen) | 36.8 (7 chosen) | 110.1 (7 chosen) | 30.0 (11 chosen) | 62.6 (7 chosen) |
+
+The first rows are cumulative: each adds one change to the row above. The same table in the shape asked for most often, today against the old variant, with the upstream size in brackets:
+
+| Dataset | Today | Old variant | (VictoriaLogs / VictoriaTraces) |
+|---|---|---|---|
+| logs-loghub (real) | 17.1 MB | 7.3 MB | (9.03 MB) |
+| logs-pool | 49.2 MB | 36.4 MB | (45.8 MB) |
+| logs-datagen | 134.1 MB | 109.3 MB | (525.3 MB) |
+| traces-pool | 45.1 MB | 30.0 MB | (51.15 MB) |
+| traces-datagen | 82.2 MB | 61.6 MB | (91.6 MB) |
+
+Reading the cumulative rows:
+
+- **Stream order is the biggest lever on real logs** (-24 % on top of zstd 7), blooms sized by distinct values the second (-21 %): on `logs-loghub`, 2.6 MB of today's 2.63 MB of Parquet bloom filters sit on all-empty chunks.
+- **Blooms sized by distinct values make all-unique id columns bigger.** On `logs-datagen` and `traces-datagen`, 16.9 bits per distinct value plus power-of-two rounding is more than today's 10 bits per row on columns whose values are all distinct. In exchange the `trace_id` false-positive rate falls from 1.20 % to 0.01 % on `logs-datagen` (bloom options below).
+- **The dictionary helps where instances are stable** (`logs-pool`, `traces-pool`: 0.5 to 2 % smaller) and costs 2 to 4 % on the two datagen sets, whose per-row random instance and container ids defeat a dictionary.
+- **Young costs 0.1 to 0.3 MB more than medium** (24 objects instead of one: tails, dictionaries and bloom filters per object).
+- **8 MiB and 32 MiB give the same file here** because the one-hour cut binds first (see the last table of this section).
+
+Leaving one knob out of the old variant (MB, change against today), to see what each contributes at the end of the ladder:
+
+| Without | logs-loghub | logs-pool | logs-datagen | traces-pool | traces-datagen |
+|---|---|---|---|---|---|
+| zstd 7 and 11 (level 3 instead) | 8.8 (-48 %) | 39.9 (-19 %) | 122.0 (-9 %) | 34.8 (-23 %) | 68.1 (-17 %) |
+| zstd 11 (7 instead) | 8.4 (-51 %) | 36.8 (-25 %) | 110.1 (-18 %) | 31.2 (-31 %) | 62.6 (-24 %) |
+| stream order (time order) | 10.7 (-37 %) | 39.2 (-20 %) | 107.9 (-20 %) | 31.4 (-30 %) | 63.1 (-23 %) |
+| blooms sized by distinct values (by count, as today) | 8.7 (-49 %) | 36.9 (-25 %) | 104.6 (-22 %) | 31.5 (-30 %) | 60.1 (-27 %) |
+| dictionary on medium columns | 7.3 (-57 %) | 36.6 (-26 %) | 106.9 (-20 %) | 30.5 (-32 %) | 58.8 (-28 %) |
+| byte row groups (10,000 rows) | 8.4 (-51 %) | 37.3 (-24 %) | 110.1 (-18 %) | 31.9 (-29 %) | 64.5 (-22 %) |
+| 1 MiB pages (256 KiB) | 8.0 (-53 %) | 37.6 (-24 %) | 110.8 (-17 %) | 31.3 (-31 %) | 63.8 (-22 %) |
+| nothing left out (old) | 7.3 (-57 %) | 36.4 (-26 %) | 109.3 (-18 %) | 30.0 (-34 %) | 61.6 (-25 %) |
+
+The two places where leaving a knob out makes the file smaller are the bloom sizing on the all-unique datasets (stronger blooms cost bytes) and the dictionary on `logs-datagen` (random ids). Both are data-shape and selectivity effects.
+
+### Ratios per variant
+
+| Dataset | Baseline | Today | young | medium | old | VictoriaLogs / VictoriaTraces |
+|---|---|---|---|---|---|---|
+| logs-loghub | NDJSON as sent (126.8 MB) | 7.4x | 13.8x | 14.2x | 17.3x | 14.0x |
+| logs-loghub | raw text (72.7 MB) | 4.3x | 7.9x | 8.1x | 9.9x | 8.0x |
+| logs-loghub | uncompressed Parquet (81.1 MB) | 4.8x | 8.8x | 9.1x | 11.0x | - |
+| logs-pool | NDJSON (639.0 MB) | 13.0x | 16.8x | 16.8x | 17.5x | 14.0x |
+| logs-datagen | NDJSON (682.3 MB) | 5.1x | 6.1x | 6.1x | 6.2x | 1.3x |
+| traces-pool | OTLP/JSON (1,198.9 MB) | 26.6x | 37.0x | 37.0x | 40.0x | 23.4x |
+| traces-pool | uncompressed Parquet (364.6 MB) | 8.1x | 11.2x | 11.3x | 12.2x | 7.1x |
+| traces-datagen | OTLP/JSON (1,150.8 MB) | 14.0x | 17.8x | 17.8x | 18.7x | 12.6x |
+
+Size against VictoriaLogs and VictoriaTraces on the same rows (below 1.00x means Lakehouse is smaller):
+
+| Dataset | Today | young | old |
+|---|---|---|---|
+| logs-loghub | 1.89x | 1.02x | 0.81x |
+| logs-pool | 1.07x | 0.83x | 0.80x |
+| logs-datagen | 0.26x | 0.21x | 0.21x |
+| traces-pool | 0.88x | 0.63x | 0.59x |
+| traces-datagen | 0.90x | 0.71x | 0.67x |
+
+The Lakehouse token blooms (about 1 %) are about 10x less selective than VictoriaLogs' (about 0.1 %). At 0.1 % they add 0.8 to 4 % to the log files (old variant: 7.3 to 7.6 MB on `logs-loghub`, 36.4 to 36.9 MB on `logs-pool`, 109.3 to 110.2 MB on `logs-datagen`).
+
+### Structure per variant
+
+| Dataset | Stage | Row groups | Row group MiB (median) | Bloom KB | Bloom KB on empty chunks | Token blooms KB | Page index KB | Tail read KB | `sorting_columns` row groups |
+|---|---|---|---|---|---|---|---|---|---|
+| logs-loghub | today | 53 | 0.24 | 2,633 | 2,628 | 709 | 108 | 1,075 | 0 |
+| logs-loghub | young (24 objects) | 25 | 0.33 | 3 | 0 | 619 | 57 | 831 | 50 |
+| logs-loghub | old | 7 | 1.07 | 1 | 0 | 502 | 16 | 553 | 0 |
+| logs-pool | today | 50 | 0.86 | 2,528 | 0 | 1,094 | 157 | 1,577 | 0 |
+| logs-pool | old | 25 | 1.37 | 815 | 0 | 990 | 67 | 1,220 | 0 |
+| traces-pool | today | 51 | 0.75 | 4,407 | 1,879 | 0 | 232 | 1,528 | 0 |
+| traces-pool | old | 24 | 1.08 | 1,653 | 0 | 0 | 88 | 1,187 | 48 |
+| traces-datagen | today | 50 | 1.41 | 5,026 | 1,879 | 0 | 223 | 4,292 | 0 |
+| traces-datagen | old | 24 | 2.03 | 6,497 | 0 | 0 | 86 | 3,966 | 48 |
+
+Day objects of low-volume logs declare no `sorting_columns`: row groups under 1 MiB may cross hour slices, so the declaration would be false. Spans of these datasets fill 1 MiB per hour, so they declare it on every row group. The tail read of a logs object is dominated by the token blooms (81 to 91 %); the tail of a spans object is dominated by the `_trace_idx` footer entry (3.9 MB on `traces-datagen`).
+
+### What a query reads per variant
+
+The model (m for row-group counts and column bytes, a for the read plan):
+
+- One day object (24 hour objects for young). Candidate objects are chosen from memory (manifest and pmeta), with no S3 reads.
+- Per candidate object: one tail read (page index and footer, with the token blooms), then one read per run of needed column chunks in the surviving row groups (1 MiB gap, 16 MiB span).
+- Bloom probes, when the filters sit after each row group (today's placement), cost one read per row group probed. With the filters at the tail of the file (standard Parquet, parquet-go `DeferBloomFiltersWithBuffers`) the probes fold into the tail read.
+- The "today" rows apply this read plan to today's file. Today's projected range-read path does not probe row-group bloom filters (`bloomResident` in `storage_query.go`, both modules, is true only when no column projection is used, that is on a full download), so these rows are what the plan would cost, not what the code does. This differs from the bloom check described at Level 6 of [Read path](read-path.md), which applies on the full-download path; the gap is tracked in issue #421.
+
+Cells: row groups read / total; reads (tail + data + probes); needed-column MB.
+
+**traces-pool:**
+
+| Variant | 15 min | Service | Span name | trace_id | stats by |
+|---|---|---|---|---|---|
+| today | 1/51; 2; 0.20 | 50/51; 4 + 3; 10.2 | 51/51; 4 + 3; 10.1 | 2/51; 2 + 3; 1.07 | 51/51; 4; 2.0 |
+| young (24 objects) | 1/24; 2; 0.39 | 24/24; 48 + 24; 9.5 | 24/24; 48 + 24; 9.4 | 1/24; 2 + 1; 0.94 | 24/24; 48; 3.6 |
+| old, bloom filters after each row group | 1/24; 2; 0.36 | 24/24; 3 + 24; 8.6 | 24/24; 3 + 24; 8.5 | 1/24; 2 + 24; 0.86 | 24/24; 3; 3.3 |
+| old, bloom filters at the tail | 1/24; 2; 0.36 | 24/24; 3; 8.6 | 24/24; 3; 8.5 | **1/24; 2; 0.86** (tail 2.84 MB against 1.19) | 24/24; 3; 3.3 |
+| old, no bloom filters | 1/24; 2; 0.36 | 24/24; 3; 8.6 | 24/24; 3; 8.5 | **24/24; 3; 20.5** | 24/24; 3; 3.3 |
+| old, no re-sort | 1/24; 2; 0.35 | 24/24; 3 + 24; 8.6 | 24/24; 3 + 24; 8.4 | 1/24; 2 + 24; 0.94 | 24/24; 3; 3.6 |
+
+**logs-pool:**
+
+| Variant | 15 min | Service | Body token | trace_id | stats by |
+|---|---|---|---|---|---|
+| today | 1/50; 2; 0.50 | 50/50; 4 + 3; 25.3 | 50/50; 4; 24.9 | 1/50; 2 + 3; 0.55 | 50/50; 4; 2.4 |
+| old, bloom filters after each row group | 1/25; 2; 0.88 | 24/25; 4 + 24; 21.2 | 24/25; 4; 21.1 | 1/25; 2 + 24; 0.99 | 25/25; 4; 2.6 |
+| old, bloom filters at the tail | 1/25; 2; 0.88 | 24/25; 3; 21.2 | 24/25; 4; 21.1 | **1/25; 2; 0.99** (tail 2.04 MB against 1.22) | 25/25; 4; 2.6 |
+| old, no Parquet bloom filters | 1/25; 2; 0.88 | 25/25; 4; 22.1 | 24/25; 3; 21.1 | **25/25; 4; 24.7** | 25/25; 4; 2.6 |
+| old, no blooms at all | 1/25; 2; 0.88 | 25/25; 4; 22.1 | **25/25; 4; 22.0** | **25/25; 4; 24.7** | 25/25; 4; 2.6 |
+
+- **Bloom filters placed after each row group cost one read per row group probed:** 24 to 25 reads for one trace id on a day object, against none when they sit at the tail. The tail grows by 0.8 to 1.7 MB.
+- **Stream clustering on a day object** reads one row group per hour slice (24 of 24 here): each of these streams has rows in every hour. The page index can narrow it inside a row group, which this model does not count.
+- **Spans in stream order scatter a trace over the row groups** (a trace's 28 spans sit in about 28 (service, span name) streams), so the row-group bloom filter on `trace_id` prunes little on a stream-ordered span object. It still prunes whole objects (pmeta) and it works on logs.
+- **No re-sort on rewrite keeps time and trace-id pruning** (the inputs are hour-sliced already) and costs 2 to 17 % bytes on stream and service reads.
+
+### Row-group size when the byte targets bind
+
+The same rows packed into one hour (a 24x busier tenant, a), so the 8 and 32 MiB targets bind. MB and number of row groups (m):
+
+| Dataset | old, 10,000-row groups | 8 MiB | 32 MiB | old (32 MiB, 1 MiB pages, zstd 11) |
+|---|---|---|---|---|
+| logs-loghub | 8.0 MB, 53 groups | 8.3 MB, 3 | 8.2 MB, 2 | 7.1 MB |
+| logs-pool | 35.4 MB, 50 | 35.9 MB, 5 | 35.8 MB, 2 | 34.1 MB |
+| logs-datagen | 110.5 MB, 50 | 112.4 MB, 14 | 112.7 MB, 5 | 110.1 MB |
+| traces-pool | 34.1 MB, 51 | 34.1 MB, 5 | 33.8 MB, 2 | 29.9 MB |
+| traces-datagen | 68.0 MB, 50 | 66.4 MB, 10 | 66.0 MB, 3 | 63.7 MB |
+
+| Query, needed-column MB (row groups read of total) | 10,000 rows | 8 MiB | 32 MiB |
+|---|---|---|---|
+| logs-pool, one trace id | 0.48 (1 of 50) | 5.0 (1 of 5) | 12.5 (1 of 2) |
+| logs-pool, one stream | 1.7 (4 of 50) | 13.5 (3 of 5) | 22.5 (2 of 2) |
+| logs-pool, stats by: reads | 3 | 10 | 4 |
+| logs-loghub, one body token | 0.26 (2 of 53) | 2.6 (1 of 3) | 3.9 (1 of 2) |
+| traces-pool, one trace (span tree) | 12.2 (25 of 51) | 26.0 (5 of 5) | 22.8 (2 of 2) |
+| traces-datagen, one trace | 2.1 (4 of 50) | 10.7 (4 of 10) | 26.6 (3 of 3) |
+
+- 8 MiB against 32 MiB changes the size by under 1 %; the old variant's gain over the 10,000-row file comes mostly from the 1 MiB pages and level 11 (0.4 % on `logs-datagen` to 12 % on `traces-pool` in total).
+- Needles read 10x to 25x more bytes at 8 to 32 MiB than at 10,000 rows when whole row groups are read.
+- Scans pay for small row groups: `stats by` needs 2.5x the reads at 8 MiB against 32 MiB.
+- CPU at 32 MiB is within +-10 % of 8 MiB on four datasets. On the stream-per-row `logs-datagen`, 32 MiB writes took 2.4x the CPU (12.7 to 30.9 s), from dictionary chunks of 500,000 unique values per row group: a worst-case data shape.
+- Trace-by-ID on a stream-ordered span object would need a two-step read inside the object (the id column first, then only the matching pages of the other columns). That read is **not built**; with whole-row-group reads a trace lookup costs about 0.64 GB at 1 TB/day (a, scaled).
+
+## Bloom options measured: keep, shrink, skip
+
+**Status: measured variants of the old-stage layout. They are not settings in the product.** Today every file carries Parquet bloom filters on the schema's bloom columns and (flush files) token blooms, and there is no switch to shrink or drop them; the `bloom_columns` keys do not change what is written (issue #869). The default is, and in every table below stays, **keep**. This section documents what the alternatives would cost and what a query would lose, so an operator or a contributor can judge a trade-off with numbers. It is not a plan to add the options.
+
+| Option | Definition in the measurement | Size against keep (old variant) | `trace_id` lookup per candidate object | Body-token search per object | External readers |
+|---|---|---|---|---|---|
+| keep | Parquet bloom filters sized by distinct values at 16.9 bits (about 0.1 % target), power of two, none on an all-empty chunk; token blooms about 1 % | 0 | 1 row group | only the row groups holding the token | `trace_id = '...'` push-down works |
+| shrink | the same at 10.5 bits per distinct value (about 1 % target); token blooms unchanged | 0 to -5 % | 1 row group plus 0.2 to 0.8 % false positives | same | push-down works, weaker |
+| skip Parquet bloom filters | no Parquet bloom filters, token blooms kept | 0 to -11 % (0 on logs-loghub, whose filters sit on empty chunks) | every row group of the object | same (token blooms kept) | no push-down: a full column scan |
+| skip all | no Parquet bloom filters and no token blooms | -5 to -11 % | every row group | every row group | same |
+
+Size of the old variant with each option, MB (m; change against keep in brackets):
+
+| Option | logs-loghub | logs-pool | logs-datagen | traces-pool | traces-datagen |
+|---|---|---|---|---|---|
+| keep | 7.3 | 36.4 | 109.3 | 30.0 | 61.6 |
+| shrink | 7.3 (0 %) | 36.3 (0 %) | 105.4 (-3.6 %) | 29.2 (-2.7 %) | 58.4 (-5.2 %) |
+| skip Parquet bloom filters | 7.3 (0 %) | 35.6 (-2.2 %) | 101.5 (-7.1 %) | 28.3 (-5.7 %) | 55.1 (-10.6 %) |
+| skip all | 6.8 (-6.8 %) | 34.6 (-4.9 %) | 99.6 (-8.9 %) | 28.3 (-5.7 %) | 55.1 (-10.6 %) |
+| token blooms at 0.1 % (keep) | 7.6 (+4.1 %) | 36.9 (+1.4 %) | 110.2 (+0.8 %) | 30.0 | 61.6 |
+| no re-sort on rewrite (keep) | 8.3 (+13.7 %) | 38.1 (+4.7 %) | 109.4 (+0.1 %) | 34.3 (+14.3 %) | 64.6 (+4.9 %) |
+
+Skipping all blooms after sizing them by distinct values saves 5 to 11 % of the bytes on all five datasets (6.8 % on the real logs), not the 1 to 2 % that an earlier model assumed. The earlier figure was modelled (assumed); these are measured.
+
+### False-positive rates
+
+500 absent values probed per row group against the real split-block filters and the real token blooms (m):
+
+| Dataset | Bloom variant | `trace_id` | `service.name` | Body token blooms |
+|---|---|---|---|---|
+| logs-loghub | today (10 bits per value, by count) | 0.00 % (0 of 26,500) | 0.00 % | 0.97 % |
+| logs-loghub | keep or shrink | no filter (empty chunks) | 0.00 % | 0.83 % |
+| logs-loghub | keep + token blooms at 0.1 % | no filter | 0.00 % | 0.00 % (0 of 3,500) |
+| logs-pool | today | 0.00 % (1 of 25,000) | 0.24 % | 0.88 % |
+| logs-pool | keep | 0.03 % | 0.00 % | 0.94 % |
+| logs-pool | shrink | 0.29 % | 0.28 % | 0.94 % |
+| logs-pool | keep + token blooms at 0.1 % | 0.03 % | 0.00 % | 0.16 % |
+| logs-datagen | today | 1.20 % | 0.00 % | 1.10 % |
+| logs-datagen | keep | 0.01 % | 0.00 % | 0.99 % |
+| logs-datagen | shrink | 0.23 % | 0.00 % | 0.99 % |
+| traces-pool | today | 0.00 % | 0.69 % | n/a |
+| traces-pool | keep | 0.02 % | 0.03 % | n/a |
+| traces-pool | shrink | 0.81 % | 0.03 % | n/a |
+| traces-datagen | today | 0.00 % | 0.00 % | n/a |
+| traces-datagen | keep | 0.05 % | 0.00 % | n/a |
+| traces-datagen | shrink | 0.81 % | 0.00 % | n/a |
+
+- **"Keep" is not selectivity-neutral against today's files.** It improves all-unique columns (`logs-datagen` `trace_id` 1.20 % to 0.01 %) and dictionary columns (`logs-pool` `service.name` 0.24 % to 0.00 %), and it weakens repeated non-dictionary columns that today are oversized to a rate near 0 (`traces-pool` `trace_id` 0.00 % to 0.02 %, `traces-datagen` to 0.05 %). This replaces the "about 1 %" that an earlier model on this page predicted for those columns: measured, it is 0.02 to 0.05 %.
+- **Shrink weakens `trace_id` to 0.2 to 0.8 %**, 10x to 40x the keep rate.
+- **The token blooms stay at about 1 % in every variant**, against about 0.1 % for VictoriaLogs. At 0.1 % they measure 0.00 to 0.16 % for +0.8 to +4 % of file size on logs.
+
+### What a query loses
+
+Per old day object (m, from the read table above), and scaled to a tenant of 1 TB/day (a):
+
+- **Skip with the block-level metadata intact (pmeta still holds the per-object trace-id bloom):** the object is chosen from memory, then every row group of it is read. A trace-id lookup reads all row groups of about 2 objects: about 1.5 GB and 7 reads (a). With keep, a span lookup is not cheap either: a trace scatters over the row groups in stream order, so it costs about 0.64 GB and 92 reads with whole-row-group reads (a). On logs, keep reads 1 to 2 row groups.
+- **Skip with the metadata rebuilt from the files, or an external reader:** nothing prunes. A trace lookup reads the trace-id and span-tree columns of every object in the window: about 17 GB for a 24 h window, 120 GB for 7 days and 514 GB for 30 days at 1 TB/day (a, scaled), 82 / 572 / 2,452 reads, $0.64 / $4.47 / $19.14 per lookup in S3 request and compute cost (a).
+- **Body search without token blooms** reads every row group of every candidate object: 52.9 GB for a 24 h window at 1 TB/day against 7.6 GB with token blooms (a, scaled).
+- **Rebuild:** with keep, the per-file blooms held in memory by pmeta can be rebuilt from the footers and Parquet filters. With the Parquet filters skipped, the per-file `trace_id` bloom cannot be rebuilt from the files.
+- A skip would have to be recorded in the manifest so readers and statistics know that a file has no blooms. That recording does not exist.
+
+
 ## Comparison with VictoriaLogs and VictoriaTraces on the same data
 
 Method: VictoriaLogs v1.53.0 and VictoriaTraces v0.12.0 built from the upstream tags, default flags, logs ingested through `/insert/jsonline?_stream_fields=...` (the generator's field list, or `service.name,host.name` for Loghub), spans through `/insert/opentelemetry/v1/traces` as OTLP/JSON, 500 spans per request. After `/internal/force_flush` and `/internal/force_merge`, the data directory size was read when it had been stable for 20 s and merges were 0 (`du -sk` and per-file sizes).
@@ -422,7 +730,7 @@ What is and is not in the numbers:
 
 - VictoriaLogs bytes include its `indexdb`. VictoriaTraces bytes include its `trace_id_idx` stream rows (17,738 index rows on `traces-pool`). The Lakehouse file has no such table in the measured file (a: about 0.5 MB).
 - Lakehouse bytes are the Parquet object only; the manifest and pmeta are excluded.
-- Query latency was not compared on this page. See [VL comparison](vl-comparison.md) and [Full-scope S3 benchmark](benchmarks/full-scope-s3.md).
+- Lakehouse query latency was not measured on this page. See [VL comparison](vl-comparison.md) and [Full-scope S3 benchmark](benchmarks/full-scope-s3.md).
 
 | Dataset | VL / VT on disk | Bytes per row | Ratio against raw as sent | Notes |
 |---|---|---|---|---|
@@ -432,15 +740,17 @@ What is and is not in the numbers:
 | traces-pool | 51.15 MB (incl. index rows) | 102.3 | 23.4x (OTLP/JSON) | values 72.8 %, bloom 10.2 %, column headers 9.6 % |
 | traces-datagen | 91.6 MB | 183.3 | 12.6x | values 83.3 %, bloom 9.2 % |
 
-Against Lakehouse, same rows. "Flush today" is the file the shipped flush writer produces (time order, 10,000-row groups, zstd 3, token blooms). "Variant: S4b sort" is the same writer with only the sort changed to stream order inside hour slices; it is **not shipped** and is shown because it is a single measured lever.
+Against Lakehouse, same rows. "Flush today" is the file the shipped flush writer produces (time order, 10,000-row groups, zstd 3, token blooms). "Variant: S4b sort" is the same writer with only the sort changed to stream order inside hour slices. "Variant: old stage" is the full old-stage variant of the layout section (stream order, zstd 11 or the dynamic choice, blooms sized by distinct values, byte row groups, 1 MiB pages, dictionary on medium columns). Both variants are **not shipped** and are measured single levers or measured stacks.
 
-| Dataset | VL / VT (MB) | Lakehouse flush today (MB) | Flush today / VL or VT | Variant: S4b sort, not shipped (MB) | S4b / VL or VT |
-|---|---|---|---|---|---|
-| logs-loghub (real) | 9.03 | 17.1 | **1.89x larger** | 12.7 | 1.41x larger |
-| logs-pool | 45.8 | 49.2 | 1.07x larger | 42.7 | 0.93x |
-| logs-datagen | 525.3 | 134.1 | 0.26x | 136.1 | 0.26x |
-| traces-pool | 51.15 | 45.1 | 0.88x | 42.1 | 0.82x |
-| traces-datagen | 91.6 | 82.2 | 0.90x | 80.9 | 0.88x |
+| Dataset | VL / VT (MB) | Lakehouse flush today (MB) | Flush today / VL or VT | Variant: S4b sort (MB) | S4b / VL or VT | Variant: old stage (MB) | Old stage / VL or VT |
+|---|---|---|---|---|---|---|---|
+| logs-loghub (real) | 9.03 | 17.1 | **1.89x larger** | 12.7 | 1.41x larger | 7.3 | 0.81x |
+| logs-pool | 45.8 | 49.2 | 1.07x larger | 42.7 | 0.93x | 36.4 | 0.80x |
+| logs-datagen | 525.3 | 134.1 | 0.26x | 136.1 | 0.26x | 109.3 | 0.21x |
+| traces-pool | 51.15 | 45.1 | 0.88x | 42.1 | 0.82x | 30.0 | 0.59x |
+| traces-datagen | 91.6 | 82.2 | 0.90x | 80.9 | 0.88x | 61.6 | 0.67x |
+
+The old-stage variant needs work that does not exist yet (see the cost section). The young-stage variant is 1.02x of VictoriaLogs on the real logs, 0.83x on pooled logs, 0.63x on `traces-pool`.
 
 The next table is the same real-logs file at the higher levels the compaction schedule uses. These files were produced by the flush writer at that level, not by the compactor (the compactor has no token blooms, and its row-group size at level 2 is 20,000, which was not measured):
 
@@ -455,7 +765,7 @@ Per column group on real logs:
 - VictoriaLogs: message 5.94 MB plus its bloom 1.14 MB, timestamps 1.86 MB.
 - Lakehouse today: body 9.8 MB, timestamps 2.0 MB, token blooms 0.69 MB (about 1 % false positives), and about 2.6 MB (2,571 KiB) of Parquet bloom filters, mostly on empty columns.
 - **VictoriaLogs beats Lakehouse on the message column by 1.65x** (5.94 MB against 9.8 MB).
-- Lakehouse's token bloom is about 2x smaller than VictoriaLogs' because it is about 10x less selective: about 1 % false positives against about 0.1 % for VictoriaLogs' 16 bits and 6 hashes per token (s, `bloomFilterBitsPerItem` and `bloomFilterHashesCount` in VictoriaLogs `lib/logstorage/bloomfilter.go`). Making ours equally selective would add bytes (a: about 0.3 to 0.4 MB on this dataset, 1.5x the bits). Part of the size gap is therefore bought with weaker body-search pruning.
+- Lakehouse's token bloom is about 2x smaller than VictoriaLogs' because it is about 10x less selective: about 1 % false positives against about 0.1 % for VictoriaLogs' 16 bits and 6 hashes per token (s, `bloomFilterBitsPerItem` and `bloomFilterHashesCount` in VictoriaLogs `lib/logstorage/bloomfilter.go`). Making ours equally selective adds bytes: measured on the old-stage variant, token blooms at 0.1 % take the real logs from 7.3 to 7.6 MB (+4.1 %) and measure 0.00 % false positives on `logs-loghub` and 0.16 % on `logs-pool`. Part of the size gap is therefore bought with weaker body-search pruning.
 
 Where Lakehouse is larger today, plainly:
 
@@ -463,21 +773,21 @@ Where Lakehouse is larger today, plainly:
 - On the message column specifically (1.65x).
 - VictoriaLogs ingests the 523,378 real lines with 1.3 s of CPU plus 0.5 s of merge (m). Lakehouse buffers rows in an upstream storage segment first, then writes Parquet: 1.1 to 1.4 s of single-core writer time on the real-logs set in the flush-writer runs (m). The two numbers are not a like-for-like ingest benchmark.
 
-Where it is smaller: traces (0.88x and 0.90x as flushed), pooled synthetic logs once the rows are stream-sorted (0.93x, an unshipped variant), and the stream-per-row worst case (0.26x), a shape VictoriaLogs' documentation warns against.
+Where it is smaller: traces (0.88x and 0.90x as flushed), pooled synthetic logs once the rows are stream-sorted (0.93x, an unshipped variant), and the stream-per-row worst case (0.26x), a shape VictoriaLogs' documentation warns against. The old-stage variant would be smaller than VictoriaLogs on all five datasets (0.81x on the real logs), but it is a measured variant.
 
 VictoriaLogs' published claim is "usually compresses logs by 10x or more" and "up to 15x less disk space" than Elasticsearch and Loki (s, https://docs.victoriametrics.com/victorialogs/). It reproduces here at 14.0x against JSON as sent on Loghub and the pooled logs, and at 8.0x against raw text lines. It does not reproduce on stream-per-row data (1.3x).
 
 ## Compression ratio against different baselines
 
-"10x to 16x" is only meaningful with the baseline named. The same files, four baselines:
+"10x to 16x" is only meaningful with the baseline named. The same files, four baselines (the uncompressed Parquet size of spans includes the `_trace_idx` footer entry that the shipped writers add). The ratios of the measured stage-ladder variants are in the layout section:
 
 | Dataset | Raw as sent | Uncompressed Parquet (m) | VL / VT (ratio against raw) | Lakehouse flush today |
 |---|---|---|---|---|
 | logs-loghub (real) | 72.7 MB raw text, 126.8 MB NDJSON | 81.1 MB | 9.03 MB: 8.0x raw text, 14.0x NDJSON | 17.1 MB: 4.3x raw text, 7.4x NDJSON |
 | logs-pool | 639.0 MB NDJSON | 242.1 MB | 45.8 MB: 14.0x | 49.2 MB: 13.0x |
 | logs-datagen | 682.3 MB NDJSON | 447.1 MB | 525 MB: 1.3x | 134.1 MB: 5.1x |
-| traces-pool | 1,198.9 MB OTLP/JSON | 363.7 MB | 51.15 MB: 23.4x (7.1x against uncompressed Parquet) | 45.1 MB: 26.6x (8.1x against uncompressed Parquet) |
-| traces-datagen | 1,150.8 MB OTLP/JSON | 358.8 MB | 91.6 MB: 12.6x | 82.2 MB: 14.0x (4.4x against uncompressed Parquet) |
+| traces-pool | 1,198.9 MB OTLP/JSON | 364.6 MB | 51.15 MB: 23.4x (7.1x against uncompressed Parquet) | 45.1 MB: 26.6x (8.1x against uncompressed Parquet) |
+| traces-datagen | 1,150.8 MB OTLP/JSON | 362.5 MB | 91.6 MB: 12.6x | 82.2 MB: 14.0x (4.4x against uncompressed Parquet) |
 
 - Against **JSON as sent** (what a client posts) logs reach 13x on pooled logs and 7.4x on the terse real logs.
 - Against **raw text lines**, terse real logs are 4.3x for Lakehouse and 8.0x for VictoriaLogs. Raw text is much smaller than the JSON that wraps it, so the same bytes give a lower ratio.
@@ -486,6 +796,199 @@ VictoriaLogs' published claim is "usually compresses logs by 10x or more" and "u
 - The configuration comment ratios (about 2.8x, 3.1x, 3.3x for the three schedule slots) have no recorded baseline or method; the figures in [ZSTD Compression Benchmark](zstd-compression-benchmark.md) (4.6x, 6.1x, 6.2x) were taken against a different corpus and baseline. Do not compare them with the tables above.
 
 Identifiers have a floor. A random trace id is 16 B of entropy per distinct trace (stored as 32 hex characters), about 0.6 B per span amortised over 28 spans per trace when a trace is clustered. A span id is 8 B of entropy per span and a parent span id about 8 B, so random ids cost at least 16 to 17 B per span, and 20 B were measured at level 7. Storing ids as binary would remove the hex expansion, but it would break `trace_id = '...'` bloom push-down in external readers and the equality of stored values with VictoriaTraces' text ids, so it is not done.
+
+## Cost: VictoriaLogs and VictoriaTraces on EBS against Lakehouse on S3
+
+This section compares monthly infrastructure cost. Read it with these three labels in mind:
+
+- **Today** (shipped behaviour as a model): the column "Lakehouse today" applies the compression ratio of today's flush file (level 3, 7.4x logs / 26.6x traces) to all stored data and assumes one rewrite for CPU. Today's compaction recompresses at levels 7 and 11, so this overstates today's storage line a little. At 100 TB/day it is modelled and **not operable as configured** (too many small objects).
+- **Measured variant** (not shipped): the compression ratios and CPU per TB of the stage ladder come from the layout variants above.
+- **Projection** (assumes work that does not exist yet): the column "Lakehouse with the stage ladder" is a **projection**. It assumes byte-sized row groups, the young, medium and old stages, a streaming merge in the compactor, a windowed listing of the object store, conditional claims between writers and a same-key copy mover for storage classes. None of these is built. The dollar totals depend on the sizing assumptions below and move with them.
+
+Infrastructure only: storage, compute, requests, transfer and backup. No people, no support, no query load except where a table says so.
+
+### Prices (sourced)
+
+AWS us-east-1, on-demand list prices, read on **2026-11-03** (11:00 to 11:05 UTC) from the files AWS publishes for its pricing pages, not from memory:
+
+- S3, S3 Glacier Deep Archive, data transfer and KMS: the AWS Price List files `https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/{AmazonS3,AmazonS3GlacierDeepArchive,AWSDataTransfer,awskms}/current/us-east-1/index.json` (publications 2026-10-15, 2026-09-11, 2026-09-16 and 2026-10-26).
+- EBS: `https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ebs.json`, region US East (N. Virginia) (publication 2026-10-29), the JSON behind `https://aws.amazon.com/ebs/pricing/`.
+- EC2: the on-demand Linux JSON behind `https://aws.amazon.com/ec2/pricing/on-demand/` (publication 2026-10-29).
+- Storage-class rules: `https://aws.amazon.com/s3/storage-classes/` and the S3 lifecycle user guide.
+
+| Item | Price (s) |
+|---|---|
+| EBS gp3 | $0.08 per GB-month; 3,000 IOPS and 125 MB/s included; extra throughput $0.04 per MB/s-month; durability 99.8 to 99.9 % |
+| EBS snapshots | $0.05 per GB-month |
+| S3 Standard | $0.023 per GB-month (first 50 TB), $0.022 (next 450 TB), $0.021 (over 500 TB) |
+| S3 Standard-IA | $0.0125 per GB-month; 30-day minimum; 128 KB minimum billable size; retrieval $0.01 per GB |
+| S3 Glacier Instant Retrieval | $0.004 per GB-month; 90-day minimum; 128 KB minimum; retrieval $0.03 per GB |
+| S3 Glacier Deep Archive | $0.00099 per GB-month; 180-day minimum; 40 KB per-object overhead; retrieval $0.02 per GB standard, $0.0025 bulk |
+| S3 requests, Standard | PUT, COPY, POST, LIST $0.005 per 1,000; GET $0.0004 per 1,000 |
+| Lifecycle transitions | into Standard-IA $0.01, Glacier IR $0.02, Glacier Flexible $0.03, Deep Archive $0.05 per 1,000 objects |
+| Small objects | "Objects smaller than 128 KB will not transition by default to any storage class" (lifecycle guide) |
+| Data transfer | between availability zones $0.01 per GB in each direction; S3 to EC2 in the same region free |
+| EC2 on-demand Linux | r7g.2xlarge $0.4284/h (8 vCPU, 64 GiB); m7g.xlarge $0.1632/h; m7g.2xlarge $0.3264/h; m7gd.2xlarge $0.4271/h (475 GB NVMe) |
+| VictoriaLogs capacity guidance | "50% of free RAM", "50% of spare CPU", "At least 20% of free storage space at vlstorage nodes"; high availability = two clusters in two zones fed by vlagent (s, `https://docs.victoriametrics.com/victorialogs/cluster/`, read 2026-11-03) |
+
+Prices change. Every dollar figure below is dated by this table; rerun the formulas with current prices before relying on a total.
+
+### Assumptions (a unless marked m or s)
+
+| # | Assumption | Value |
+|---|---|---|
+| 1 | TB/day | raw bytes as sent: NDJSON for logs, OTLP/JSON for spans (OTLP/JSON overstates against protobuf, so per protobuf TB the stored bytes are higher) |
+| 2 | Reference datasets | logs: `logs-loghub` (real); traces: `traces-pool`. The pooled and datagen sets are in the sensitivity |
+| 3 | Compression ratios as sent (m) | VictoriaLogs 14.0x, VictoriaTraces 23.4x; Lakehouse today 7.4x logs / 26.6x traces; young 13.8x / 37.0x; medium 14.2x / 37.0x; old (dynamic level) 17.3x / 40.0x; old with all blooms skipped 18.5x / 42.3x |
+| 4 | VictoriaLogs and VictoriaTraces nodes | r7g.2xlarge, at most 20 TB of gp3 per node at 80 % fill, +250 MB/s gp3 throughput per node; 2 x m7g.xlarge frontends per 10 TB/day |
+| 5 | VL/VT ingest CPU (m) | 14.2 core-s per GB as sent for the real logs and 22.4 for `traces-pool` (ingest plus merge) |
+| 6 | VL/VT high availability | two clusters in two zones; inter-zone traffic = ingest / 5 (wire compression, a) x $0.02 per GB; one cluster snapshotted at 1.2x stored bytes |
+| 7 | Lakehouse writers | the same upstream buffer ingest as VictoriaLogs plus the measured Parquet flush write, m7g.2xlarge at 70 % CPU, at least 2, 200 GB gp3 buffer volume each |
+| 8 | Lakehouse compaction | hour rewrite (level 7) + day clean-up of half the bytes (level 7) + old rewrite (dynamic level), each a full decode and write (m), no global sort (needs the streaming merge, not built) |
+| 9 | Lakehouse select nodes | m7gd.2xlarge (475 GB NVMe cache), 2 per 10 TB/day, at least 2 |
+| 10 | Lakehouse lifecycle | Standard for 30 days, then Glacier IR by a same-key copy; 1 GiB old objects; the 90-day Glacier IR minimum is billed |
+| 11 | Lakehouse requests, stage ladder | PUT and claim requests for 1,000 Zipf-distributed tenants: traces $2.9 / $28.8 / $288 per day at 1 / 10 / 100 TB/day; logs x0.29 / x0.29 / x0.044; windowed LIST $0.0006 per stored GB ingested |
+| 12 | Lakehouse requests, today | a compaction simulation for 1,000 Zipf tenants over 365 days: 27.9k / 141k / 5.2M objects per day at 1 / 10 / 100 TB/day; LIST $82 / $866 / $165,822 per day; 2 PUTs per object. Modelled with a 4.1x compression ratio and 3 / 10 / 60 replicas, not with the ratios of this page |
+| 13 | Queries | 2,000 per day per signal, classes equal, windows 24 h / 7 d / 30 d = 50 / 40 / 10 %, reference tenant 1 TB/day |
+| 14 | Decode rate | 400 MiB/s per core of compressed Parquet, for Lakehouse and VictoriaLogs alike |
+| 15 | Hours per month | 730 |
+
+### Formulas
+
+```
+stored_GB   = ingest_GB_per_day x retention_days / ratio       (stage ladder: young 1 d + medium 2 d + old for the rest, each at its ratio)
+VL/VT 1 AZ  = gp3: stored / 0.8 x $0.08 + nodes x 250 MB/s x $0.04
+              + nodes x $/h(r7g.2xlarge) x 730 + frontends x $/h(m7g.xlarge) x 730
+              nodes = max(2, ceil(ingest x cpu_s_per_GB / 86,400 / 0.5 / 8), ceil(stored / 0.8 / 20 TB))
+VL/VT HA    = 2 x (1 AZ) + ingest / 5 x 30 x $0.02 (inter-zone) + stored x 1.2 x $0.05 (snapshots)
+LH today    = S3 Standard (tiered, stored) + objects_per_day x 2 x $0.005/1k x 30 + LIST$_per_day x retention/365 x 30 + compute
+LH ladder   = S3 Standard (GB held in the first 30 days) + GB_old_per_day x max(retention - 30, 90) x $0.004 (Glacier IR, 90-day minimum)
+              + transitions: GB_old_per_day / 1.074 GB per object x $0.02/1k x 30
+              + PUT and claim requests x 30 + LIST $0.0006 x GB stored per day x 30
+              + writers, compactors, select nodes x $/h x 730 + buffer volumes + inter-zone client traffic (ingest / 5 x 0.5 x $0.02 x 30)
+              writer cores     = ingest x (VL ingest + flush write) core-s per GB / 86,400 / 0.7
+              compaction cores = (GB_medium x 1.5 x merge_s_per_GB(medium) + GB_old x merge_s_per_GB(old)) / 86,400 / 0.7
+LH ladder, blooms skipped on old data = the same with the "old skip" ratio
+LH ladder + Deep Archive = 90 days in Glacier IR and (retention - 120 days) in Deep Archive ($0.00099, transition $0.05/1k)
+query $      = GETs x $0.0004/1k (Standard; $0.01/1k + $0.03/GB on Glacier IR) + bytes / 400 MiB/s x $/core-s (select nodes)
+VL query $   = the same bytes / 400 MiB/s x $/core-s of r7g.2xlarge (no request fees; EBS throughput is prepaid)
+```
+
+### Monthly cost
+
+Monthly totals in US dollars; sizes and ratios (m) and sizing (a) as above; prices (s) dated 2026-11-03. Infrastructure only, no query load.
+
+| Scenario | VL/VT gp3, 1 zone | VL/VT HA (2 clusters) + snapshots | Lakehouse today | Lakehouse with the stage ladder (projection) | Stage ladder, blooms skipped on old data (projection) | Stage ladder, Deep Archive after 120 days (projection) |
+|---|---|---|---|---|---|---|
+| logs, 10 TB/day x 90 days | $8.3k | $21.6k | $11.1k | $2.8k | $2.8k | n/a |
+| traces, 10 TB/day x 90 days | $5.0k | $13.6k | $9.2k | $3.1k | $3.1k | n/a |
+| logs, 100 TB/day x 365 days | $315k | $798k | not operable (modelled $5.1M: listing about $166k/day, a 354 GiB manifest per replica) | $28.1k | $27.1k | $23.9k |
+| traces, 100 TB/day x 365 days | $190k | $485k | not operable (modelled $5.0M) | $28.0k | $27.5k | $26.1k |
+| logs, 1 TB/day x 30 days | $1.1k | $2.4k | $1.7k | $1.5k | $1.5k | n/a |
+| traces, 1 TB/day x 30 days | $1.0k | $2.2k | $1.7k | $1.5k | $1.5k | n/a |
+
+Where the money goes, logs (monthly):
+
+| Scenario | System | Storage | Compute | Requests | Transfer | Backup | Total | Stored TB | Nodes |
+|---|---|---|---|---|---|---|---|---|---|
+| 10 TB/day x 90 d | VL, 1 zone | $6,459 | $1,802 | $0 | $0 | $0 | **$8,261** | 64 | 5 |
+| 10 TB/day x 90 d | VL, HA | $12.9k | $3,604 | $0 | $1,200 | $3,846 | **$21.6k** | 64 | 10 |
+| 10 TB/day x 90 d | Lakehouse today | $2,715 | $1,370 | $6,448 | $600 | $0 | **$11.1k** | 121 | 5 |
+| 10 TB/day x 90 d | Lakehouse stage ladder | $617 | $1,370 | $260 | $600 | $0 | **$2,848** | 53 | 5 |
+| 100 TB/day x 365 d | VL, 1 zone | $261.6k | $53.4k | $0 | $0 | $0 | **$314.9k** | 2,599 | 163 |
+| 100 TB/day x 365 d | VL, HA | $523.1k | $106.7k | $0 | $12.0k | $156.0k | **$797.8k** | 2,599 | 326 |
+| 100 TB/day x 365 d | Lakehouse today | $103.7k | $8,222 | $4,976.2k | $6,000 | $0 | **$5,094.1k** | 4,911 | 28 |
+| 100 TB/day x 365 d | Lakehouse stage ladder | $11.7k | $9,906 | $488 | $6,000 | $0 | **$28.1k** | 2,118 | 35 |
+
+The two "Lakehouse today" rows at 100 TB/day are modelled, not measured, and not operable: the dominant line is S3 requests on millions of small objects (assumption 12), and a per-replica manifest of 354 GiB. They show why the stage ladder and a windowed listing are the precondition for the projected totals, not that those totals are reachable with the shipped code.
+
+### Break-even and sensitivity
+
+Break-even is the query rate above which the Lakehouse total (with its per-query request and decode cost) exceeds the VictoriaLogs or VictoriaTraces total. Assumption 13 (2,000 queries per day per signal, classes mixed) is the base.
+
+| Scenario | Is the stage-ladder projection cheaper than VL/VT in 1 zone? | Cheaper than VL/VT HA? |
+|---|---|---|
+| 1 TB/day x 30 days | no (fixed floor of about $1.5k: 2 writers, 1 compactor, 2 NVMe select nodes, a) | yes, below about 22k (logs) / 29k (traces) queries per day |
+| 10 TB/day x 90 days | yes, below about 125k (logs) / 84k (traces) queries per day | yes, below about 434k / 451k |
+| 100 TB/day x 365 days | yes, below about 6.6M / 7.0M queries per day | yes, below about 18M / 20M |
+
+At 1 TB/day the projection breaks even with one zone at 90 days for logs (148 queries per day) and only at 365 days for traces (about 37k per day). Logs and traces at 1 TB/day for 30 days, traces at 1 TB/day for 90 days, and traces at 10 and 100 TB/day for 30 days stay cheaper on VictoriaLogs or VictoriaTraces in one zone at any query rate.
+
+Monthly totals including 2,000 queries per day per signal. Each cell is VL/VT 1 zone / VL/VT HA / Lakehouse stage ladder (projection):
+
+| Variant | logs, 10 TB/day x 90 d | traces, 10 TB/day x 90 d | logs, 100 TB/day x 365 d | traces, 100 TB/day x 365 d |
+|---|---|---|---|---|
+| base | $8.6k / $21.9k / $3.2k | $5.1k / $13.7k / $3.2k | $315k / $798k / $28.5k | $190k / $485k / $28.1k |
+| prices +30 % | $11.1k / $28.4k / $4.2k | $6.6k / $17.7k / $4.2k | $410k / $1,038k / $37.1k | $247k / $630k / $36.5k |
+| prices -30 % | $6.0k / $15.3k / $2.3k | $3.6k / $9.6k / $2.2k | $221k / $559k / $20.0k | $133k / $339k / $19.7k |
+| queries x10 (20k per day) | $11.2k / $24.5k / $6.7k | $5.6k / $14.1k / $4.1k | $318k / $801k / $31.9k | $190k / $485k / $29.0k |
+| all ratios +25 % | $6.9k / $17.8k / $3.0k | $4.0k / $11.0k / $3.1k | $253k / $642k / $25.6k | $152k / $391k / $26.8k |
+| all ratios -25 % | $11.1k / $28.2k / $3.8k | $6.7k / $17.6k / $3.3k | $419k / $1,058k / $33.0k | $252k / $641k / $29.8k |
+| Lakehouse ratio only -25 % | $8.7k / $22.0k / $3.8k | $5.1k / $13.7k / $3.3k | $315k / $798k / $33.0k | $190k / $485k / $29.8k |
+| VictoriaLogs 60 TB per node | $7.6k / $19.9k / $3.2k | $4.8k / $13.0k / $3.2k | $280k / $728k / $28.5k | $169k / $443k / $28.1k |
+
+The ordering does not change under any single variant at 10 TB/day x 90 days or at 100 TB/day x 365 days. The Lakehouse total is dominated by fixed compute below about 10 TB/day and by storage and compute above. The VictoriaLogs total is dominated by gp3 at 0.8 fill; EBS st1 at $0.045 per GB-month (s) would cut its storage line by 44 % (arithmetic), and whether VictoriaLogs' merge and query pattern is acceptable on st1 was not measured.
+
+### Query cost and ingest CPU
+
+Reference tenant of 1 TB/day. Bytes and reads are scaled from the measured share of row groups and columns per query class to 32 MiB row groups and 1 GiB objects (a). CPU uses 400 MiB/s per core of compressed Parquet for both systems (a). VictoriaLogs and VictoriaTraces pay no request fees (local disk).
+
+| Query (logs, 24 h) | Bytes read | Reads | Lakehouse $ per 1,000 queries | Same query on data older than 30 days (Glacier IR) | VictoriaLogs $ per 1,000 (CPU) |
+|---|---|---|---|---|---|
+| stats by | 11.8 GB | 301 | $0.54 | $358 | $0.42 |
+| body token | 7.6 GB | 254 | $0.37 | $230 | $0.27 |
+| body token, blooms skipped (24 h / 7 d) | 52.9 / 370 GB | 281 / 1,965 | $1.98 / $13.9 | - | - |
+| 15 minutes | 0.55 GB | 19 | $0.03 | $16.8 | $0.02 |
+
+| Query (traces, 24 h) | Bytes read | Reads | Lakehouse $ per 1,000 | Glacier IR | VictoriaTraces $ per 1,000 |
+|---|---|---|---|---|---|
+| trace by id, blooms kept, whole row groups read | 0.64 GB | 92 | $0.06 | $20.2 | $0.02 |
+| trace by id, blooms kept, two-step read (id column, then matching pages; not built) | 0.05 GB | 120 | $0.05 | $2.8 | $0.00 |
+| trace by id, blooms skipped, block index intact | 1.5 GB | 7 | $0.06 | - | - |
+| trace by id, blooms skipped, external reader or rebuilt index (24 h / 7 d / 30 d window) | 17 / 120 / 514 GB | 82 / 572 / 2,452 | $0.64 / $4.47 / $19.14 | - | - |
+| stats by | 2.8 GB | 86 | $0.13 | $84 | $0.10 |
+
+Glacier IR saves $0.019 per GB-month against Standard and charges $0.03 per GB read, so data read more than about 0.6 times its size per month is cheaper in Standard. Dashboards over months of data belong in Standard. The stream and service query rows of the full model are upper bounds (whole row groups of each slice; the page index can narrow a stream inside a 32 MiB row group).
+
+| Ingest CPU, core-seconds per TB as sent | VL / VT | Lakehouse today | Lakehouse stage ladder (flush + 3 rewrites) |
+|---|---|---|---|
+| logs (real) | 14,196 (m) | 37,917 (m, a: one rewrite) | 64,246 (m) |
+| traces (`traces-pool`) | 22,354 (m) | 27,061 (m, a: one rewrite) | 33,630 (m) |
+
+At 100 TB/day the real-logs average is about 16 cores for VictoriaLogs and about 74 for the stage ladder (no headroom, a). With a global sort in the compactor (today's design), add 0.6 to 1.1 s of CPU per 500,000 rows per rewrite (m).
+
+### Where Lakehouse loses
+
+- **Ingest CPU:** about 4.5x VictoriaLogs per TB on real logs (64k against 14k core-seconds) and about 1.5x on spans (34k against 22k). Real log rows are small (14 B per row stored), so per-row costs dominate. It is small in dollars next to storage at 90 days and more, and it dominates at 30 days and small scale. The distinct-value counting in the variant writer adds to it (an upper bound).
+- **Fixed floor:** about $1.5k a month (2 writers, 1 compactor, 2 NVMe select nodes; a). At 1 TB/day for 30 days single-zone VictoriaLogs is cheaper ($1.1k against $1.5k).
+- **Hot query latency:** an S3 request has a first-byte latency of about 30 ms plus about 20 ms per MiB (s: Durner et al., PVLDB 16(11), 2023), against a local disk. VictoriaLogs and VictoriaTraces answered the comparison queries in 9 to 121 ms warm on local disk (m, best of 3). An NVMe cache and the footer cache close this only for repeated data.
+- **Request costs at small objects:** today's layout is not operable at 100 TB/day. This is why the ladder and a windowed listing matter, and the projected totals assume both.
+- **Restore latency:** Glacier Flexible Retrieval "retrieval in minutes or free bulk retrievals in 5-12 hours", Deep Archive "data retrieval from 12-48 hours" (s, `https://aws.amazon.com/s3/storage-classes/`). Deep Archive data is not queryable without a restore.
+- **Old-data scans on Glacier IR** cost $0.03 per GB read.
+- **Token-bloom selectivity:** about 1 % against about 0.1 % in VictoriaLogs (see the comparison section).
+- **Single-zone write buffer:** writers hold up to one seal interval (default 5 minutes) of rows on a single-zone volume (gp3, 99.8 to 99.9 % durability). A zone outage strands those rows until the volume returns. VL/VT HA keeps a second full copy in another zone; the Lakehouse projection is highly available for everything already in S3, not for the buffer.
+- **Trace-by-ID on stream-ordered span objects** hits every 8 to 32 MiB row group. It is cheap only with the two-step read, which is not built.
+- **The projection assumes unbuilt code:** byte row groups, the stage ladder, the streaming merge, windowed listing, conditional claims and the storage-class mover. The ordering survives every single-knob sensitivity above, but the dollar totals depend on assumptions 4, 11 and 12.
+
+### Diagram: monthly cost, logs at 10 TB/day kept 90 days
+
+Prices are sourced (2026-11-03), ratios are measured, sizing is assumed. The right-hand box is a projection.
+
+```mermaid
+flowchart LR
+    subgraph EBS["VictoriaLogs on EBS gp3"]
+        A1["1 zone: $8.3k<br/>storage $6.5k, compute $1.8k"]
+        A2["HA, 2 clusters + snapshots: $21.6k<br/>storage $12.9k, compute $3.6k<br/>snapshots $3.8k, inter-zone $1.2k"]
+    end
+    subgraph S3["Lakehouse on S3"]
+        B1["today: $11.1k<br/>storage $2.7k, compute $1.4k<br/>requests $6.4k (small objects, full listings)"]
+        B2["stage ladder + lifecycle (projection): $2.8k<br/>storage $0.6k, compute $1.4k<br/>requests $0.3k, transfer $0.6k"]
+    end
+    A1 -.->|"same data"| B2
+    A2 -.->|"like-for-like HA"| B2
+    B1 -->|"needs: stage ladder, stream order, zstd 7 and 11,<br/>blooms by distinct values, byte row groups,<br/>streaming merge, windowed listing (not built)"| B2
+```
+
 
 ## What was tried and rejected, and why
 
@@ -496,7 +999,7 @@ Identifiers have a floor. A random trace id is 16 B of entropy per distinct trac
 | Row groups of 100,000 to 1,000,000 rows | 1 to 7 % smaller | Needle reads grow 10x to 100x (0.55 MB to 28 MB for one trace id on pooled logs). Pre-sorting by a high-cardinality column to help lookups destroys time and stream pruning |
 | Trained zstd dictionaries for old data | +9 to 21 % on real log text at 256 KiB pages, +4 to 6 % at 1 MiB, about 0 at 8 MiB (table below) | The Parquet ZSTD codec is a plain zstd frame with no field naming an external dictionary. A file written with a trained dictionary cannot be read by pyarrow, DuckDB or parquet-go (table below). This breaks open Parquet |
 | `LZ4_RAW` for young data | 26 % larger than zstd 3 (3.38 MB against 2.67 MB on a 50,000-row file) | parquet-go v0.32.0 writes it but fails to read it back: "decoding page 0 of column timestamp_unix_nano: DELTA_BINARY_PACKED: invalid block size is not a multiple of 128". Lakehouse could not read its own young data |
-| Stripping blooms from older data | Saves about 5 to 8 % of bytes before distinct-value sizing, 1 to 2 % after (the second figure is modelled) | A trace-id lookup would become a scan of the `trace_id` column of every row group. Modelled for a tenant with 1 TB/day raw (about 77 GB stored at pool ratios): with blooms 1 to 2 row groups, about 0.5 to 1 MB, 1 to 3 GETs; without, about 4 GB read and at least 77 to 600 GETs (modelled, **assumed**). Body token search behaves the same way |
+| Dropping blooms from older data as a default | After sizing the filters by distinct values: 5 to 11 % fewer bytes on the old stage (measured; an earlier model on this page said 1 to 2 %) | A `trace_id` lookup becomes a read of that column in every row group of the object (1 of 24 row groups becomes 24 of 24 on `traces-pool`, 0.86 to 20.5 MB), and with the metadata rebuilt from the files or an external reader it scans every object in the window (about 17 GB per day of window at 1 TB/day, a). Body-token search behaves the same way. It stays out of the defaults; the measured trade-off is in the bloom options section |
 | Bigger dictionary page limit (2 to 4 MB) | No effect | parquet-go has no cap by default, a dictionary holds whole values and free-text bodies are mostly unique, so the limit is not what binds |
 | zstd levels above 11 (cgo libzstd) | Reference level 19 adds 5 to 12 % over 11 on text, at about 28x the CPU | Needs cgo and a static libzstd in the images. The binaries are static `CGO_ENABLED=0` builds. Levels 12 to 22 of the pure-Go codec write identical bytes to 11 |
 | Different sort per age | Not measured as a layout | The sort order should be the same in every tier so that compacted files prune exactly like flushed files |
@@ -532,7 +1035,7 @@ All of these keys exist on `main` (see [Configuration](configuration.md) for the
 
 | Knob | Default | What it trades | Measured cost and benefit |
 |---|---|---|---|
-| `insert.compression_level` | `3` | CPU on the ingest and flush path against bytes of every freshly flushed (L0) file. Valid values are 1 to 22, but only four encoders exist: 1, 2 to 5, 6 to 10, 11 to 22 | Level 7 against 3: 4 to 25 % smaller, write time -7 % to +26 % (single runs, +-15 % noise). Level 11 against 7: a further 0.5 to 8 % smaller for +23 % to +250 % write time. Level 1 and 3 write at the same speed. Reading is not slower |
+| `insert.compression_level` | `3` | CPU on the ingest and flush path against bytes of every freshly flushed (L0) file. Valid values are 1 to 22, but only four encoders exist: 1, 2 to 5, 6 to 10, 11 to 22 | Level 7 against 3: 5 to 25 % smaller, write CPU -7 % to +26 % (median +8 %, at most 1.5 s per 500,000 rows; +-15 % noise), no measurable change in the writer's sampled peak heap, no change in decode time. Level 11 against 7: a further 0.5 to 8 % smaller for +23 % to +250 % write time. Level 1 and 3 write at the same speed |
 | `compaction.compression_level_by_output_level` | `[3, 7, 11]` | The level of compacted files by output level (slot N is the file at compaction level N). Levels deeper than the last slot use the last slot. An empty list falls back to `insert.compression_level` | A rollup or L2 output at 11 spends the most CPU on data that a later rollup can rewrite. `[7]` gives a uniform level 7 for all outputs. Per-tenant override below |
 | per-tenant `compaction.compression_level_by_output_level` | inherit | Lets a cost-sensitive tenant use more CPU for bytes, or a throughput-sensitive tenant use less. See [Multi-tenancy](multi-tenancy.md) | Same per-level numbers as above |
 | `insert.row_group_size` | `10000` rows | Rows per row group in flushed files. Bigger groups give slightly better compression and a smaller footer, and make every bloom or statistics hit read more | 10,000 to 100,000 rows: -1 to -6 % size, footer 25 to 45 % smaller, needle reads about 10x more bytes (0.55 MB to 5.6 MB for one trace id on pooled logs). 2,000 rows: +11 to +21 % size |
@@ -541,7 +1044,7 @@ All of these keys exist on `main` (see [Configuration](configuration.md) for the
 | `insert.buffer_flush_interval` | `5m` | How long a row waits before its segment is sealed. A longer interval gives bigger L0 objects and a larger buffer volume; a shorter one gives more, smaller objects | Not measured here. The 71 KiB median object at low volume (s) is the symptom of too little data per interval |
 | `compaction.min_files_l0`, `min_files_l1` | `10`, `10` | How many files are merged at once, and how many rewrites a byte sees | Each rewrite re-compresses the data once (write amplification, CPU). Not measured on this page |
 | `compaction.daily_rollup_age`, `compaction.size_merge_max_age` | `24h`, `168h` | When small files in a closed hour merge, and when size merges stop for a tenant without a lifecycle rule | Not measured on this page |
-| `insert.bloom_columns`, `logs.bloom_columns`, `traces.bloom_columns` | `[service.name, trace_id]` | **These keys do not change which Parquet bloom filters the writer writes.** The writer takes its set from the schema (`LogBloomColumns` and `TraceBloomColumns`, plus promoted attributes declared with `bloom: true`). The keys feed the statistics and bloom-status API, which report the written set **plus the listed columns**, so the API can report a bloom column that no file contains (issue #869) | To add a bloom column to written files, promote the attribute with `<signal>.promoted_attributes` and `bloom: true`. A bloom column costs bytes (see the sizing section: about 15 % of today's real-logs flush file) |
+| `insert.bloom_columns`, `logs.bloom_columns`, `traces.bloom_columns` | `[service.name, trace_id]` | **These keys do not change which Parquet bloom filters the writer writes.** The writer takes its set from the schema (`LogBloomColumns` and `TraceBloomColumns`, plus promoted attributes declared with `bloom: true`). The keys feed the statistics and bloom-status API, which report the written set **plus the listed columns**, so the API can report a bloom column that no file contains (issue #869) | To add a bloom column to written files, promote the attribute with `<signal>.promoted_attributes` and `bloom: true`. A bloom column costs bytes (see the sizing section: about 15 % of today's real-logs flush file). There is no setting to shrink or skip blooms; the bloom options section documents measured variants only |
 
 Which settings keep files readable by other tools:
 
@@ -569,15 +1072,19 @@ Tracked in issues (open as of this writing; there is no commitment here to ship 
 | #340 | Footer key-value entries hold non-UTF-8 binary; Polars and DataFusion cannot open the files |
 | #565, #566 | Spark 4.0.0 read problems on DELTA_LENGTH_BYTE_ARRAY and DELTA_BINARY_PACKED columns |
 
-There is no open issue for the sort order, the default level or a streaming compaction merge. This page does not assume that any of them will change.
+There is no open issue for the sort order, the default level, the bloom placement or a streaming compaction merge. Related open issues for the request side: #301 (full-prefix listing per refresh, serial per-file cold reads, serial flush PUTs), #572 (a by-ID read of a multi-row-group span object costs 60 to 100 requests) and #421 (a `trace_id` lookup on the planned path reads the whole column; no per-row-group bloom skip). This page does not assume that any of them will change.
+
+Measured but not shipped, and not promised: the layout variants (stream order, zstd 7 and 11, blooms sized by distinct values, byte-sized row groups, 1 MiB pages, dictionary on medium columns, dynamic level choice), the bloom options, and the stage-ladder cost projection. They are measurements of what the files and the bill would look like, taken so that a decision can rest on numbers.
 
 ## Honest limits of these numbers
 
-- **One host, five datasets.** All timings are single-core wall time on a shared host, one run or the median of 2, +-15 % noise, and not comparable with CI runners. Sizes are deterministic for a given input but come from five datasets of about 500,000 rows each, one file per dataset. Production objects are cut by the flusher and look different (and at low volume are tiny).
+- **One host, five datasets.** All timings are single-core wall time (the layout-variant tables: process CPU time including garbage collection) on a shared host, one run or the median of 2, +-15 % noise, and not comparable with CI runners. Peak heap is a sampled live heap, not RSS. Sizes are deterministic for a given input but come from five datasets of about 500,000 rows each, one file per dataset. Production objects are cut by the flusher and look different (and at low volume are tiny).
 - **Real data is one corpus.** The real-log result (1.89x larger than VictoriaLogs) comes from 523,378 lines of ten Loghub systems with synthetic timestamps. Other real logs will differ. The synthetic generators have invented value distributions.
 - **Flush-writer files, not compaction output.** The level, row-group and sort tables use the flush writer. Real L1 and L2 files come from the compaction writer, which has no token blooms and, at L2, 20,000-row groups. That combination was not measured.
 - **The numbers cannot be reproduced from this repository alone.** The measurement harness (dataset generators, the sort variants, the VictoriaLogs and VictoriaTraces runs) is not part of it. The writers it exercised are part of the repository, but a reader cannot regenerate the tables from a checkout.
-- **Models are labelled.** The bloom sizing by distinct values, the compactor RAM per output size, the break-even months, the 1 TB/day lookup cost without blooms and the "about 0.5 MB" index-table size are models or assumptions, not measurements.
+- **Models are labelled.** The compactor RAM per output size, the break-even months of the higher levels, the per-tenant scaling of query reads (1 TB/day), the two-step trace read and the "about 0.5 MB" index-table size are models or assumptions, not measurements.
+- **The layout variants are not what `main` writes.** They were produced by writers that replicate the shipped flush writers (byte-identical output on today's layout, checked) with a test-only patch for the bloom sizing. The files of the variants were not re-run through the external readers (parquet-go, pyarrow, DuckDB were run for `sorting_columns` and the codec cases earlier on this page; ClickHouse, Spark, Trino, Polars and DataFusion were not run at all). The read plans for the "today" rows apply the intended read path to today's files; the shipped projected read path does not probe row-group bloom filters (issue #421).
+- **The cost section is a model.** Prices are sourced and dated 2026-11-03 and will change. Node sizes, request counts for 1,000 tenants, the lifecycle and the per-TB CPU of rewrites are assumptions; the ratios and CPU per TB are measured on one real and four synthetic datasets. The stage-ladder columns are projections that assume code that does not exist (stage ladder, byte row groups, streaming merge, windowed listing, conditional claims, storage-class mover). Lakehouse today at 100 TB/day is modelled and not operable as configured. Infrastructure only: no people, support or egress to users.
 - **Raw denominators differ between tables.** The sort tables use the harness raw size; the comparison and ratio tables use the as-sent size. Compare only within one table.
 - **Other tools were not all run.** Only parquet-go, pyarrow and DuckDB were run for the codec and dictionary tests. ClickHouse, Spark, Trino, Polars and DataFusion were not.
 - **Other pages report different compression ratios.** The README line "Level 11+ buys <2% better ratio at 5x CPU cost - never recommended", the 11 to 22 range in [ZSTD Compression Benchmark](zstd-compression-benchmark.md), the 6.1x and 9.4x figures in [Cost estimates](cost-estimates.md) and the -0.15 % in the compaction schedule note come from other corpora and baselines. This page's measurements show a wider spread (level 11 saves up to 8 % over level 7 on sorted real text; levels above 11 do not exist in the pure-Go codec). Those pages have not been updated (issue #870).
