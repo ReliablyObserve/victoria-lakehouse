@@ -143,9 +143,11 @@ holds it to a `-timeout`:
   when a test ran in no shard or in two. Placement is a hash of the test name,
   except where a weights file lists the slow tests: for
   `lakehouse-traces/internal/storage/parquets3` (6 shards of the `-short` run,
-  3 of the heavy run) `scripts/ci/shard_weights/*.json` gives the measured cost
+  3 of the heavy run) and `internal/storage/parquets3` (4 shards of the `-short`
+  run) `scripts/ci/shard_weights/*.json` gives the measured cost
   of each slow test, so the shards carry equal time rather than equal counts (3
-  count-balanced shards ran 321-480 s of a 480 s budget). A test missing from
+  count-balanced shards ran 321-480 s of a 480 s budget; 3 hash-placed logs
+  shards ran 190-450 s, shard 1 at 1.2-1.5x the others). A test missing from
   the file still runs, at the default cost; a stale file costs balance, not
   coverage. Target: every shard below about 60% of its budget. When a shard
   warns, regenerate the file from fresh `go test -race -json` output

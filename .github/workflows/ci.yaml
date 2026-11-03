@@ -291,12 +291,14 @@ jobs:
       # Two invocations, because -short must reach only parquets3 (other
       # packages gate their own stress/memleak tests on it):
       #   * every other package: -timeout=10m, unchanged.
-      #   * parquets3 (-short): run as 3 deterministic shards (hash of the
-      #     top-level test name, scripts/ci/shard_tests.py), each its own
-      #     `go test -timeout=8m` and its own gotest_report.py headroom gate
-      #     (warn 70% / fail 90% of 480s). Unsharded it took 345-480s on a
-      #     2-core runner (72-99% of the 8m budget, ~120s spread on identical
-      #     code), so the gate failed at random; each shard is ~1/3 of that.
+      #   * parquets3 (-short): run as deterministic shards (scripts/ci/shard_tests.py),
+      #     each its own `go test -timeout=8m` and its own gotest_report.py
+      #     headroom gate (warn 70% / fail 90% of 480s). Unsharded it took
+      #     345-480s on a 2-core runner (72-99% of the 8m budget, ~120s spread
+      #     on identical code), so the gate failed at random. Logs: 4 shards
+      #     balanced by measured cost (scripts/ci/shard_weights/logs-parquets3.json):
+      #     with 3 hash-placed shards, shard 1 was 1.2-1.5x the others (236-450s)
+      #     and reached 90%+ of the budget in 8 of 52 runs (#873).
       #     The traces package has a long tail of slow tests (the slowest ten
       #     are ~30% of the -race time), so its shards are not hash-placed:
       #     6 shards balanced by measured cost (scripts/ci/shard_weights/),
@@ -321,7 +323,8 @@ jobs:
           # -deleteAuthKey, peer-key wiring, ...). Previously only the config-surface golden ran.
           go test ./cmd/... -race -count=1 -timeout=10m -json | tee test-logs-cmd.json |
             python3 scripts/ci/gotest_report.py --budget-seconds 600 --title "logs: cmd"
-          scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 3 "logs: parquets3" 480 test-logs-parquets3
+          SHARD_WEIGHTS=scripts/ci/shard_weights/logs-parquets3.json \
+            scripts/ci/sharded_go_test.sh race ./internal/storage/parquets3/ 4 "logs: parquets3" 480 test-logs-parquets3
 
       - name: Coverage check (logs)
         run: |
@@ -330,7 +333,7 @@ jobs:
           # Required: parquets3 must be measured, so the gate cannot silently stop seeing it.
           scripts/ci/check_coverage.sh -t 90 -x testutil -x 'testutil/*' -r storage/parquets3 < <({ go test $(go list ./internal/... | grep -v -e '/internal/storage/parquets3$' -e '/internal/compaction$') -cover -count=1 -timeout=10m
                      SHARD_SHORT=0 scripts/ci/sharded_go_test.sh cover ./internal/compaction/ 5 600
-                     scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | awk '/coverage:/ { print; next } /^[ \t]*(FAIL|--- FAIL|panic:|::error::)/ { print > "/dev/stderr" }')
+                     SHARD_WEIGHTS=scripts/ci/shard_weights/logs-parquets3.json scripts/ci/sharded_go_test.sh cover ./internal/storage/parquets3/ 3; } 2>&1 | awk '/coverage:/ { print; next } /^[ \t]*(FAIL|--- FAIL|panic:|::error::)/ { print > "/dev/stderr" }')
 
       - name: Vet logs module
         run: go vet ./internal/... ./cmd/...
