@@ -98,15 +98,14 @@ func TestGoneObject_ManifestAnswersOnlyWhenExact(t *testing.T) {
 	})
 }
 
-// checkCountFromManifestWithRemovedObject is the one case in which a removed
-// object is tolerated, through RunQuery: a timestamp-only count over objects whose
-// rows the manifest knows is exact although one object was removed (the manifest
-// answers, no read), and fails with 502 as soon as the window cuts the removed
-// object (its rows inside the window are unknown). In the first case the gone key
-// is not requested at all. Run by
-// TestRowRead_RemovedObject_ManifestExactCountOrFails502.
-func checkCountFromManifestWithRemovedObject(t *testing.T) {
-	fx := newRCFixture(t, 4, rcKeyFmt)
+// rcManifestKnownFixture is the fixture of the two removed-object tests below: every
+// object has its row count and exact bounds in the manifest, one object (the second)
+// is removed from the bucket, and the requests for its key are counted. run counts
+// the rows of a timestamp-only query (what a count or a `_time` bucketing reads)
+// over a window.
+func rcManifestKnownFixture(t *testing.T) (fx *rcFixture, goneGets *atomic.Int64, run func(start, end int64) (int, error)) {
+	t.Helper()
+	fx = newRCFixture(t, 4, rcKeyFmt)
 	for i, key := range fx.keys {
 		fi := manifest.FileInfo{Key: key, Size: int64(len(fx.datas[i])), RowCount: rcRowsPerFile,
 			MinTimeNs: fx.now.Add(-time.Minute).UnixNano(), MaxTimeNs: fx.now.Add(time.Minute).UnixNano()}
@@ -114,30 +113,18 @@ func checkCountFromManifestWithRemovedObject(t *testing.T) {
 		fx.s.manifest.AddFile(fx.partitionOf(key), fi)
 	}
 	fx.removeObject(fx.keys[1])
-	var goneGets atomic.Int64 // requests for the gone key
+	goneGets = new(atomic.Int64) // requests for the gone key
 	fx.fs.setFault(fx.keys[1], func(w http.ResponseWriter, r *http.Request) {
 		goneGets.Add(1)
 		fx.fs.mock.handler(w, r)
 	})
-	run := func(start, end int64) (int, error) {
+	run = func(start, end int64) (int, error) {
 		q := mustParseQueryWithTime(t, "* | stats count() n", start, end)
 		rows := 0
 		err := fx.s.RunQuery(storage.WithTimestampOnlyHint(context.Background()), nil, q, func(_ uint, db *logstorage.DataBlock) { rows += db.RowsCount() })
 		return rows, err
 	}
-
-	rows, err := run(fx.start, fx.end) // the window holds every object
-	if err != nil || rows != rcFiles*rcRowsPerFile {
-		t.Fatalf("count over a window that holds the removed object: %d rows, err %v; want %d rows and no error", rows, err, rcFiles*rcRowsPerFile)
-	}
-	if n := goneGets.Load(); n != 0 {
-		t.Fatalf("the manifest-answered count requested the gone key %d times, want 0", n)
-	}
-	_, err = run(fx.now.UnixNano(), fx.end) // the window cuts every object
-	goneReadError(t, err, fx.keys[1])
-	if goneGets.Load() == 0 {
-		t.Fatal("the cut window never requested the gone key: the 502 did not come from reading it")
-	}
+	return fx, goneGets, run
 }
 
 // The other signal is unaffected: an object of the traces signal that was removed
