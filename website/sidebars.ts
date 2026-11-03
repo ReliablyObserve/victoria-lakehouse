@@ -79,6 +79,7 @@ const sidebars: SidebarsConfig = {
         'benchmarks',
         'benchmarks/full-scope-s3',
         'zstd-compression-benchmark',
+        'storage-efficiency',
         'petabyte-scale-audit',
         'parity-and-gaps',
         'ingest-parity',

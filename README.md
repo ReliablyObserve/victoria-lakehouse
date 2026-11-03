@@ -969,6 +969,7 @@ See [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) for full re
 - [Benchmarks](docs/benchmarks.md) — how to run `cmd/loadtest` + `cmd/datagen` and interpret results
 - [Full-Scope S3 Benchmark](docs/benchmarks/full-scope-s3.md) — cold LH vs hot VL vs ClickHouse-over-S3, every query class
 - [ZSTD Compression Benchmark](docs/zstd-compression-benchmark.md) — real-data compression levels, write/read performance, S3 cost impact
+- [Storage Efficiency](docs/storage-efficiency.md) — how files are written and compressed today, measured effect of sort order, row groups, zstd levels and blooms, size against VictoriaLogs/VictoriaTraces, and the tuning knobs
 - [VL Comparison](docs/vl-comparison.md) — measured head-to-head vs VictoriaLogs with correctness validation
 - [Measurements](docs/measurements/soak-and-bench-2026-06-05.md) — raw soak + perf-bench records ([corrected rerun](docs/measurements/perf-bench-corrected-2026-06-05.md), [pprof negative control](docs/measurements/pprof-goalb-negcontrol.md), CSVs alongside)
 - [Cost Estimates](docs/cost-estimates.md) — HA cost model from 0.1 to 500 TB/day across Lakehouse, VL/VT, ClickHouse, Loki/Tempo and OpenSearch, with reproducible scripts
