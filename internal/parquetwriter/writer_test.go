@@ -206,7 +206,7 @@ func TestFooterEntriesPerSignal(t *testing.T) {
 	o := Options{RowGroupSize: testRG, CompressionLevel: 3}
 
 	logs := describe(t, mustLogs(t, testLogRows(350), o))
-	if n := countPrefix(logs, TokenBloomKeyPrefix); n != 4 {
+	if n := countPrefix(logs, BodyBloomEntryPrefix); n != 4 {
 		t.Errorf("logs: %d token blooms for 4 row groups, want 4; keys %v", n, logs.KeyNames())
 	}
 	if _, ok := logs.KeyValues["_trace_idx"]; ok {
@@ -218,7 +218,7 @@ func TestFooterEntriesPerSignal(t *testing.T) {
 	if _, ok := spans.KeyValues["_trace_idx"]; !ok {
 		t.Errorf("traces: no _trace_idx; keys %v", spans.KeyNames())
 	}
-	if n := countPrefix(spans, TokenBloomKeyPrefix); n != 4 {
+	if n := countPrefix(spans, BodyBloomEntryPrefix); n != 4 {
 		t.Errorf("traces with span bodies: %d token blooms, want 4; keys %v", n, spans.KeyNames())
 	}
 	if res.TraceIndex == nil || res.TraceIndex.Listed != 88 { // 350 spans / 4 per trace = 88 traces

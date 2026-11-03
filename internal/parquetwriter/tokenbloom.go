@@ -168,10 +168,10 @@ func BuildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []
 	return key, data
 }
 
-// TokenBloomKeyPrefix starts the name of every row group's body token bloom in
+// BodyBloomEntryPrefix starts the name of every row group's body token bloom in
 // the Parquet footer key-value metadata.
-const TokenBloomKeyPrefix = "_bloom_body_rg_"
+const BodyBloomEntryPrefix = "_bloom_body_rg_"
 
 // TokenBloomKey is the footer key-value name of row group rgIndex's body token
 // bloom. The writer and the read-side skip check both build the name here.
-func TokenBloomKey(rgIndex int) string { return fmt.Sprintf("%s%d", TokenBloomKeyPrefix, rgIndex) }
+func TokenBloomKey(rgIndex int) string { return fmt.Sprintf("%s%d", BodyBloomEntryPrefix, rgIndex) }

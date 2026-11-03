@@ -172,7 +172,7 @@ func TestFlushedAndCompactedLogsHaveTheSameStructure(t *testing.T) {
 			compacted := compactObjects(t, config.ModeLogs, [][]byte{fa.Data, fb.Data}, rg)
 
 			s := structureOf(t, compacted)
-			if got := countKeys(s, parquetwriter.TokenBloomKeyPrefix); got != 3 {
+			if got := countKeys(s, parquetwriter.BodyBloomEntryPrefix); got != 3 {
 				t.Fatalf("compacted logs object has %d body token blooms, want one per row group (3); footer keys %v", got, s.KeyNames())
 			}
 			requireSameStructure(t, flushed.Data, compacted)
