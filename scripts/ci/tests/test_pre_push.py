@@ -255,6 +255,12 @@ class GoPlanning(unittest.TestCase):
         self.assertEqual(pp.failure_line("nothing special\nlast", 1), "last")
         self.assertEqual(pp.failure_line("", 7), "exit 7")
 
+    def test_failure_line_tiers_skip_expected_error_output_of_passing_tests(self):
+        out = ("::error::proof-comment: HTTP 500\n.....\nFAIL: test_x (mod.Class.test_x)\nTraceback\nAssertionError: boom\n")
+        self.assertEqual(pp.failure_line(out, 1), "FAIL: test_x (mod.Class.test_x)")
+        self.assertEqual(pp.failure_line("ok pkg 0.1s\n--- FAIL: TestX (0.00s)\nFAIL\n", 1), "--- FAIL: TestX (0.00s)")
+        self.assertEqual(pp.failure_line("# pkg\ninternal/a/a.go:12:3: undefined: Foo\n", 1), "internal/a/a.go:12:3: undefined: Foo")
+
 
 def go_tree(root, *dirs):
     for d in dirs:
@@ -830,7 +836,7 @@ class MainEntry(unittest.TestCase):
     def test_failing_step_exits_one_and_shows_its_output(self):
         rc, text = self.run_main([], fail="check_changelog_pr.py")
         self.assertEqual(rc, 1)
-        self.assertIn("RESULT: FAIL - 1 failed", text)
+        self.assertRegex(text, r"RESULT: FAIL( \(\d+ not verified\))? - 1 failed")
         self.assertIn("changelog-gate", text)
         self.assertIn("it failed", text)
 
@@ -1243,10 +1249,10 @@ class CiJobMapDrift(unittest.TestCase):
 
     def test_every_pre_push_step_that_mirrors_ci_is_in_the_map(self):
         mirrored = {n for spec in pp.CI_JOBS.values() for n in spec["local"]}
-        local_only = {"fetch-base", "contains-main", "commits-signed", "no-ai-attribution", "registry-gate", "go test (logs)"}
+        local_only = {"fetch-base", "contains-main", "commits-signed", "no-ai-attribution", "registry-gate"}  # owner rules, other workflows
         for s in pp.build_steps():
             if s.name not in mirrored:
-                self.assertIn(s.name, local_only | {"registry-gate"}, f"{s.name} mirrors no CI job in CI_JOBS")
+                self.assertIn(s.name, local_only, f"{s.name} mirrors no CI job in CI_JOBS")
 
 
 class GateAndSelftestSteps(unittest.TestCase):

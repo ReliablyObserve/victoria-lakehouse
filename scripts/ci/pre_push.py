@@ -236,8 +236,14 @@ ATTRIBUTION_RE = re.compile(
 )
 IDENT_RE = re.compile(r"(?i)claude|anthropic")
 # The line of a failing command's output that says what failed (actionlint ends with a "| ^" marker, go test with
-# a bare "FAIL"): the first line that looks like an error, else the last line.
-ERROR_LINE_RE = re.compile(r"(?i)(\berror\b|\bfail(ed|ure)?\b|panic:|:\d+:\d+:|undefined|cannot |not found|required on|mismatch)")
+# a bare "FAIL"). Tried in order, the first line of the first tier that matches wins, else the last line: a test
+# runner's own failure marker, then a file:line:col diagnostic, then any line that looks like an error. Tiers keep a
+# passing test's expected "::error::" output from being shown as the cause.
+ERROR_LINE_TIERS = (
+    re.compile(r"^(FAIL|ERROR|FAILED)\b[:\s]|^--- FAIL|^panic:|^E\s{3}"),
+    re.compile(r"^\S[^\s:]*:\d+(:\d+)?: "),
+    re.compile(r"(?i)(\berror\b|\bfail(ed|ure)?\b|undefined|cannot |not found|required on|mismatch)"),
+)
 
 
 # ------------------------------------------------------------------------------------------ data types
@@ -542,9 +548,10 @@ def tail(text: str, n: int = 12) -> str:
 def failure_line(out: str, rc: int) -> str:
     """The first line of the output that looks like the error, else the last line (actionlint ends with `| ^`)."""
     lines = [ln for ln in out.strip().splitlines() if ln.strip()]
-    for ln in lines:
-        if ERROR_LINE_RE.search(ln):
-            return ln.strip()
+    for tier in ERROR_LINE_TIERS:
+        for ln in lines:
+            if tier.search(ln):
+                return ln.strip()
     return lines[-1].strip() if lines else f"exit {rc}"
 
 
