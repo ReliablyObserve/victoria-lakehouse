@@ -56,7 +56,7 @@ This is LH's strongest dimension. Counting rules (applied identically to every s
 | Spark | ✅ `spark.read.parquet` on s3a, every check equal to the truth | **CI-proven** |
 | ClickHouse | 🟡 S3 table engine; an equality filter on any bloom column fails on files whose bloom filter is not a power-of-two size while bloom push down is on (#341) | **CI-proven, open issue** |
 | Trino | 🟡 Hive connector; tenant IDs of 2^31 and above read negative (#342) | **CI-proven, open issue** |
-| Polars | 🔴 refuses every traces file, every raw logs file and the compacted logs files that carry a body token bloom: footer metadata is not UTF-8 (#340); only some compacted logs files read | **CI-observed, not counted as verified** |
+| Polars | 🔴 refuses every traces file and every logs file, raw or compacted: footer metadata is not UTF-8 (#340); no Lakehouse file reads until #340 lands | **CI-observed, not counted as verified** |
 | Athena | 🟡 Trino SQL dialect; documented, not run | **claimed** |
 
 **Count: 5 verified / 1 partial / 1 claimed.**
