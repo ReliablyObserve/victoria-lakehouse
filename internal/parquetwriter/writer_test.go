@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -252,31 +253,35 @@ func TestTokenBloomKeysFollowRowGroupIndex(t *testing.T) {
 // non-test files. A resolver or any other setting a caller wants to change goes
 // through Options, so a second caller can never be affected by the first.
 func TestPackageHasNoGlobalState(t *testing.T) {
-	fset := token.NewFileSet()
-	files, err := parser.ParseDir(fset, ".", nil, 0)
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, pkg := range files {
-		if strings.HasSuffix(name, "_test") {
+	checked := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		for fname, f := range pkg.Files {
-			if strings.HasSuffix(fname, "_test.go") {
+		f, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		checked++
+		for _, d := range f.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
 				continue
 			}
-			for _, d := range f.Decls {
-				gd, ok := d.(*ast.GenDecl)
-				if !ok || gd.Tok != token.VAR {
-					continue
-				}
-				for _, spec := range gd.Specs {
-					for _, n := range spec.(*ast.ValueSpec).Names {
-						t.Errorf("%s: package-level var %q: pass it through Options", fname, n.Name)
-					}
+			for _, spec := range gd.Specs {
+				for _, n := range spec.(*ast.ValueSpec).Names {
+					t.Errorf("%s: package-level var %q: pass it through Options", name, n.Name)
 				}
 			}
 		}
+	}
+	if checked < 2 {
+		t.Fatalf("checked %d source files, want the package's files", checked)
 	}
 }
 
