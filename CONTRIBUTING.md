@@ -36,63 +36,92 @@ cd lakehouse-traces && go run . --lakehouse.s3.bucket=obs-archive --lakehouse.s3
 
 1. **Fork** the repository and create a feature branch from `main`
 2. **Write tests first** — we follow TDD practices
-3. **Run the full test suite** before submitting: `go test -race ./...`, and `make pre-push` before every push
+3. **Run the full test suite** before submitting: `go test -race ./...`, and `make pre-push` (a preview of the fast CI tier, not a replacement) before every push
 4. **Run linters**: `golangci-lint run ./...`
 5. **Open a pull request** against `main`
 
 ### Before you push: `make pre-push`
 
-`make pre-push` runs the scoped fast tier of CI locally, so a red head is caught before it costs a CI cycle.
-It calls the tools and scripts CI calls (it re-implements none of them) and prints one table, one row per
-step, with PASS, FAIL or SKIPPED(reason) and the duration. It exits non-zero when any step FAILs.
+`make pre-push` is a **preview** of the fast, always-run tier of CI, so a red head is caught before it costs a CI
+cycle. It calls the same tools and scripts the CI jobs call and re-implements none of them, but it is not CI: it
+picks the Go test packages from the diff, runs without `-race` unless asked, does not shard, and cannot run the
+jobs that need a Docker stack. Every row says what it covered, the headline says `PASS (N not verified)` when rows
+were skipped or ran only in part, and the summary lists every always-run CI job it did not run. A green preview is
+no promise that CI is green.
 
 ```bash
-make pre-push                # what the diff against origin/main touches
-make pre-push SCOPE=all      # every step, whatever the diff
-make pre-push RACE=1         # adds -race to the focused go test
+make pre-push                       # what the diff against origin/main touches
+make pre-push PREPUSH_SCOPE=all     # every step, whatever the diff (the plain lint is never filtered to new findings; still not CI)
+make pre-push RACE=1                # adds -race to go test
 ```
 
-| Step | Runs when the diff touches | What it calls |
-|---|---|---|
-| `fetch-base`, `scope` | always | `git fetch origin main`; `scripts/ci/pr_classify.py --ci-scope` against the merge base |
-| `contains-main`, `commits-signed`, `no-ai-attribution` | always | merge-base equals `origin/main`; every commit shows `G`; no `Co-Authored-By` trailer or AI attribution |
-| `registry-gate` | always | `scripts/ci/gate_local.sh` (`make registry-gate`) |
-| `changelog-gate` | always | `scripts/ci/check_changelog_pr.py` and `scripts/ci/changelog_fragments.py check` |
-| `ci-script-tests` | `.github/`, `scripts/ci/`, Makefile, Dockerfiles, compose files, charts, `go.mod`/`go.sum`, requirements | the static tests (workflow permissions, action and tool pins, image digests, Dependabot coverage, proof comment; about 30 s) plus the tests named after a changed `scripts/ci` file; `SCOPE=all` runs the full `unittest discover` of `scripts/ci/tests` (about 400 s, measured) and the registry gate self-tests of `conformance.yaml` (`test_check_registry_touch.sh`, `test_gate_workflow_emulation.sh`; 156 s on CI) |
-| `actionlint`, `zizmor` | `.github/` | the workflow-lint commands (skipped with a notice when not installed) |
-| `harness-tests` | `scripts/bench/ab/`, `scripts/proof/` | `pytest scripts/bench/ab/tests scripts/proof/tests` |
-| `chart-tests` | `charts/` | `helm lint --strict`, `test_images.sh`, `test_templates.sh` |
-| `deps`, `conformance-check` | registry, docs, tests, fragments or product files | `make deps-*`, `make conformance-check` (confgen `-check`, generated-docs drift, Go conformance tests) |
-| `golangci-lint`, `go vet`, `go test` (logs, traces) | Go files of that module; `go.mod`, `go.sum`, `patches/` or `.golangci.yml` make lint and vet module-wide | `golangci-lint run --new-from-rev=origin/main`, `go vet` and `go test -short -count=1` on the touched packages, `GOWORK=off`, `GOMEMLIMIT=4GiB` |
+What each step runs, and the CI job and workflow line it mirrors (line numbers are as of the commit that last edited
+this table; `test_pre_push.py` checks the job and step names against the workflows, not the numbers):
 
-At the end it prints the 11 parts of the PR evidence pack as a checklist (the PR body is not parsed).
+| Step | Runs when the diff touches | What it calls | CI job: workflow line | Differs from CI |
+|---|---|---|---|---|
+| `fetch-base`, `scope` | always | `git fetch origin main`; `pr_classify.py --ci-scope` against the merge base | `scope`: ci.yaml:36 | informational only: no Go step is skipped on `skip_go`; a changed classifier runs the copy of this branch, CI the base's |
+| `contains-main`, `commits-signed`, `no-ai-attribution` | always | merge-base equals `origin/main`; every commit shows `G`; no co-author trailer or AI attribution | none: owner rules | local-only checks |
+| `registry-gate` | always | `scripts/ci/gate_local.sh` | `registry-gate.yaml` (judges with the base branch's gate code) | reads HEAD, not the working tree; when the branch changes the gate the row is marked a preview (CI judges with the base's copy) |
+| `changelog-gate` | always | `check_changelog_pr.py`, `changelog_fragments.py check` | `changelog-check`: changelog-pr.yaml:28 | `PR_AUTHOR_LOGIN`, `PR_HEAD_REPO` and `PR_BASE_REPO` are unset locally, so the release-metadata approver and Dependabot paths are not judged as in CI (the row says so) |
+| `ci-script-tests` | `.github/`, `scripts/ci/`, Makefile, Dockerfiles, compose files, charts, `go.mod`/`go.sum`, requirements | the static tests plus the tests named after a changed `scripts/ci` file; `PREPUSH_SCOPE=all` runs the full `unittest discover` (about 400 s) | `changelog-tests`: changelog-pr.yaml:50 | CI discovers every test on every pull request; marked partial unless `PREPUSH_SCOPE=all` |
+| `registry-gate-selftests` | `PREPUSH_SCOPE=all`; reported NOT VERIFIED when the diff touches `changelog.d/`, the registry or `docs/features.md` | `test_check_registry_touch.sh`, `test_gate_workflow_emulation.sh`, `test_pr_classify_toolchain.py` (about 8 min) | `conformance-inventory`: conformance.yaml:54-58 | not run by default: they clone the real repository |
+| `lint-logs-selftests` | `patches/`; `PREPUSH_SCOPE=all` adds the four other self-tests | `check_patches_equal_test.sh` and `check_patches_equal.sh` against a pristine clone of the logs-pin VictoriaLogs tag (cached under `~/.cache/lakehouse-pre-push`) | `lint-logs`: ci.yaml:584-616 | needs the network once for the clone; NOT VERIFIED offline without a cache |
+| `actionlint`, `zizmor` | `.github/` | the workflow-lint commands | `workflow-lint`: workflow-lint.yaml:38, :51 | zizmor's online audits run only with `GH_TOKEN`; the row is marked partial without it |
+| `harness-tests` | `scripts/bench/ab/`, `scripts/proof/`, `deployment/docker/proof/`, the proof compose file, `tests/parity/testdata/tiecut_golden.json` | `pyflakes scripts/proof`; `pytest scripts/bench/ab/tests` (pr-proof.yaml:457); `pytest scripts/proof/tests` with the five `--cov` options and `--cov-fail-under=90`; `scripts.proof.metrics ... --check`; the fixture generator in a copy of HEAD | `proof-metrics`: proof-metrics.yaml:42-57 | `docker compose config` is not run (no Docker); a private `TMPDIR` and `AB_PROJECT` keep it off the lock and ports of a running proof or A/B stack |
+| `chart-tests` | `charts/` | `helm lint --strict`, `test_images.sh`, `test_templates.sh`, `test_release_image_tags.py` | `helm`: ci.yaml:857-870 | none known |
+| `deps`, `conformance-check` | always | `make deps-*`, `make conformance-check` (about 12-14 s) | `conformance-inventory`: conformance.yaml:50 | none known |
+| `golangci-lint (logs)`, `golangci-lint (traces)` | a Go file, an embedded asset under a package, or `go.mod`, `go.sum`, `patches/`, `.golangci.yml`; a logs-module change lints both modules | whole packages as CI: `./internal/... ./cmd/...`, traces `./...`; the tagged `tests/` runs with findings new since the merge base | `lint-logs`: ci.yaml:633, :640, :651; `lint-traces`: ci.yaml:676, :691 | the linter is the local binary (the row notes a version mismatch with `GOLANGCI_LINT_VERSION`) |
+| `go vet (logs)`, `go vet (traces)` | as above | `gofmt -s -l` and `go vet` of the whole module (`./internal/... ./cmd/...`; traces `./...`) | `test-logs`: ci.yaml:283, :335; `test-traces`: ci.yaml:356, :392 | none known |
+| `go build (logs)`, `go build (traces)` | as above | `go build` of the whole module | `build-logs`: ci.yaml:717; `build-traces`: ci.yaml:749 | the host platform only (CI builds linux and darwin, amd64 and arm64); the row is marked partial |
+| `go test (logs)`, `go test (traces)` | a changed Go package (any Go change also runs the three source-scanning packages of `GO_SOURCE_READERS`); a non-Go file under a package; a file a Go test reads (`GO_TEST_READERS` in `pre_push.py`: `docs/` -> `internal/config`, `internal/delete`; `alerts/`, `dashboards/` -> `internal/metrics`; `charts/` -> the compaction PDB test; `deployment/`, `README.md` -> `internal/config`; `benchmarks/` -> `cmd/bench`) | `go test -count=1 -p 2 -timeout=10m` on those packages, `-short` only for `parquets3` as CI; the module-wide inputs and unmapped paths are NOT VERIFIED | `test-logs`: ci.yaml:311; `test-traces`: ci.yaml:366 | marked partial in every mode: no `-race` unless `RACE=1`, no sharding, no 90% coverage gate; in diff mode also only the picked packages, and the packages that import a changed one are named as not tested (the row is NOT VERIFIED when nothing else ran) |
+
+`PREPUSH_SCOPE=all` runs every step: the full discovery, the self-tests, `go test` of every package of both modules
+(`-short` for `parquets3` only) and no `--new-from-rev` on the plain lint. It is still a preview: no coverage gate, no sharding,
+no `-race` unless asked, host-only build. At the end the tool prints the 11 parts
+of the PR evidence pack as a checklist (the PR body is not parsed).
 
 Notes:
 
 - The scope is the committed diff `merge-base(origin/main, HEAD)..HEAD`, what a push publishes. The gates read `HEAD`;
-  the lint and test steps read the working tree, so uncommitted edits are reported in the `scope` row.
-- A step skipped because a tool is missing is listed under `NOT VERIFIED locally`: CI still runs it. For the Python
-  harness tests, make a venv once: `python3 -m venv ~/.cache/lakehouse-pre-push-venv` and
+  vet, lint and test read the working tree, so uncommitted tracked changes and untracked files are reported in the `scope` row.
+- Required Go jobs run on every pull request in CI, so none of these steps is skipped on the classifier's `skip_go`. A
+  Go step is reported SKIPPED only when no changed path can change its result, and the summary still lists that CI job.
+- A step skipped because a tool or input is missing is listed under `NOT VERIFIED locally`: CI still runs it. For the
+  Python checks, make a venv once: `python3 -m venv ~/.cache/lakehouse-pre-push-venv` and
   `~/.cache/lakehouse-pre-push-venv/bin/pip install --require-hashes -r scripts/ci/requirements.txt -r scripts/proof/requirements.txt` (what the PR proof job installs),
   then `PRE_PUSH_PYTHON=~/.cache/lakehouse-pre-push-venv/bin/python make pre-push`. `GOLANGCI_LINT=<path>` selects a
-  linter binary (CI pins `GOLANGCI_LINT_VERSION` in `ci.yaml`; the row notes a version mismatch). zizmor is looked up on `PATH` and next to `PRE_PUSH_PYTHON`:
+  linter binary (a linter built with an older Go than `go.mod` targets cannot load the config: the row is then NOT VERIFIED
+  with a hint, install the pinned `GOLANGCI_LINT_VERSION` built with the repository's Go version). zizmor is looked up on `PATH` and next to `PRE_PUSH_PYTHON`:
   install it into that venv with `pip install --require-hashes --only-binary=:all: -r .github/workflow-lint-requirements.txt`
-  (the pinned file CI uses); set `GH_TOKEN` for its online audits. `PRE_PUSH_OFFLINE=1` skips the fetch (the verdict may then be against a stale base).
-- `go test` cannot pick packages for a module-wide input (`go.mod`, `go.sum`, `patches/`, `.golangci.yml`): that row is
-  SKIPPED and listed as NOT VERIFIED; run `make pre-push SCOPE=all`.
-- `SCOPE=all` took 15.1 min on a laptop (measured: 904 s wall, golangci-lint 6-11 s, `go test -short` 2.8 min for the logs
-  module and 1.8 min for the traces module, the `scripts/ci` tests and gate self-tests 8.7 min), and the `-short` runs of the
-  `parquets3` packages fit the 10 min `-timeout` without CI's sharding on that machine. Use it before a large change, not before every push.
+  (the pinned file CI uses); set `GH_TOKEN` for its online audits. `PRE_PUSH_OFFLINE=1` skips the fetch (the verdict may then be against a stale base). `PRE_PUSH_CACHE=<dir>` moves the
+  cache of the pristine logs-pin clone (default `~/.cache/lakehouse-pre-push`).
 - `make deps-*` only checks that the dependency trees exist: after a change to `patches/` or a pin, refresh them as the
   Makefile does (a stale tree fails the Go steps).
 - The full output of each step is kept in `<git dir>/pre-push-logs/` (overwritten by every run; the table shows the first
-  line of a failure and the failing step's last lines are printed under it). Run directly, `python3 scripts/ci/pre_push.py`
-  exits 1 when a step FAILs and 2 on a usage error; through `make` any failure is reported as `Error 2`.
+  error line of a failure and the failing step's last lines are printed under it). Run directly, `python3 scripts/ci/pre_push.py`
+  exits 1 when a step FAILs and 2 on a usage error; through `make` a failure prints `Error 1` and `make` exits 2.
+- The variable is `PREPUSH_SCOPE`, not `SCOPE`, so an exported `SCOPE` in your shell cannot switch it.
+- Time (measured on one laptop, single runs, so indicative only): a diff that changes only `docs/` took 29 s, a
+  comment-only edit of one Go file (every Go step passing) 45 s, and `PREPUSH_SCOPE=all` 19.0 min, which overlapped a
+  2-minute unit-test run of another job (the `scripts/ci` discovery 3.7 min, the registry gate self-tests 7.1 min, the proof
+  harness 1.1 min, `go test` of the logs module 3.4 min and of the traces module 2.6 min without `-race`, the rest under 1 min).
+  Use `PREPUSH_SCOPE=all` before a large change, not before every push.
 - The tests of a changed `scripts/ci` file are chosen by name (`foo.py` selects `test_foo*.py`), so a test of a script that
-  only imports the changed one is not selected; `SCOPE=all` runs them all.
-- What it cannot catch: jobs that need a Docker stack (e2e, parity, PR proof, parquet-readers), flaky tests, `-race`
-  runs of packages it did not select, tests of packages that merely depend on the touched ones, code scanning and
-  `github-code-quality` review threads, the independent review, and the PR body itself.
+  only imports the changed one is not selected; `PREPUSH_SCOPE=all` runs them all.
+
+What it **cannot catch** (CI will):
+
+- Jobs that need a Docker stack or a service: `e2e`, `parity`, PR proof and its A/B, visual and quality comments, `parquet-readers`,
+  `s3-compat`, `docker-logs`/`docker-traces`, `helm-config-drift`, `bench-selftest`, the benchmarks, the perf cells.
+- Flaky tests and retries, Linux-only failures (this runs on your OS and architecture), `-race` runs it did not select
+  (it never adds `-race` by itself), the sharding and time-budget gates, and the 90% coverage gate.
+- Tests of packages that import a touched package (they are named in the row as not tested, not run), the
+  release-metadata and Dependabot paths of the changelog gate (`PR_AUTHOR_LOGIN` and friends are unset locally), and tests that scan the Go sources of packages other than
+  `internal/upstreamreuse`, `internal/metrics` and `internal/schema` (which run on every Go change, `GO_SOURCE_READERS`):
+  they run only when their own package or a file listed in `GO_TEST_READERS` changed.
+- Code scanning (CodeQL, Semgrep, govulncheck, Trivy), dependency review, `github-code-quality` review threads, the
+  independent review, and the PR body itself.
 
 ### Test time budget
 

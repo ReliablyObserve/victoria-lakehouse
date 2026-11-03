@@ -184,15 +184,17 @@ GATE_BASE ?= origin/main
 registry-gate:
 	bash scripts/ci/gate_local.sh $(GATE_BASE)
 
-# The scoped fast tier of CI, locally, before a push (scripts/ci/pre_push.py): scope from
-# scripts/ci/pr_classify.py against origin/main, the registry and changelog gates, conformance-check,
-# workflow / chart / harness checks, golangci-lint --new-from-rev, go vet and a focused go test -short for
-# the Go packages the diff touches. SCOPE=all runs every step whatever the diff; RACE=1 adds -race to the
-# focused go test; PRE_PUSH_OFFLINE=1 skips the fetch of origin/main; PRE_PUSH_PYTHON=<python> picks the
-# interpreter that has pytest and PyYAML. A summary table, a non-zero exit on any FAIL. CONTRIBUTING.md.
-SCOPE ?= diff
+# A preview of the fast, always-run tier of CI, locally, before a push (scripts/ci/pre_push.py): the
+# scope comes from scripts/ci/pr_classify.py against origin/main; the registry and changelog gates,
+# conformance-check, workflow / chart / harness checks, golangci-lint, gofmt, go vet and go build of
+# both modules, and go test for the packages the diff touches or whose tests read a changed file.
+# It is not CI: the summary lists what it did not verify. PREPUSH_SCOPE=all runs every step whatever the
+# diff; RACE=1 adds -race to go test; PRE_PUSH_OFFLINE=1 skips the fetch of origin/main;
+# PRE_PUSH_PYTHON=<python> picks the interpreter that has pytest and PyYAML. A summary table, a non-zero
+# exit on any FAIL. CONTRIBUTING.md has the per-step table and what it cannot catch.
+PREPUSH_SCOPE ?= diff
 pre-push:
-	python3 scripts/ci/pre_push.py --base $(GATE_BASE) --scope $(SCOPE) $(if $(filter 1,$(RACE)),--race)
+	python3 scripts/ci/pre_push.py --base $(GATE_BASE) --scope $(PREPUSH_SCOPE) $(if $(filter 1,$(RACE)),--race)
 
 # Replays the gate over the recorded pull requests and compares each verdict with
 # scripts/ci/tests/gate_replay_expected.txt (what CI runs when the gate changes).
