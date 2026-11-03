@@ -51,7 +51,7 @@ The sort-order tables in the measurement section use the raw size that the measu
 | Going from 10,000-row to 100,000-row groups saves 1 to 6 % but makes a needle lookup read about 10x more bytes | Row-group size |
 | zstd level 7 instead of 3 saves 5 to 25 % for -7 % to +26 % write CPU (median +8 %), with no measurable change in the writer's peak heap or in decode time. Level 11 instead of 7 saves a further 0.5 to 8 % for +23 % to +250 % write time. Levels 11 to 22 are byte-identical in the pure-Go codec | zstd levels |
 | Parquet bloom filters on non-dictionary columns are sized by row count, not by distinct values. On real logs they are 2,571 KiB: about 15 % of today's 17.1 MB flush file, mostly on columns that are empty. Sized by distinct values, in the old-stage variant (not shipped, 7 to 25 row groups), the same filters are 1 KB on the real logs, 815 KB on pooled logs and 1,653 KB on `traces-pool` | Bloom filter sizing |
-| Compacted log files carry no body token blooms; flush files do (issue #344, open) | Flush and compaction structure |
+| Compacted log files carried no body token blooms; flush files do (issue #344, fixed by the shared flush and compaction writer; the numbers in this page were measured before the fix) | Flush and compaction structure |
 | Measured stage-ladder variant (stream order, zstd 7 then 11, blooms sized by distinct values, byte row groups, 1 MiB pages; **not shipped**): real logs 17.1 to 7.3 MB (0.81x VictoriaLogs), pooled logs 49.2 to 36.4 MB (0.80x), `traces-pool` 45.1 to 30.0 MB (0.59x) | Layout variants measured per stage |
 | Dropping all blooms from old data would save 5 to 11 % of its bytes (measured) and turn a `trace_id` lookup into a scan of every row group of the object. The default stays keep; these are documented trade-offs, not settings | Bloom options measured |
 | Cost: VictoriaLogs/VictoriaTraces on EBS and Lakehouse as it is today are modelled on AWS list prices of 2026-11-03. The Lakehouse stage-ladder figures are a **projection** that assumes mechanisms which do not exist (windowed listing, streaming merge, byte row groups, the stage ladder, a storage-class mover). They are given only as conservative / central / optimistic ranges, labelled to be re-verified after implementation, and are not an outcome. Lakehouse today is not operable at 100 TB/day | Cost |
@@ -77,7 +77,7 @@ The paths below are in the repository; line numbers are left out on purpose beca
 | Promoted columns | `internal/schema/dedicated.go`, `internal/schema/row.go`, `<signal>.promoted_attributes` | Tier-1 dedicated columns (OTel semantic-convention attributes such as `container.id`, `service.instance.id`, `k8s.pod.name`, `server.address`) are first-class Parquet columns. Tier-2 slots `ded_s01` to `ded_s08` hold operator-chosen attributes from `<signal>.promoted_attributes` (each `{name, bloom}`); the slot-to-name binding is written to the footer key-value metadata so a file is self-describing. Compaction re-promotes older rows (`RepromoteLogRow` for logs, the injected trace re-promote for traces) so old files gain the dedicated columns. Encoding follows cardinality: high-cardinality id columns are plain strings with a bloom, high-byte low-cardinality columns use a dictionary |
 | Dictionary cap | not set | parquet-go's `DictionaryMaxBytes` is 0, which means unlimited. The dictionary is per column chunk |
 | Parquet bloom filters | `bloomFilters` in `writer.go` and `compactor.go`; column set from `LogBloomColumns` and `TraceBloomColumns` in `internal/schema/dedicated.go` | `SplitBlockFilter(10, column)`, about 10 bits per value (about 1 % false-positive rate). The set is `service.name`, `trace_id`, the strict per-signal set from the schema registry (for example `k8s.pod.name`, `span_id`), and any promoted attribute declared with `bloom: true` |
-| Token blooms | `internal/storage/parquets3/token_bloom.go`, written by `writeLogsParquet` | One footer key-value entry `_bloom_body_rg_N` per row group over the body tokens, flush files only. The compaction writer does not write it (issue #344) |
+| Token blooms | `internal/storage/parquets3/token_bloom.go`, written by `writeLogsParquet` | One footer key-value entry `_bloom_body_rg_N` per row group over the body tokens, flush and compacted files since the shared writer (#344; before it, flush files only) |
 | Compaction triggers | `internal/compaction/planner.go`, `CompactionConfig` | `min_files_l0` (10): L0 to L1. `min_files_l1` (10): L1 to L2. `min_age` (1h) keeps young files out. `daily_rollup_age` (24h): every file under 32 MiB (`manifest.MatureObjectBytes`) of a tenant-hour merges into one. `size_merge_max_age` (168h, that is 7 days) stops size merges when the tenant has no lifecycle rule. The scan runs every `compaction.interval` (5m) |
 | Compaction output | `compactor.go` | One output object per tenant group, with no target size and no split. The output level is one above the highest input level, and levels are not capped. The compactor holds all inputs, the merged rows and the output buffer in memory at once |
 
@@ -90,8 +90,8 @@ flowchart LR
     C["Client insert"] --> B["Insert buffer segment<br/>upstream logstorage on disk"]
     B -->|"sealed after insert.buffer_flush_interval 5m<br/>or about insert.target_file_size"| F["Buffer flusher<br/>sort by timestamp<br/>row groups of insert.row_group_size 10000<br/>zstd insert.compression_level 3<br/>Parquet bloom filters and token blooms"]
     F -->|"objects of about 128MB at most<br/>per tenant and hour"| L0["L0 objects<br/>dt=.../hour=.../nonce-slice.parquet"]
-    L0 -->|"10 files compaction.min_files_l0<br/>older than compaction.min_age 1h"| L1["L1 output<br/>zstd 7 and 10000-row groups<br/>no token blooms"]
-    L1 -->|"10 files compaction.min_files_l1"| L2["L2 output<br/>zstd 11 and 20000-row groups<br/>no token blooms"]
+    L0 -->|"10 files compaction.min_files_l0<br/>older than compaction.min_age 1h"| L1["L1 output<br/>zstd 7 and 10000-row groups<br/>token blooms (#344)"]
+    L1 -->|"10 files compaction.min_files_l1"| L2["L2 output<br/>zstd 11 and 20000-row groups<br/>token blooms (#344)"]
     L0 -->|"partition older than daily_rollup_age 24h<br/>files under 32 MiB merge per tenant-hour"| R["Rollup output<br/>level = highest input level + 1"]
     L1 --> R
     L2 --> R
@@ -134,7 +134,7 @@ flowchart TD
     P --> FL["Files<br/>FileInfo time range, labels and file blooms<br/>from the manifest and pmeta"]
     FL --> FT["Footer<br/>one ranged read of the object tail,<br/>or a footer-cache hit.<br/>A footer over the 128 KiB prefetch<br/>(token blooms make 2.1 MB footers)<br/>downloads the whole object, issue 303"]
     FT --> RG["Row groups<br/>min and max timestamp, column statistics,<br/>dictionary page check"]
-    RG --> BL["Blooms<br/>Parquet bloom filters on service.name, trace_id and promoted columns<br/>token blooms for body search, flush files only (issue 344)"]
+    RG --> BL["Blooms<br/>Parquet bloom filters on service.name, trace_id and promoted columns<br/>token blooms for body search, flush and compacted files (#344)"]
     BL --> CO["Columns<br/>read only the projected columns of the surviving row groups"]
     N1["Rows are time ordered inside a file, so a time range prunes row groups well<br/>and a stream or service filter does not: measured 50 of 50 row groups survive"] -.-> RG
     N2["Row-group size sets the bytes read for every bloom hit"] -.-> CO
@@ -153,7 +153,7 @@ Same 100,000 rows of `logs-pool` and 100,000 spans, 10,000-row groups, zstd 3. T
 | flush, traces | 9,014,566 | `_trace_idx`, `lh.trace_id_hex` | 14 | 881,958 | 0 (spans have no body) |
 | compaction, traces | 9,014,566 | same | 14 | 881,958 | 0 |
 
-Traces are aligned. Logs compaction drops the body token blooms, so every log compaction reduces body-search prunability. This is tracked in issue #344.
+Traces are aligned. Logs compaction dropped the body token blooms when this was measured, so every log compaction reduced body-search prunability (issue #344); flush and compaction now call one writer and the structures are equal.
 
 ### Sort order
 
@@ -477,7 +477,7 @@ Everything in this section is a **measured variant of the writers, not shipped b
 | medium | (tenant, 1 h slice, `_stream_id`, time) in day objects | 7 | 8 or 32 MiB, cut at hour slices | 256 KiB | same | 1 % |
 | old | same | 11, or 7 when a 20,000-row sample gains under 2 % | 32 MiB | 1 MiB | same ("keep"), 10.5 bits ("shrink") or none ("skip") | 1 %, or none with skip |
 
-All variants also put a dictionary on `container.id` and `service.instance.id`, declare `sorting_columns` where every row group stays inside one hour slice, and use one writer for flush and compaction (today the compaction writer drops the body token blooms, issue #344).
+All variants also put a dictionary on `container.id` and `service.instance.id`, declare `sorting_columns` where every row group stays inside one hour slice, and use one writer for flush and compaction (the compaction writer dropped the body token blooms until #344; both now call one writer).
 
 How they were measured:
 
@@ -754,7 +754,7 @@ Against Lakehouse, same rows. "Flush today" is the file the shipped flush writer
 
 † `trace_id` bloom sizing pending (see the note under the variant size table): the span figures of the variants are slightly optimistic. The old-stage variant needs work that does not exist yet (see the cost section). The young-stage variant is 1.02x of VictoriaLogs on the real logs, 0.83x on pooled logs, 0.63x on `traces-pool`.
 
-The next table is the same real-logs file at the higher levels the compaction schedule uses. These files were produced by the flush writer at that level, not by the compactor (the compactor has no token blooms, and its row-group size at level 2 is 20,000, which was not measured):
+The next table is the same real-logs file at the higher levels the compaction schedule uses. These files were produced by the flush writer at that level, not by the compactor (the compactor wrote no token blooms until #344, and its row-group size at level 2 is 20,000, which was not measured):
 
 | Real logs (`logs-loghub`), 10,000-row groups, time order | MB | Against VictoriaLogs (9.03 MB) |
 |---|---|---|
@@ -771,7 +771,7 @@ Per column group on real logs:
 
 Where Lakehouse is larger today, plainly:
 
-- On real log text (1.89x larger as flushed, about 1.7x after the level schedule, before accounting for the missing token blooms on compacted files).
+- On real log text (1.89x larger as flushed, about 1.7x after the level schedule, before accounting for the token blooms that compacted files lacked until #344).
 - On the message column specifically (1.65x).
 - VictoriaLogs ingests the 523,378 real lines with 1.3 s of CPU plus 0.5 s of merge (m). Lakehouse buffers rows in an upstream storage segment first, then writes Parquet: 1.1 to 1.4 s of single-core writer time on the real-logs set in the flush-writer runs (m). The two numbers are not a like-for-like ingest benchmark.
 
@@ -1118,7 +1118,7 @@ Tracked in issues (open as of this writing; there is no commitment here to ship 
 
 | Issue | Subject |
 |---|---|
-| #344 | Compaction drops the body token blooms the flush writer adds |
+| #344 | Compaction dropped the body token blooms the flush writer adds (fixed by the shared writer) |
 | #341 | Split-block bloom filters are not a power-of-two size, so ClickHouse fails on `trace_id` equality |
 | #570 | parquet-go cannot write a bloom filter sized by distinct values and a power of two |
 | #281 | Small files are never rolled up across hours (median about 70 KB at low volume) |
@@ -1134,7 +1134,7 @@ Measured but not shipped, and not promised: the layout variants (stream order, z
 
 - **One host, five datasets.** All timings are single-core wall time (the layout-variant tables: process CPU time including garbage collection) on a shared host, one run or the median of 2, +-15 % noise, and not comparable with CI runners. Peak heap is a sampled live heap, not RSS. Sizes are deterministic for a given input but come from five datasets of about 500,000 rows each, one file per dataset. Production objects are cut by the flusher and look different (and at low volume are tiny).
 - **Real data is one corpus.** The real-log result (1.89x larger than VictoriaLogs) comes from 523,378 lines of ten Loghub systems with synthetic timestamps. Other real logs will differ. The synthetic generators have invented value distributions.
-- **Flush-writer files, not compaction output.** The level, row-group and sort tables use the flush writer. Real L1 and L2 files come from the compaction writer, which has no token blooms and, at L2, 20,000-row groups. That combination was not measured.
+- **Flush-writer files, not compaction output.** The level, row-group and sort tables use the flush writer. Real L1 and L2 files come from the compaction writer, which writes the same token blooms since #344 and, at L2, 20,000-row groups. That combination was not measured.
 - **The numbers cannot be reproduced from this repository alone.** The measurement harness (dataset generators, the sort variants, the VictoriaLogs and VictoriaTraces runs) is not part of it. The writers it exercised are part of the repository, but a reader cannot regenerate the tables from a checkout.
 - **Models are labelled.** The compactor RAM per output size, the break-even months of the higher levels, the per-tenant scaling of query reads (1 TB/day), the two-step trace read and the "about 0.5 MB" index-table size are models or assumptions, not measurements.
 - **The layout variants are not what `main` writes.** They were produced by writers that replicate the shipped flush writers (byte-identical output on today's layout, checked) with a test-only patch for the bloom sizing. The files of the variants were not re-run through the external readers (parquet-go, pyarrow, DuckDB were run for `sorting_columns` and the codec cases earlier on this page; ClickHouse, Spark, Trino, Polars and DataFusion were not run at all). The read plans for the "today" rows apply the intended read path to today's files; the shipped projected read path does not probe row-group bloom filters (issue #421).
