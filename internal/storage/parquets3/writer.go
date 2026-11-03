@@ -13,7 +13,6 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
-	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -492,8 +491,6 @@ func columnBytesFromFooter(data []byte) map[string]int64 {
 	return out
 }
 
-func zstdLevel(level int) zstd.Level { return parquetwriter.ZstdLevel(level) }
-
 // writeLogsParquet and writeTracesParquet are the flush side of the one Lakehouse
 // Parquet encoder (internal/parquetwriter): the compactor calls the same
 // functions, so a flushed and a compacted object carry the same structures. The
@@ -613,8 +610,6 @@ var activeSlotResolver *schema.SlotResolver
 // SetSlotResolver installs the Tier-2 slot resolver for the writer (slot blooms
 // + footer-KV mapping) and the buffer read-remap.
 func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
-
-func bloomFilters(cols []string) []parquet.BloomFilterColumn { return parquetwriter.BloomFilters(cols) }
 
 // settled tells a group's onStored hook that its object needs no upload (it is
 // already live or already superseded), so the caller's record of what is done

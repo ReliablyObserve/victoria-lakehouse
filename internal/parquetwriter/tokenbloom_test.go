@@ -112,3 +112,27 @@ func TestBuildTokenBloomMetadata(t *testing.T) {
 		t.Error("an all-short body set gave an empty bloom value")
 	}
 }
+
+func TestTokenBloomDegenerate(t *testing.T) {
+	var zero TokenBloom
+	if !zero.Degenerate() {
+		t.Error("a zero-value bloom is degenerate")
+	}
+	var noHash TokenBloom
+	if err := noHash.UnmarshalBinary(make([]byte, 6+8)); err != nil { // k=0, one word
+		t.Fatal(err)
+	}
+	if !noHash.Degenerate() {
+		t.Error("a bloom with no hash function is degenerate")
+	}
+	var noWords TokenBloom
+	if err := noWords.UnmarshalBinary([]byte{3, 0, 0, 0, 0, 0}); err != nil { // k=3, zero words
+		t.Fatal(err)
+	}
+	if !noWords.Degenerate() {
+		t.Error("a bloom with no words is degenerate")
+	}
+	if NewTokenBloom(10, 0.01).Degenerate() {
+		t.Error("a sized bloom is not degenerate")
+	}
+}

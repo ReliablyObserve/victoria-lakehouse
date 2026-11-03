@@ -102,10 +102,14 @@ func BloomFilters(cols []string) []parquet.BloomFilterColumn {
 	return bf
 }
 
-// Footer is the one place that turns a footer key-value payload into the string
-// Parquet stores. Today the bytes are stored as they are; making every footer
-// value valid UTF-8 (#340) is a change of this function and of the readers.
-func Footer(raw []byte) string { return string(raw) }
+// bloomValue and traceIndexValue turn a footer key-value payload into the string
+// Parquet stores. Today both store the bytes as they are, which is not valid
+// UTF-8 (#340). The two payloads need different encodings (the token bloom base64,
+// `_trace_idx` base64 of a zstd frame via traceindex.MetadataValue), so each has
+// its own function, and the slot mapping (JSON, already UTF-8) has none.
+func bloomValue(raw []byte) string { return string(raw) }
+
+func traceIndexValue(raw []byte) string { return string(raw) }
 
 // WriteLogs encodes rows as a logs object.
 func WriteLogs(rows []schema.LogRow, o Options) (Result, error) {
@@ -140,7 +144,7 @@ func WriteTraces(rows []schema.TraceRow, o Options) (Result, error) {
 	start := time.Now()
 	entries := traceindex.Compute(rows)
 	if idx := traceindex.Marshal(entries); len(idx) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, Footer(idx)))
+		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, traceIndexValue(idx)))
 		info = &TraceIndexInfo{Listed: traceindex.Listed(entries), Build: time.Since(start)}
 	}
 
@@ -170,7 +174,7 @@ func commonOptions(o Options, bloomColumns []string) []parquet.WriterOption {
 	// self-describing: read-back remaps ded_sNN to the configured attribute name
 	// by ITS OWN footer, correct even if the config later changes.
 	if kv := schema.MarshalSlotMapping(o.Slots.Mapping()); kv != nil {
-		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, Footer(kv)))
+		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
 	}
 	return opts
 }
@@ -190,7 +194,7 @@ func tokenBloomOptions(n, rowGroupSize int, body func(i int) string) []parquet.W
 		}
 		if len(bodies) > 0 {
 			key, value := BuildTokenBloomMetadata(bodies, rg)
-			opts = append(opts, parquet.KeyValueMetadata(key, Footer(value)))
+			opts = append(opts, parquet.KeyValueMetadata(key, bloomValue(value)))
 		}
 	}
 	return opts

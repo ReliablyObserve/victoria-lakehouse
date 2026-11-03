@@ -345,7 +345,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.ingest.vl_insert_protocols` | ingest | 0 (0) | 0 | 3 | none | unproven |
 | `lh.feature.storage.dedicated_columns` | storage | 0 (0) | 0 | 5 | none | unproven |
 | `lh.feature.storage.field_size_stats` | storage | 1 (1) | 0 | 3 | none | lh-extension |
-| `lh.feature.storage.flush_compacted_structure` | storage | 0 (0) | 0 | 30 | none | unproven |
+| `lh.feature.storage.flush_compacted_structure` | storage | 0 (0) | 0 | 32 | none | unproven |
 | `lh.feature.storage.lifecycle_tiering` | storage | 0 (0) | 0 | 3 | none | unproven |
 | `lh.feature.storage.manifest` | storage | 4 (4) | 0 | 6 | none | lh-extension |
 | `lh.feature.storage.manifest_fastpath` | storage | 0 (0) | 0 | 2 | count_total | perf-proven |

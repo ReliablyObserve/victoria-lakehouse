@@ -143,7 +143,7 @@ func Tokenize(s string) []string {
 // body field token bloom filter.
 // Key format: TokenBloomKey(N)
 // Value: the marshaled TokenBloom bytes, stored as they are (footer values that
-// are not UTF-8 are tracked in #340; the encoding is chosen in one place, Footer).
+// are not UTF-8 are tracked in #340; the encoding is chosen in bloomValue).
 func BuildTokenBloomMetadata(bodies []string, rgIndex int) (key string, value []byte) {
 	// Collect all tokens from all body strings
 	allTokens := make(map[string]struct{})
@@ -175,3 +175,9 @@ const BodyBloomEntryPrefix = "_bloom_body_rg_"
 // TokenBloomKey is the footer key-value name of row group rgIndex's body token
 // bloom. The writer and the read-side skip check both build the name here.
 func TokenBloomKey(rgIndex int) string { return fmt.Sprintf("%s%d", BodyBloomEntryPrefix, rgIndex) }
+
+// Degenerate reports a decoded bloom that cannot answer a question: no words or no
+// hash functions. A reader treats it as "might contain" (it never prunes with it).
+// It is exported so a reader in another package, which cannot see the fields, can
+// make the same decision.
+func (b *TokenBloom) Degenerate() bool { return len(b.bits) == 0 || b.k == 0 }

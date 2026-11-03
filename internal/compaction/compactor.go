@@ -15,7 +15,6 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
-	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
@@ -863,8 +862,6 @@ func guardMergeStep(step string, fn func() error) (err error) {
 	return fn()
 }
 
-func zstdLevel(level int) zstd.Level { return parquetwriter.ZstdLevel(level) }
-
 // mergeFileLabels unions the per-field label value sets from a slice of
 // input files. Used by the compactor so the merged output file stays
 // discoverable in the manifest's inverted label index — every value that
@@ -899,10 +896,6 @@ func mergeFileLabels(files []manifest.FileInfo) map[string][]string {
 	}
 	return out
 }
-
-// bloomFilters is the shared writer's Parquet bloom column set (see
-// parquetwriter.BloomFilters).
-func bloomFilters(cols []string) []parquet.BloomFilterColumn { return parquetwriter.BloomFilters(cols) }
 
 // firstDuplicateKey returns the first key that appears twice in files, or "".
 func firstDuplicateKey(files []manifest.FileInfo) string {

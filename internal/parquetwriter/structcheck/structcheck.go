@@ -5,6 +5,16 @@
 // Structure whichever path wrote them; Diff names every difference. The golden
 // tests of "flushed versus compacted" (MAIN RULE 4, #344) compare Structures
 // rather than bytes, so they say WHICH structure a writer left out.
+//
+// What a Structure covers: the footer key-value names and a digest of each value;
+// per row group the row count and the declared sort order; per column chunk the
+// path, physical type, codec, encodings, a digest of the min/max statistics, the
+// null count, the size of the split-block bloom, and whether the column index and
+// offset index exist. What it does NOT cover: the zstd level or the compressed
+// sizes, page boundaries and the content of the page index, the bloom bits beyond
+// their length, the order or duplication of the footer key-values, and the schema
+// elements. Byte-level tests cover those (flush bytes golden, option equality of the
+// compaction callers).
 package structcheck
 
 import (
