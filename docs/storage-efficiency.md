@@ -54,7 +54,7 @@ The sort-order tables in the measurement section use the raw size that the measu
 | Compacted log files carry no body token blooms; flush files do (issue #344, open) | Flush and compaction structure |
 | Measured stage-ladder variant (stream order, zstd 7 then 11, blooms sized by distinct values, byte row groups, 1 MiB pages; **not shipped**): real logs 17.1 to 7.3 MB (0.81x VictoriaLogs), pooled logs 49.2 to 36.4 MB (0.80x), `traces-pool` 45.1 to 30.0 MB (0.59x) | Layout variants measured per stage |
 | Dropping all blooms from old data would save 5 to 11 % of its bytes (measured) and turn a `trace_id` lookup into a scan of every row group of the object. The default stays keep; these are documented trade-offs, not settings | Bloom options measured |
-| Cost: on assumed sizing and AWS list prices of 2026-11-03, the stage-ladder variant is a **projection** of about $2.8k a month for 10 TB/day of logs kept 90 days, against $8.3k for VictoriaLogs on gp3 in one zone and $21.6k for a two-zone setup. Lakehouse as it is today costs $11.1k at that size and is not operable at 100 TB/day | Cost |
+| Cost: VictoriaLogs/VictoriaTraces on EBS and Lakehouse as it is today are modelled on AWS list prices of 2026-11-03. The Lakehouse stage-ladder figures are a **projection** that assumes mechanisms which do not exist (windowed listing, streaming merge, byte row groups, the stage ladder, a storage-class mover). They are given only as conservative / central / optimistic ranges, labelled to be re-verified after implementation, and are not an outcome. Lakehouse today is not operable at 100 TB/day | Cost |
 | Where Lakehouse loses: ingest CPU per TB (about 4.5x VictoriaLogs on real logs, 1.5x on spans), token-bloom selectivity (about 1 % against about 0.1 %), small-object request cost, cold query latency, restore latency | Cost |
 | "10x to 16x" depends on the baseline. Today, against JSON as sent: pooled synthetic logs 13x, real logs 7.4x. Against raw text lines the real logs are 4.3x (VictoriaLogs 8.0x). Spans: 27x against OTLP/JSON, 8x against uncompressed Parquet | Compression ratio against different baselines |
 
@@ -509,7 +509,7 @@ flowchart LR
 
 One synthetic day of each dataset, MB (m). Change against today in brackets. VictoriaLogs and VictoriaTraces sizes are from the comparison section.
 
-| Variant | logs-loghub | logs-pool | logs-datagen | traces-pool | traces-datagen |
+| Variant | logs-loghub | logs-pool | logs-datagen | traces-pool † | traces-datagen † |
 |---|---|---|---|---|---|
 | VictoriaLogs / VictoriaTraces | 9.03 | 45.8 | 525.3 | 51.15 | 91.6 |
 | Today | 17.1 | 49.2 | 134.1 | 45.1 | 82.2 |
@@ -521,6 +521,8 @@ One synthetic day of each dataset, MB (m). Change against today in brackets. Vic
 | medium | 8.9 (-48 %) | 38.0 (-23 %) | 111.8 (-17 %) | 32.4 (-28 %) | 64.7 (-21 %) |
 | old (zstd 11) | 7.3 (-57 %) | 36.4 (-26 %) | 109.3 (-18 %) | 30.0 (-34 %) | 61.6 (-25 %) |
 | old, dynamic level | 7.3 (11 chosen) | 36.8 (7 chosen) | 110.1 (7 chosen) | 30.0 (11 chosen) | 62.6 (7 chosen) |
+
+† **`trace_id` bloom sizing pending.** The span columns size the `trace_id` bloom by distinct values (a few KB per row group on spans). The plan for that column is that it keeps at least today's selectivity, which needs more bloom bytes, so the span sizes in this section are slightly optimistic until that sizing is measured.
 
 The first rows are cumulative: each adds one change to the row above. The same table in the shape asked for most often, today against the old variant, with the upstream size in brackets:
 
@@ -542,7 +544,7 @@ Reading the cumulative rows:
 
 Leaving one knob out of the old variant (MB, change against today), to see what each contributes at the end of the ladder:
 
-| Without | logs-loghub | logs-pool | logs-datagen | traces-pool | traces-datagen |
+| Without | logs-loghub | logs-pool | logs-datagen | traces-pool † | traces-datagen † |
 |---|---|---|---|---|---|
 | zstd 7 and 11 (level 3 instead) | 8.8 (-48 %) | 39.9 (-19 %) | 122.0 (-9 %) | 34.8 (-23 %) | 68.1 (-17 %) |
 | zstd 11 (7 instead) | 8.4 (-51 %) | 36.8 (-25 %) | 110.1 (-18 %) | 31.2 (-31 %) | 62.6 (-24 %) |
@@ -557,7 +559,7 @@ The two places where leaving a knob out makes the file smaller are the bloom siz
 
 ### Ratios per variant
 
-| Dataset | Baseline | Today | young | medium | old | VictoriaLogs / VictoriaTraces |
+| Dataset | Baseline | Today | young | medium | old (spans †) | VictoriaLogs / VictoriaTraces |
 |---|---|---|---|---|---|---|
 | logs-loghub | NDJSON as sent (126.8 MB) | 7.4x | 13.8x | 14.2x | 17.3x | 14.0x |
 | logs-loghub | raw text (72.7 MB) | 4.3x | 7.9x | 8.1x | 9.9x | 8.0x |
@@ -568,7 +570,7 @@ The two places where leaving a knob out makes the file smaller are the bloom siz
 | traces-pool | uncompressed Parquet (364.6 MB) | 8.1x | 11.2x | 11.3x | 12.2x | 7.1x |
 | traces-datagen | OTLP/JSON (1,150.8 MB) | 14.0x | 17.8x | 17.8x | 18.7x | 12.6x |
 
-Size against VictoriaLogs and VictoriaTraces on the same rows (below 1.00x means Lakehouse is smaller):
+† The span ratios of the variants are slightly optimistic until the `trace_id` bloom sizing is measured. Size against VictoriaLogs and VictoriaTraces on the same rows (below 1.00x means Lakehouse is smaller):
 
 | Dataset | Today | young | old |
 |---|---|---|---|
@@ -662,7 +664,7 @@ The same rows packed into one hour (a 24x busier tenant, a), so the 8 and 32 MiB
 
 ## Bloom options measured: keep, shrink, skip
 
-**Status: measured variants of the old-stage layout. They are not settings in the product.** Today every file carries Parquet bloom filters on the schema's bloom columns and (flush files) token blooms, and there is no switch to shrink or drop them; the `bloom_columns` keys do not change what is written (issue #869). The default is, and in every table below stays, **keep**. This section documents what the alternatives would cost and what a query would lose, so an operator or a contributor can judge a trade-off with numbers. It is not a plan to add the options.
+**Status: measured variants of the old-stage layout. They are not settings in the product.** Today every file carries Parquet bloom filters on the schema's bloom columns and (flush files) token blooms, and there is no switch to shrink or drop them; the `bloom_columns` keys do not change what is written (issue #869). The default is, and in every table below stays, **keep**. The `trace_id` column serves the by-ID lookup, and the plan for it is that it keeps at least today's selectivity, so the `trace_id` rows below (shrink, skip, and the 0.02 to 0.05 % of the keep sizing) show the cost of weakening that column, not an option for it; the options are measured here on every bloom column to show the cost. This section documents what the alternatives would cost and what a query would lose, so an operator or a contributor can judge a trade-off with numbers. It is not a plan to add the options.
 
 | Option | Definition in the measurement | Size against keep (old variant) | `trace_id` lookup per candidate object | Body-token search per object | External readers |
 |---|---|---|---|---|---|
@@ -673,7 +675,7 @@ The same rows packed into one hour (a 24x busier tenant, a), so the 8 and 32 MiB
 
 Size of the old variant with each option, MB (m; change against keep in brackets):
 
-| Option | logs-loghub | logs-pool | logs-datagen | traces-pool | traces-datagen |
+| Option | logs-loghub | logs-pool | logs-datagen | traces-pool † | traces-datagen † |
 |---|---|---|---|---|---|
 | keep | 7.3 | 36.4 | 109.3 | 30.0 | 61.6 |
 | shrink | 7.3 (0 %) | 36.3 (0 %) | 105.4 (-3.6 %) | 29.2 (-2.7 %) | 58.4 (-5.2 %) |
@@ -747,10 +749,10 @@ Against Lakehouse, same rows. "Flush today" is the file the shipped flush writer
 | logs-loghub (real) | 9.03 | 17.1 | **1.89x larger** | 12.7 | 1.41x larger | 7.3 | 0.81x |
 | logs-pool | 45.8 | 49.2 | 1.07x larger | 42.7 | 0.93x | 36.4 | 0.80x |
 | logs-datagen | 525.3 | 134.1 | 0.26x | 136.1 | 0.26x | 109.3 | 0.21x |
-| traces-pool | 51.15 | 45.1 | 0.88x | 42.1 | 0.82x | 30.0 | 0.59x |
-| traces-datagen | 91.6 | 82.2 | 0.90x | 80.9 | 0.88x | 61.6 | 0.67x |
+| traces-pool † | 51.15 | 45.1 | 0.88x | 42.1 | 0.82x | 30.0 | 0.59x |
+| traces-datagen † | 91.6 | 82.2 | 0.90x | 80.9 | 0.88x | 61.6 | 0.67x |
 
-The old-stage variant needs work that does not exist yet (see the cost section). The young-stage variant is 1.02x of VictoriaLogs on the real logs, 0.83x on pooled logs, 0.63x on `traces-pool`.
+† `trace_id` bloom sizing pending (see the note under the variant size table): the span figures of the variants are slightly optimistic. The old-stage variant needs work that does not exist yet (see the cost section). The young-stage variant is 1.02x of VictoriaLogs on the real logs, 0.83x on pooled logs, 0.63x on `traces-pool`.
 
 The next table is the same real-logs file at the higher levels the compaction schedule uses. These files were produced by the flush writer at that level, not by the compactor (the compactor has no token blooms, and its row-group size at level 2 is 20,000, which was not measured):
 
@@ -799,13 +801,15 @@ Identifiers have a floor. A random trace id is 16 B of entropy per distinct trac
 
 ## Cost: VictoriaLogs and VictoriaTraces on EBS against Lakehouse on S3
 
-This section compares monthly infrastructure cost. Read it with these three labels in mind:
+**The Lakehouse figures with the stage ladder in this section are a projection, to be re-verified after implementation. They are not an achievable outcome and not a forecast.** They assume mechanisms that do not exist yet, they are given as a range (conservative / central / optimistic) with the term that dominates each case, and the optimistic end is the upper bound of what the design can deliver, never a result. The page does not repeat any projected figure outside this section.
 
-- **Today** (shipped behaviour as a model): the column "Lakehouse today" applies the compression ratio of today's flush file (level 3, 7.4x logs / 26.6x traces) to all stored data and assumes one rewrite for CPU. Today's compaction recompresses at levels 7 and 11, so this overstates today's storage line a little. At 100 TB/day it is modelled and **not operable as configured** (too many small objects).
-- **Measured variant** (not shipped): the compression ratios and CPU per TB of the stage ladder come from the layout variants above.
-- **Projection** (assumes work that does not exist yet): the column "Lakehouse with the stage ladder" is a **projection**. It assumes byte-sized row groups, the young, medium and old stages, a streaming merge in the compactor, a windowed listing of the object store, conditional claims between writers and a same-key copy mover for storage classes. None of these is built. The dollar totals depend on the sizing assumptions below and move with them.
+Three kinds of figure are mixed here, and every column header says which one it is:
 
-Infrastructure only: storage, compute, requests, transfer and backup. No people, no support, no query load except where a table says so.
+- **VictoriaLogs / VictoriaTraces on EBS:** a model of the upstream software on AWS list prices (prices sourced, sizes and CPU measured on the same data, node sizing assumed).
+- **Lakehouse today:** a model of the shipped behaviour. It applies the compression ratio of today's flush file (level 3, 7.4x logs / 26.6x traces) to all stored data and assumes one rewrite for CPU. Today's compaction recompresses at levels 7 and 11, so this overstates the storage line a little. At 100 TB/day it is modelled and **not operable as configured**.
+- **Lakehouse with the stage ladder (projection):** the layout variants of the earlier section plus mechanisms that **do not exist**: byte-sized row groups, the young, medium and old stages, a streaming merge in the compactor, a windowed listing of the object store (the shipped code lists every tenant prefix in full every 5 minutes on every pod), conditional claims between writers, a storage-class mover, tail-placed bloom filters and a two-step trace read. None of these is built or scheduled by this page.
+
+Infrastructure only: storage, compute, requests, transfer, backup and operations overhead. No staff cost, no support, no egress to users.
 
 ### Prices (sourced)
 
@@ -828,37 +832,60 @@ AWS us-east-1, on-demand list prices, read on **2026-11-03** (11:00 to 11:05 UTC
 | Lifecycle transitions | into Standard-IA $0.01, Glacier IR $0.02, Glacier Flexible $0.03, Deep Archive $0.05 per 1,000 objects |
 | Small objects | "Objects smaller than 128 KB will not transition by default to any storage class" (lifecycle guide) |
 | Data transfer | between availability zones $0.01 per GB in each direction; S3 to EC2 in the same region free |
+| KMS | $1 per key-month; $0.03 per 10,000 requests; S3 Bucket Keys cut SSE-KMS request costs |
 | EC2 on-demand Linux | r7g.2xlarge $0.4284/h (8 vCPU, 64 GiB); m7g.xlarge $0.1632/h; m7g.2xlarge $0.3264/h; m7gd.2xlarge $0.4271/h (475 GB NVMe) |
 | VictoriaLogs capacity guidance | "50% of free RAM", "50% of spare CPU", "At least 20% of free storage space at vlstorage nodes"; high availability = two clusters in two zones fed by vlagent (s, `https://docs.victoriametrics.com/victorialogs/cluster/`, read 2026-11-03) |
 
 Prices change. Every dollar figure below is dated by this table; rerun the formulas with current prices before relying on a total.
 
-### Assumptions (a unless marked m or s)
+### Common inputs (assumed unless marked)
 
-| # | Assumption | Value |
-|---|---|---|
-| 1 | TB/day | raw bytes as sent: NDJSON for logs, OTLP/JSON for spans (OTLP/JSON overstates against protobuf, so per protobuf TB the stored bytes are higher) |
-| 2 | Reference datasets | logs: `logs-loghub` (real); traces: `traces-pool`. The pooled and datagen sets are in the sensitivity |
-| 3 | Compression ratios as sent (m) | VictoriaLogs 14.0x, VictoriaTraces 23.4x; Lakehouse today 7.4x logs / 26.6x traces; young 13.8x / 37.0x; medium 14.2x / 37.0x; old (dynamic level) 17.3x / 40.0x; old with all blooms skipped 18.5x / 42.3x |
-| 4 | VictoriaLogs and VictoriaTraces nodes | r7g.2xlarge, at most 20 TB of gp3 per node at 80 % fill, +250 MB/s gp3 throughput per node; 2 x m7g.xlarge frontends per 10 TB/day |
-| 5 | VL/VT ingest CPU (m) | 14.2 core-s per GB as sent for the real logs and 22.4 for `traces-pool` (ingest plus merge) |
-| 6 | VL/VT high availability | two clusters in two zones; inter-zone traffic = ingest / 5 (wire compression, a) x $0.02 per GB; one cluster snapshotted at 1.2x stored bytes |
-| 7 | Lakehouse writers | the same upstream buffer ingest as VictoriaLogs plus the measured Parquet flush write, m7g.2xlarge at 70 % CPU, at least 2, 200 GB gp3 buffer volume each |
-| 8 | Lakehouse compaction | hour rewrite (level 7) + day clean-up of half the bytes (level 7) + old rewrite (dynamic level), each a full decode and write (m), no global sort (needs the streaming merge, not built) |
-| 9 | Lakehouse select nodes | m7gd.2xlarge (475 GB NVMe cache), 2 per 10 TB/day, at least 2 |
-| 10 | Lakehouse lifecycle | Standard for 30 days, then Glacier IR by a same-key copy; 1 GiB old objects; the 90-day Glacier IR minimum is billed |
-| 11 | Lakehouse requests, stage ladder | PUT and claim requests for 1,000 Zipf-distributed tenants: traces $2.9 / $28.8 / $288 per day at 1 / 10 / 100 TB/day; logs x0.29 / x0.29 / x0.044; windowed LIST $0.0006 per stored GB ingested |
-| 12 | Lakehouse requests, today | a compaction simulation for 1,000 Zipf tenants over 365 days: 27.9k / 141k / 5.2M objects per day at 1 / 10 / 100 TB/day; LIST $82 / $866 / $165,822 per day; 2 PUTs per object. Modelled with a 4.1x compression ratio and 3 / 10 / 60 replicas, not with the ratios of this page |
-| 13 | Queries | 2,000 per day per signal, classes equal, windows 24 h / 7 d / 30 d = 50 / 40 / 10 %, reference tenant 1 TB/day |
-| 14 | Decode rate | 400 MiB/s per core of compressed Parquet, for Lakehouse and VictoriaLogs alike |
-| 15 | Hours per month | 730 |
+| Input | Value |
+|---|---|
+| TB/day | raw bytes as sent: NDJSON for logs, OTLP/JSON for spans (OTLP/JSON overstates against protobuf, so per protobuf TB the stored bytes are higher) |
+| Reference datasets | logs: `logs-loghub` (real); traces: `traces-pool` |
+| VictoriaLogs / VictoriaTraces nodes | r7g.2xlarge, at most 20 TB of gp3 per node at 80 % fill, +250 MB/s gp3 throughput per node; 2 x m7g.xlarge frontends per 10 TB/day |
+| VL/VT ingest CPU (m) | 14.2 core-s per GB as sent for the real logs and 22.4 for `traces-pool` (ingest plus merge) |
+| VL/VT high availability | two clusters in two zones; inter-zone traffic = ingest / 5 (wire compression) x $0.02 per GB; one cluster snapshotted at 1.2x stored bytes |
+| Query CPU | 400 MiB/s per core of compressed Parquet, for Lakehouse and VictoriaLogs alike |
+| Hours per month | 730 (s, AWS convention) |
+| Base query load | 2,000 queries per day per signal; windows 24 h / 7 d / 30 d = 50 / 40 / 10 %; classes equal; reference tenant 1 TB/day |
 
-### Formulas
+### Assumptions register for the Lakehouse stage-ladder projection
+
+Each term of the projected figures, what value the optimistic case uses, whether the mechanism exists on `main`, and what the central and conservative cases use instead. m = measured, s = sourced, a = assumed.
+
+| # | Term | Optimistic value | Label | Exists today? | Central / conservative |
+|---|---|---|---|---|---|
+| A1 | Compression ratio, data older than 3 days | old stage 17.3x logs / 40.0x traces as sent | m on 2 datasets | **no** (needs sort, distinct blooms, dictionary, byte row groups, 1 MiB pages, level 11 or dynamic) | medium-stage ratio 14.2x / 37.0x; conservative also 25 % worse for real data unlike the test corpora (10.7x / 27.8x) |
+| A2 | Ratio, first 3 days | young 13.8x / 37.0x, medium 14.2x / 37.0x | m | **no** | conservative 25 % worse |
+| A3 | Old object size | 1 GiB, about 950 objects per TB stored | a | **no** (median object 71 KiB at low volume in production, s; compaction outputs have no size target) | central 100 MiB (half the bytes in objects below target); conservative 35 MiB (hour objects never merged further) |
+| A4 | Listing | windowed: $0.0006 per stored GB, once | a | **no**: every tenant prefix is listed in full every 5 minutes by every pod | full listing every 5 minutes on every writer and select pod: the dominant term at 100 TB/day |
+| A5 | PUT and claim requests | $2.9 / $28.8 / $288 per day for traces at 1 / 10 / 100 TB/day, 1,000 Zipf tenants; logs x0.29 / x0.29 / x0.044 | a | **no** (row-count seal shared by all tenants) | central x2 and no logs discount; conservative x5 |
+| A6 | Compaction rewrites | hour + half a day clean-up + old = 2.5 rewrites of the bytes | a | **no** (levels unbounded, rollups) | central x1.25; conservative x1.5 |
+| A7 | Compaction CPU per GB | decode + write, no global sort | m for decode and write, a for no sort | **no** (whole inputs in RAM, global sort) | central and conservative add the measured sort (0.6 to 1.1 s per 500,000 rows) |
+| A8 | Writer CPU | VictoriaLogs buffer ingest (m) + flush write (m) at 70 % utilisation | m / a | yes | central 50 %, conservative 40 % utilisation |
+| A9 | Select pods | 2 m7gd.2xlarge per 10 TB/day | a | partly (NVMe and footer caches exist; sizing for latency never measured) | central x2; conservative x4 with r7gd.2xlarge |
+| A10 | Manifest RAM per replica | 0.4 GiB at 100 TB/day x 365 d | a (200 B per object) | **no** | 17.4 GiB (logs) / 6.7 GiB (traces) at 35 MiB objects: bigger select nodes |
+| A11 | Query volume and mix | 2,000 per day per signal | a | - | central x3, conservative x10 |
+| A12 | Cold-read amplification | GETs as modelled: tail + data + probes | m per class, a scaling | partly (footer cache yes; tail-placed blooms no; wave scheduler no) | central x2 GETs; conservative x4; bytes +10 % per x |
+| A13 | Trace-by-ID | two-step read: 0.05 GB, 120 GETs at 1 TB/day | a | **no** | whole row groups: 0.64 GB, 92 GETs |
+| A14 | Lifecycle | Standard 30 days, then Glacier IR for every old byte | s prices, a mechanism | **no** (Lakehouse never moves bytes between classes) | central: half the old bytes stay in Standard; conservative: none move in year 1 |
+| A15 | Inter-zone transfer | half of the client bytes cross a zone, wire compression 5x | a | - | central two thirds cross; conservative all cross at wire 3x |
+| A16 | Retries and throttling | none | a | **no** single retry layer (up to 3 x 3 attempts per logical GET) | central +5 %, conservative +20 % on requests |
+| A17 | KMS | SSE-KMS with S3 Bucket Keys | s, a setting | operator | shown separately: without Bucket Keys +$14k to +$53k a month (conservative request counts) |
+| A18 | Operations overhead | none | a | - | central +10 %, conservative +20 % of compute and requests (staff not included) |
+| A19 | Writer buffer | 200 GB gp3 per writer, single zone | a | yes | unchanged; a durability exposure, not a cost |
+| A20 | VL/VT side | 20 TB per node, 50 % spare CPU, gp3 at 80 % fill | s for 20 % / 50 %, a for node size | yes (upstream) | 60 TB per node: -11 % at 100 TB/day x 365 d |
+
+The optimistic terms, bluntly: windowed listing (A4) is the largest and is not built; 1 GiB objects for every old byte (A3) assume the ladder, the streaming merge and a read budget by projected bytes; every old byte moving to Glacier IR at 30 days (A14) assumes a mover that does not exist; the logs PUT discount at 100 TB/day (A5) was modelled and never measured; the compaction CPU (A7) assumes a streaming merge; the select tier (A9, A11) is not sized for latency or concurrency anywhere; the ratio (A1) comes from one real corpus and one synthetic span set; zero retries, zero operations overhead and Bucket Keys on (A16 to A18). The `trace_id` bloom is sized by distinct values in these measurements; a bloom that is no weaker than today's for `trace_id` would cost a little more (not re-measured), so A1 and A2 are slightly optimistic for spans.
+
+### Formulas (optimistic case; the other cases scale the terms above)
 
 ```
 stored_GB   = ingest_GB_per_day x retention_days / ratio       (stage ladder: young 1 d + medium 2 d + old for the rest, each at its ratio)
 VL/VT 1 AZ  = gp3: stored / 0.8 x $0.08 + nodes x 250 MB/s x $0.04
-              + nodes x $/h(r7g.2xlarge) x 730 + frontends x $/h(m7g.xlarge) x 730
+              + nodes x $/h(r7g.2xlarge) x 730 + frontends x $/h(m7g.xlarge) x 730 + query CPU
               nodes = max(2, ceil(ingest x cpu_s_per_GB / 86,400 / 0.5 / 8), ceil(stored / 0.8 / 20 TB))
 VL/VT HA    = 2 x (1 AZ) + ingest / 5 x 30 x $0.02 (inter-zone) + stored x 1.2 x $0.05 (snapshots)
 LH today    = S3 Standard (tiered, stored) + objects_per_day x 2 x $0.005/1k x 30 + LIST$_per_day x retention/365 x 30 + compute
@@ -868,79 +895,102 @@ LH ladder   = S3 Standard (GB held in the first 30 days) + GB_old_per_day x max(
               + writers, compactors, select nodes x $/h x 730 + buffer volumes + inter-zone client traffic (ingest / 5 x 0.5 x $0.02 x 30)
               writer cores     = ingest x (VL ingest + flush write) core-s per GB / 86,400 / 0.7
               compaction cores = (GB_medium x 1.5 x merge_s_per_GB(medium) + GB_old x merge_s_per_GB(old)) / 86,400 / 0.7
-LH ladder, blooms skipped on old data = the same with the "old skip" ratio
-LH ladder + Deep Archive = 90 days in Glacier IR and (retention - 120 days) in Deep Archive ($0.00099, transition $0.05/1k)
 query $      = GETs x $0.0004/1k (Standard; $0.01/1k + $0.03/GB on Glacier IR) + bytes / 400 MiB/s x $/core-s (select nodes)
 VL query $   = the same bytes / 400 MiB/s x $/core-s of r7g.2xlarge (no request fees; EBS throughput is prepaid)
 ```
 
-### Monthly cost
+### Monthly cost (modelled; the Lakehouse ladder column is a projection, to be re-verified after implementation)
 
-Monthly totals in US dollars; sizes and ratios (m) and sizing (a) as above; prices (s) dated 2026-11-03. Infrastructure only, no query load.
+Monthly totals in US dollars at the prices of 2026-11-03. Each Lakehouse case includes its own query load (2,000 / 6,000 / 20,000 queries per day per signal for optimistic / central / conservative). The VL/VT ranges add the query CPU of the same bytes at 10x and 1x the base volume. Cases:
 
-| Scenario | VL/VT gp3, 1 zone | VL/VT HA (2 clusters) + snapshots | Lakehouse today | Lakehouse with the stage ladder (projection) | Stage ladder, blooms skipped on old data (projection) | Stage ladder, Deep Archive after 120 days (projection) |
-|---|---|---|---|---|---|---|
-| logs, 10 TB/day x 90 days | $8.3k | $21.6k | $11.1k | $2.8k | $2.8k | n/a |
-| traces, 10 TB/day x 90 days | $5.0k | $13.6k | $9.2k | $3.1k | $3.1k | n/a |
-| logs, 100 TB/day x 365 days | $315k | $798k | not operable (modelled $5.1M: listing about $166k/day, a 354 GiB manifest per replica) | $28.1k | $27.1k | $23.9k |
-| traces, 100 TB/day x 365 days | $190k | $485k | not operable (modelled $5.0M) | $28.0k | $27.5k | $26.1k |
-| logs, 1 TB/day x 30 days | $1.1k | $2.4k | $1.7k | $1.5k | $1.5k | n/a |
-| traces, 1 TB/day x 30 days | $1.0k | $2.2k | $1.7k | $1.5k | $1.5k | n/a |
+- **Optimistic:** every mechanism listed above works as designed.
+- **Central:** half of the bytes stay in objects below the target size, the bucket is listed in full every 5 minutes by every pod, the merge sorts in memory, 3x the query load with 2x the cold-read requests, half of the old data never leaves Standard, 10 % operations overhead.
+- **Conservative:** 35 MiB median objects, 5x the PUTs, 4x the select nodes, 10x the queries with 4x the requests, no tiering in the first year, compression 25 % worse than the test corpora, 20 % retries and 20 % operations overhead.
 
-Where the money goes, logs (monthly):
+| Scenario | VL/VT gp3, 1 zone (model) | VL/VT HA + snapshots (model) | Lakehouse today (model) | Lakehouse with the ladder (PROJECTION): conservative / central / optimistic | Largest Lakehouse term of the projection (conservative / central / optimistic) |
+|---|---|---|---|---|---|
+| logs, 10 TB/day x 90 days | $8.6k-$11.2k | $21.9k-$24.5k | $11.1k | $24.8k / $8.3k / $3.2k | queries / compute / compute |
+| traces, 10 TB/day x 90 days | $5.1k-$5.6k | $13.7k-$14.1k | $9.2k | $16.8k / $6.0k / $3.2k | requests / compute / compute |
+| logs, 100 TB/day x 365 days | $315k-$318k | $798k-$801k | not operable (below) | $738k / $144k / $28.7k | listing requests / listing requests / storage |
+| traces, 100 TB/day x 365 days | $190k | $485k | not operable | $355k / $81k / $28.2k | listing requests in all three |
+| logs, 1 TB/day x 30 days | $1.4k-$4.1k | $2.7k-$5.4k | $1.7k | $13.0k / $4.0k / $1.9k | queries / compute / compute |
+| traces, 1 TB/day x 30 days | $1.1k-$1.6k | $2.3k-$2.8k | $1.7k | $8.2k / $3.0k / $1.6k | compute in all three |
 
-| Scenario | System | Storage | Compute | Requests | Transfer | Backup | Total | Stored TB | Nodes |
-|---|---|---|---|---|---|---|---|---|---|
-| 10 TB/day x 90 d | VL, 1 zone | $6,459 | $1,802 | $0 | $0 | $0 | **$8,261** | 64 | 5 |
-| 10 TB/day x 90 d | VL, HA | $12.9k | $3,604 | $0 | $1,200 | $3,846 | **$21.6k** | 64 | 10 |
-| 10 TB/day x 90 d | Lakehouse today | $2,715 | $1,370 | $6,448 | $600 | $0 | **$11.1k** | 121 | 5 |
-| 10 TB/day x 90 d | Lakehouse stage ladder | $617 | $1,370 | $260 | $600 | $0 | **$2,848** | 53 | 5 |
-| 100 TB/day x 365 d | VL, 1 zone | $261.6k | $53.4k | $0 | $0 | $0 | **$314.9k** | 2,599 | 163 |
-| 100 TB/day x 365 d | VL, HA | $523.1k | $106.7k | $0 | $12.0k | $156.0k | **$797.8k** | 2,599 | 326 |
-| 100 TB/day x 365 d | Lakehouse today | $103.7k | $8,222 | $4,976.2k | $6,000 | $0 | **$5,094.1k** | 4,911 | 28 |
-| 100 TB/day x 365 d | Lakehouse stage ladder | $11.7k | $9,906 | $488 | $6,000 | $0 | **$28.1k** | 2,118 | 35 |
+Not included: Lakehouse with SSE-KMS but without S3 Bucket Keys (one KMS call per request) adds $14k to $53k a month at the conservative request counts. Bucket Keys remove almost all of it (s, AWS user guide).
 
-The two "Lakehouse today" rows at 100 TB/day are modelled, not measured, and not operable: the dominant line is S3 requests on millions of small objects (assumption 12), and a per-replica manifest of 354 GiB. They show why the stage ladder and a windowed listing are the precondition for the projected totals, not that those totals are reachable with the shipped code.
+**What the ranges say.** The span between the cases is up to 8x (logs, 10 TB/day x 90 days: $3.2k to $24.8k) and up to 26x at 100 TB/day x 365 days. A central case about at the price of single-zone VictoriaLogs at 10 TB/day x 90 days is a more honest reading than the optimistic one. The Lakehouse advantage over EBS comes from storage price per GB ($0.004 to $0.023 on S3 against $0.10 effective on gp3 at 80 % fill). It survives every case against two-zone VL/VT at 90 days and longer, and it survives against single-zone VL/VT only once the request terms (listing, PUTs, object counts) are fixed. The largest single risk to the projection is the listing (A4): without a windowed listing, Lakehouse at 100 TB/day for 30 days is 2x to 8x the price of single-zone VL/VT in the central and conservative cases.
 
-### Break-even and sensitivity
+**"Not operable" is not a prediction of production behaviour.** It is the cost of listing a small-object population every 5 minutes on every replica, from a compaction simulation with these modelled inputs: 1,000 Zipf tenants, 60 replicas, today's compaction leaving about 1.1 MiB median objects at 100 TB/day, 1.9 billion objects after a year. That is about $164k a day of LIST (99.97 % of the modelled bill) and a manifest of about 356 GiB per replica. Nothing has run at 100 TB/day; the production evidence is the 71 KiB median object at low volume (s). The row says only that today's write and listing path does not scale to that volume.
 
-Break-even is the query rate above which the Lakehouse total (with its per-query request and decode cost) exceeds the VictoriaLogs or VictoriaTraces total. Assumption 13 (2,000 queries per day per signal, classes mixed) is the base.
+Where the money goes, logs (monthly, a; the Lakehouse rows are the projection):
 
-| Scenario | Is the stage-ladder projection cheaper than VL/VT in 1 zone? | Cheaper than VL/VT HA? |
+| Scenario | System | Storage | Compute | Requests | Transfer | Queries | Operations | Total |
+|---|---|---|---|---|---|---|---|---|
+| 10 TB/day x 90 d | VL, 1 zone (model) | $6,459 | $1,802 | $0 | $0 | CPU in compute | - | $8,261 |
+| 10 TB/day x 90 d | VL, HA (model) | $12.9k | $3,604 | $0 | $1,200 | CPU in compute | snapshots $3,846 | $21.6k |
+| 10 TB/day x 90 d | Lakehouse today (model) | $2,715 | $1,370 | $6,448 | $600 | - | - | $11.1k |
+| 10 TB/day x 90 d | projection, conservative | $1,909 | $4,879 | $6,424 | $2,000 | $7,324 | $2,261 | $24.8k |
+| 10 TB/day x 90 d | projection, central | $1,098 | $2,470 | $2,007 | $804 | $1,497 | $448 | $8,324 |
+| 10 TB/day x 90 d | projection, optimistic | $617 | $1,370 | $278 | $600 | $382 | $0 | $3,249 |
+| 100 TB/day x 365 d | VL, 1 zone (model) | $261.6k | $53.4k | $0 | $0 | CPU in compute | - | $315k |
+| 100 TB/day x 365 d | VL, HA (model) | $523.1k | $106.7k | $0 | $12.0k | CPU in compute | snapshots $156.0k | $798k |
+| 100 TB/day x 365 d | projection, conservative | $72.5k | $44.1k | $487.6k | $20.0k | $7.3k | $106.3k | $738k |
+| 100 TB/day x 365 d | projection, central | $34.5k | $19.5k | $71.7k | $8.0k | $1.5k | $9.1k | $144k |
+| 100 TB/day x 365 d | projection, optimistic | $11.7k | $9.9k | $0.7k | $6.0k | $0.4k | $0 | $28.7k |
+
+The conservative and central request lines at 100 TB/day are almost all the 5-minute full listing.
+
+### Break-even (projection, to be re-verified after implementation)
+
+Queries per day below which the Lakehouse projection is cheaper than VictoriaLogs or VictoriaTraces (conservative / central / optimistic). "Never" means the Lakehouse fixed monthly cost alone, before any query, is already above the upstream total in that case.
+
+| Scenario | Against VL/VT, 1 zone | Against VL/VT HA |
 |---|---|---|
-| 1 TB/day x 30 days | no (fixed floor of about $1.5k: 2 writers, 1 compactor, 2 NVMe select nodes, a) | yes, below about 22k (logs) / 29k (traces) queries per day |
-| 10 TB/day x 90 days | yes, below about 125k (logs) / 84k (traces) queries per day | yes, below about 434k / 451k |
-| 100 TB/day x 365 days | yes, below about 6.6M / 7.0M queries per day | yes, below about 18M / 20M |
+| logs, 1 TB/day x 30 days | never / never / never | never / never / 22k |
+| traces, 1 TB/day x 30 days | never / never / never | never / never / 29k |
+| logs, 10 TB/day x 90 days | never / 14k / 125k | 19k / 145k / 433k |
+| traces, 10 TB/day x 90 days | never / never / 83k | never / 164k / 450k |
+| logs, 100 TB/day x 365 days | never / 1.7M / 6.6M | 0.3M / 6.4M / 17.8M |
+| traces, 100 TB/day x 365 days | never / 2.2M / 6.9M | 1.3M / 8.2M / 19.6M |
 
-At 1 TB/day the projection breaks even with one zone at 90 days for logs (148 queries per day) and only at 365 days for traces (about 37k per day). Logs and traces at 1 TB/day for 30 days, traces at 1 TB/day for 90 days, and traces at 10 and 100 TB/day for 30 days stay cheaper on VictoriaLogs or VictoriaTraces in one zone at any query rate.
+In the optimistic case, prices +-30 %, 10x the query rate, compression +-25 % on either side and 60 TB per VictoriaLogs node each change the totals but not the ordering at 10 TB/day x 90 days or 100 TB/day x 365 days. The central and conservative cases above do change the ordering.
 
-Monthly totals including 2,000 queries per day per signal. Each cell is VL/VT 1 zone / VL/VT HA / Lakehouse stage ladder (projection):
+### Post-implementation verification checklist
 
-| Variant | logs, 10 TB/day x 90 d | traces, 10 TB/day x 90 d | logs, 100 TB/day x 365 d | traces, 100 TB/day x 365 d |
-|---|---|---|---|---|
-| base | $8.6k / $21.9k / $3.2k | $5.1k / $13.7k / $3.2k | $315k / $798k / $28.5k | $190k / $485k / $28.1k |
-| prices +30 % | $11.1k / $28.4k / $4.2k | $6.6k / $17.7k / $4.2k | $410k / $1,038k / $37.1k | $247k / $630k / $36.5k |
-| prices -30 % | $6.0k / $15.3k / $2.3k | $3.6k / $9.6k / $2.2k | $221k / $559k / $20.0k | $133k / $339k / $19.7k |
-| queries x10 (20k per day) | $11.2k / $24.5k / $6.7k | $5.6k / $14.1k / $4.1k | $318k / $801k / $31.9k | $190k / $485k / $29.0k |
-| all ratios +25 % | $6.9k / $17.8k / $3.0k | $4.0k / $11.0k / $3.1k | $253k / $642k / $25.6k | $152k / $391k / $26.8k |
-| all ratios -25 % | $11.1k / $28.2k / $3.8k | $6.7k / $17.6k / $3.3k | $419k / $1,058k / $33.0k | $252k / $641k / $29.8k |
-| Lakehouse ratio only -25 % | $8.7k / $22.0k / $3.8k | $5.1k / $13.7k / $3.3k | $315k / $798k / $33.0k | $190k / $485k / $29.8k |
-| VictoriaLogs 60 TB per node | $7.6k / $19.9k / $3.2k | $4.8k / $13.0k / $3.2k | $280k / $728k / $28.5k | $169k / $443k / $28.1k |
+The projection is replaced by measurements, one assumption at a time. Until each line is measured, the corresponding term stays an assumption.
 
-The ordering does not change under any single variant at 10 TB/day x 90 days or at 100 TB/day x 365 days. The Lakehouse total is dominated by fixed compute below about 10 TB/day and by storage and compute above. The VictoriaLogs total is dominated by gp3 at 0.8 fill; EBS st1 at $0.045 per GB-month (s) would cut its storage line by 44 % (arithmetic), and whether VictoriaLogs' merge and query pattern is acceptable on st1 was not measured.
+| # | Metric | How | Acceptance (replaces the assumption when) |
+|---|---|---|---|
+| V1 | Bytes per row and ratio as sent, per stage and signal (A1, A2) | storage cases on the pinned Loghub subset and the pool generators; production stored bytes by stage divided by raw bytes in | within +-10 % of the medium and old ratios of this page on the fixtures; production ratio reported per tenant class |
+| V2 | Object size distribution per stage (p10 / p50 / p90), objects per TB, share of bytes below target (A3) | manifest histogram per partition and stage, daily | at least 80 % of old-stage bytes in objects of 512 MiB or more at 10 TB/day; the central case's 100 MiB median not breached |
+| V3 | LIST requests and LIST dollars per day per pod (A4) | S3 client middleware counting every attempt by operation | at most the windowed target ($0.0006 per stored GB); fails today by design |
+| V4 | PUT, COPY, claim and DELETE counts per ingested GB, per signal (A5) | the same counters; a 1,000-tenant Zipf load on a perf stack | at most the floor assumed in A5 |
+| V5 | Rewrites per byte per stage (A6) | compaction bytes in and out by stage | at most 3 including flush; late-data share reported |
+| V6 | Compaction CPU per GB of output and peak RSS per merge plan (A7) | benchmarks of the merge; RSS at 128 inputs | at most decode + write as measured here; peak RSS at most 0.5 GiB per plan |
+| V7 | Writer CPU per TB as sent and pod utilisation at steady load (A8) | process CPU on a perf stack; production process CPU divided by bytes in | within +-20 % of 64k (logs) / 34k (traces) core-seconds per TB |
+| V8 | Query latency p50 / p95 and S3 GETs per query class, cold and warm, against hot VL/VT (A9, A11, A12) | replay of the registry cases at 1x, 3x and 10x load; GETs from the counters | GETs per class at most 1.5x the model; select-pod count needed for the latency line recorded per TB/day |
+| V9 | Footer and tail bytes and footer-cache hit rate (A12) | cache metrics; tail size histogram | tail at most one 16 MiB GET for 1 GiB objects; hit rate on dashboards at least 90 % |
+| V10 | Bloom false-positive rate per column class in production files (A12, A13) | a false-positive probe over sampled files, as measured on this page | `trace_id` no weaker than today; other columns at most 0.1 % |
+| V11 | Trace-by-ID bytes and GETs on day and archive span objects (A13) | trace-by-ID perf cases with the two-step read on and off | at most 0.1 GB per lookup at 1 TB/day |
+| V12 | Bytes by storage class, transition counts, early-delete charges (A14) | the storage class recorded in the manifest; the AWS Cost and Usage Report | at least 90 % of bytes older than 30 days in Glacier IR; early-delete charges 0 |
+| V13 | Inter-zone bytes per ingested GB (A15) | VPC flow logs or the Cost and Usage Report | the measured factor replaces the assumed one |
+| V14 | Retries per logical request and 503 rate per prefix (A16) | S3 client middleware attempt counter | retries at most 5 % of requests |
+| V15 | KMS requests (A17) | Cost and Usage Report | with Bucket Keys on, at most 1 % of S3 requests |
+| V16 | Manifest RAM per replica (A10) | heap profile at the measured object count | at most 2 GiB at 100 TB/day x 365 d |
+| V17 | The whole bill | Cost and Usage Report by service and usage type for one month at 1 TB/day or more, both signals | the measured month replaces the case table; the range collapses to one row |
 
-### Query cost and ingest CPU
+### Query cost and ingest CPU (projection for the Lakehouse columns, to be re-verified after implementation)
 
 Reference tenant of 1 TB/day. Bytes and reads are scaled from the measured share of row groups and columns per query class to 32 MiB row groups and 1 GiB objects (a). CPU uses 400 MiB/s per core of compressed Parquet for both systems (a). VictoriaLogs and VictoriaTraces pay no request fees (local disk).
 
-| Query (logs, 24 h) | Bytes read | Reads | Lakehouse $ per 1,000 queries | Same query on data older than 30 days (Glacier IR) | VictoriaLogs $ per 1,000 (CPU) |
+| Query (logs, 24 h) | Bytes read | Reads | Lakehouse $ per 1,000 queries (projection) | Same query on data older than 30 days (Glacier IR, projection) | VictoriaLogs $ per 1,000 (CPU, model) |
 |---|---|---|---|---|---|
 | stats by | 11.8 GB | 301 | $0.54 | $358 | $0.42 |
 | body token | 7.6 GB | 254 | $0.37 | $230 | $0.27 |
 | body token, blooms skipped (24 h / 7 d) | 52.9 / 370 GB | 281 / 1,965 | $1.98 / $13.9 | - | - |
 | 15 minutes | 0.55 GB | 19 | $0.03 | $16.8 | $0.02 |
 
-| Query (traces, 24 h) | Bytes read | Reads | Lakehouse $ per 1,000 | Glacier IR | VictoriaTraces $ per 1,000 |
+| Query (traces, 24 h) | Bytes read | Reads | Lakehouse $ per 1,000 (projection) | Glacier IR (projection) | VictoriaTraces $ per 1,000 (model) |
 |---|---|---|---|---|---|
 | trace by id, blooms kept, whole row groups read | 0.64 GB | 92 | $0.06 | $20.2 | $0.02 |
 | trace by id, blooms kept, two-step read (id column, then matching pages; not built) | 0.05 GB | 120 | $0.05 | $2.8 | $0.00 |
@@ -950,43 +1000,47 @@ Reference tenant of 1 TB/day. Bytes and reads are scaled from the measured share
 
 Glacier IR saves $0.019 per GB-month against Standard and charges $0.03 per GB read, so data read more than about 0.6 times its size per month is cheaper in Standard. Dashboards over months of data belong in Standard. The stream and service query rows of the full model are upper bounds (whole row groups of each slice; the page index can narrow a stream inside a 32 MiB row group).
 
-| Ingest CPU, core-seconds per TB as sent | VL / VT | Lakehouse today | Lakehouse stage ladder (flush + 3 rewrites) |
+| Ingest CPU, core-seconds per TB as sent | VL / VT (m) | Lakehouse today (m; a: one rewrite) | Lakehouse variant: flush + 3 rewrites (m, measured writers) |
 |---|---|---|---|
-| logs (real) | 14,196 (m) | 37,917 (m, a: one rewrite) | 64,246 (m) |
-| traces (`traces-pool`) | 22,354 (m) | 27,061 (m, a: one rewrite) | 33,630 (m) |
+| logs (real) | 14,196 | 37,917 | 64,246 |
+| traces (`traces-pool`) | 22,354 | 27,061 | 33,630 |
 
-At 100 TB/day the real-logs average is about 16 cores for VictoriaLogs and about 74 for the stage ladder (no headroom, a). With a global sort in the compactor (today's design), add 0.6 to 1.1 s of CPU per 500,000 rows per rewrite (m).
+At 100 TB/day the real-logs average is about 16 cores for VictoriaLogs and about 74 for the variant (no headroom, a). With a global sort in the compactor (today's design), add 0.6 to 1.1 s of CPU per 500,000 rows per rewrite (m).
 
 ### Where Lakehouse loses
 
 - **Ingest CPU:** about 4.5x VictoriaLogs per TB on real logs (64k against 14k core-seconds) and about 1.5x on spans (34k against 22k). Real log rows are small (14 B per row stored), so per-row costs dominate. It is small in dollars next to storage at 90 days and more, and it dominates at 30 days and small scale. The distinct-value counting in the variant writer adds to it (an upper bound).
-- **Fixed floor:** about $1.5k a month (2 writers, 1 compactor, 2 NVMe select nodes; a). At 1 TB/day for 30 days single-zone VictoriaLogs is cheaper ($1.1k against $1.5k).
+- **Fixed floor and the cases:** at 1 TB/day for 30 days, single-zone VictoriaLogs and VictoriaTraces are cheaper than every Lakehouse case. In the conservative case they are cheaper in every scenario of the table except 10 TB/day x 365 days at low query rates.
 - **Hot query latency:** an S3 request has a first-byte latency of about 30 ms plus about 20 ms per MiB (s: Durner et al., PVLDB 16(11), 2023), against a local disk. VictoriaLogs and VictoriaTraces answered the comparison queries in 9 to 121 ms warm on local disk (m, best of 3). An NVMe cache and the footer cache close this only for repeated data.
-- **Request costs at small objects:** today's layout is not operable at 100 TB/day. This is why the ladder and a windowed listing matter, and the projected totals assume both.
+- **Request costs at small objects:** today's layout is not operable at 100 TB/day. The projection assumes the ladder and a windowed listing.
 - **Restore latency:** Glacier Flexible Retrieval "retrieval in minutes or free bulk retrievals in 5-12 hours", Deep Archive "data retrieval from 12-48 hours" (s, `https://aws.amazon.com/s3/storage-classes/`). Deep Archive data is not queryable without a restore.
 - **Old-data scans on Glacier IR** cost $0.03 per GB read.
 - **Token-bloom selectivity:** about 1 % against about 0.1 % in VictoriaLogs (see the comparison section).
-- **Single-zone write buffer:** writers hold up to one seal interval (default 5 minutes) of rows on a single-zone volume (gp3, 99.8 to 99.9 % durability). A zone outage strands those rows until the volume returns. VL/VT HA keeps a second full copy in another zone; the Lakehouse projection is highly available for everything already in S3, not for the buffer.
+- **Single-zone write buffer:** writers hold up to one seal interval (default 5 minutes) of rows on a single-zone volume (gp3, 99.8 to 99.9 % durability). A zone outage strands those rows until the volume returns. VL/VT HA keeps a second full copy in another zone; Lakehouse is highly available for everything already in S3, not for the buffer.
 - **Trace-by-ID on stream-ordered span objects** hits every 8 to 32 MiB row group. It is cheap only with the two-step read, which is not built.
-- **The projection assumes unbuilt code:** byte row groups, the stage ladder, the streaming merge, windowed listing, conditional claims and the storage-class mover. The ordering survives every single-knob sensitivity above, but the dollar totals depend on assumptions 4, 11 and 12.
+- **Mechanisms that do not exist:** byte row groups, the stage ladder, the streaming merge, windowed listing, conditional claims, the storage-class mover, tail-placed blooms and the two-step trace read.
 
-### Diagram: monthly cost, logs at 10 TB/day kept 90 days
+### Diagram: monthly cost, logs at 10 TB/day kept 90 days (projection, to be re-verified after implementation)
 
-Prices are sourced (2026-11-03), ratios are measured, sizing is assumed. The right-hand box is a projection.
+Prices are sourced (2026-11-03), ratios are measured, sizing is assumed. Only the VL/VT boxes and "today" are models of existing software; the three Lakehouse ladder boxes are projections.
 
 ```mermaid
 flowchart LR
-    subgraph EBS["VictoriaLogs on EBS gp3"]
-        A1["1 zone: $8.3k<br/>storage $6.5k, compute $1.8k"]
-        A2["HA, 2 clusters + snapshots: $21.6k<br/>storage $12.9k, compute $3.6k<br/>snapshots $3.8k, inter-zone $1.2k"]
+    subgraph EBS["VictoriaLogs on EBS gp3 (model)"]
+        A1["1 zone: $8.6k-$11.2k<br/>gp3 storage $6.5k, compute $1.8k,<br/>query CPU"]
+        A2["HA, 2 clusters + snapshots: $21.9k-$24.5k"]
     end
-    subgraph S3["Lakehouse on S3"]
-        B1["today: $11.1k<br/>storage $2.7k, compute $1.4k<br/>requests $6.4k (small objects, full listings)"]
-        B2["stage ladder + lifecycle (projection): $2.8k<br/>storage $0.6k, compute $1.4k<br/>requests $0.3k, transfer $0.6k"]
+    subgraph S3["Lakehouse on S3 (projection, re-verify after implementation)"]
+        B1["today (model): $11.1k<br/>requests $6.4k from small objects<br/>and full listings"]
+        B3["with the ladder, conservative: $24.8k<br/>queries x10, small objects,<br/>full listing, no tiering yet"]
+        B4["central: $8.3k<br/>half the bytes below target size,<br/>full listing, 3x queries"]
+        B2["optimistic: $3.2k<br/>every mechanism delivered (none exists)"]
     end
-    A1 -.->|"same data"| B2
-    A2 -.->|"like-for-like HA"| B2
-    B1 -->|"needs: stage ladder, stream order, zstd 7 and 11,<br/>blooms by distinct values, byte row groups,<br/>streaming merge, windowed listing (not built)"| B2
+    B1 -->|"stage ladder, stream order, zstd 7/11,<br/>blooms by distinct values, byte row groups"| B4
+    B4 -->|"windowed listing, tiering,<br/>streaming merge, two-step trace read"| B2
+    B4 -.->|"mechanisms partly delivered,<br/>heavy query load"| B3
+    A1 -.->|"same data"| B4
+    A2 -.->|"like-for-like HA"| B4
 ```
 
 
@@ -1072,7 +1126,7 @@ Tracked in issues (open as of this writing; there is no commitment here to ship 
 | #340 | Footer key-value entries hold non-UTF-8 binary; Polars and DataFusion cannot open the files |
 | #565, #566 | Spark 4.0.0 read problems on DELTA_LENGTH_BYTE_ARRAY and DELTA_BINARY_PACKED columns |
 
-There is no open issue for the sort order, the default level, the bloom placement or a streaming compaction merge. Related open issues for the request side: #301 (full-prefix listing per refresh, serial per-file cold reads, serial flush PUTs), #572 (a by-ID read of a multi-row-group span object costs 60 to 100 requests) and #421 (a `trace_id` lookup on the planned path reads the whole column; no per-row-group bloom skip). This page does not assume that any of them will change.
+The measured layout variants are tracked as work items of the program issue #875 (shared writer, default level, bloom sizing, sort order, tail-placed blooms, byte row groups, read budget, streaming merge, stage profiles, pages and level, tiering, two-step trace read, guards, and a windowed listing and manifest refresh). That is a list of work, not a commitment about what ships or when. Related open issues for the request side: #301 (full-prefix listing per refresh, serial per-file cold reads, serial flush PUTs), #572 (a by-ID read of a multi-row-group span object costs 60 to 100 requests) and #421 (a `trace_id` lookup on the planned path reads the whole column; no per-row-group bloom skip). This page does not assume that any of them will change.
 
 Measured but not shipped, and not promised: the layout variants (stream order, zstd 7 and 11, blooms sized by distinct values, byte-sized row groups, 1 MiB pages, dictionary on medium columns, dynamic level choice), the bloom options, and the stage-ladder cost projection. They are measurements of what the files and the bill would look like, taken so that a decision can rest on numbers.
 
@@ -1084,7 +1138,7 @@ Measured but not shipped, and not promised: the layout variants (stream order, z
 - **The numbers cannot be reproduced from this repository alone.** The measurement harness (dataset generators, the sort variants, the VictoriaLogs and VictoriaTraces runs) is not part of it. The writers it exercised are part of the repository, but a reader cannot regenerate the tables from a checkout.
 - **Models are labelled.** The compactor RAM per output size, the break-even months of the higher levels, the per-tenant scaling of query reads (1 TB/day), the two-step trace read and the "about 0.5 MB" index-table size are models or assumptions, not measurements.
 - **The layout variants are not what `main` writes.** They were produced by writers that replicate the shipped flush writers (byte-identical output on today's layout, checked) with a test-only patch for the bloom sizing. The files of the variants were not re-run through the external readers (parquet-go, pyarrow, DuckDB were run for `sorting_columns` and the codec cases earlier on this page; ClickHouse, Spark, Trino, Polars and DataFusion were not run at all). The read plans for the "today" rows apply the intended read path to today's files; the shipped projected read path does not probe row-group bloom filters (issue #421).
-- **The cost section is a model.** Prices are sourced and dated 2026-11-03 and will change. Node sizes, request counts for 1,000 tenants, the lifecycle and the per-TB CPU of rewrites are assumptions; the ratios and CPU per TB are measured on one real and four synthetic datasets. The stage-ladder columns are projections that assume code that does not exist (stage ladder, byte row groups, streaming merge, windowed listing, conditional claims, storage-class mover). Lakehouse today at 100 TB/day is modelled and not operable as configured. Infrastructure only: no people, support or egress to users.
+- **The cost section is a model, and its Lakehouse ladder figures are a projection.** Prices are sourced and dated 2026-11-03 and will change. Node sizes, request counts for 1,000 tenants, the lifecycle, object sizes and the per-TB CPU of rewrites are assumptions (the register lists them with what each case uses instead); the ratios and CPU per TB are measured on one real and four synthetic datasets. The ladder columns assume code that does not exist and are published only as conservative / central / optimistic ranges, to be re-verified after implementation by the 17 measurements of the verification checklist. Lakehouse today at 100 TB/day is modelled and not operable as configured. Infrastructure only: no people, support or egress to users.
 - **Raw denominators differ between tables.** The sort tables use the harness raw size; the comparison and ratio tables use the as-sent size. Compare only within one table.
 - **Other tools were not all run.** Only parquet-go, pyarrow and DuckDB were run for the codec and dictionary tests. ClickHouse, Spark, Trino, Polars and DataFusion were not.
 - **Other pages report different compression ratios.** The README line "Level 11+ buys <2% better ratio at 5x CPU cost - never recommended", the 11 to 22 range in [ZSTD Compression Benchmark](zstd-compression-benchmark.md), the 6.1x and 9.4x figures in [Cost estimates](cost-estimates.md) and the -0.15 % in the compaction schedule note come from other corpora and baselines. This page's measurements show a wider spread (level 11 saves up to 8 % over level 7 on sorted real text; levels above 11 do not exist in the pure-Go codec). Those pages have not been updated (issue #870).
