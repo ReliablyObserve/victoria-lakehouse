@@ -36,9 +36,63 @@ cd lakehouse-traces && go run . --lakehouse.s3.bucket=obs-archive --lakehouse.s3
 
 1. **Fork** the repository and create a feature branch from `main`
 2. **Write tests first** — we follow TDD practices
-3. **Run the full test suite** before submitting: `go test -race ./...`
+3. **Run the full test suite** before submitting: `go test -race ./...`, and `make pre-push` before every push
 4. **Run linters**: `golangci-lint run ./...`
 5. **Open a pull request** against `main`
+
+### Before you push: `make pre-push`
+
+`make pre-push` runs the scoped fast tier of CI locally, so a red head is caught before it costs a CI cycle.
+It calls the tools and scripts CI calls (it re-implements none of them) and prints one table, one row per
+step, with PASS, FAIL or SKIPPED(reason) and the duration. It exits non-zero when any step FAILs.
+
+```bash
+make pre-push                # what the diff against origin/main touches
+make pre-push SCOPE=all      # every step, whatever the diff
+make pre-push RACE=1         # adds -race to the focused go test
+```
+
+| Step | Runs when the diff touches | What it calls |
+|---|---|---|
+| `fetch-base`, `scope` | always | `git fetch origin main`; `scripts/ci/pr_classify.py --ci-scope` against the merge base |
+| `contains-main`, `commits-signed`, `no-ai-attribution` | always | merge-base equals `origin/main`; every commit shows `G`; no `Co-Authored-By` trailer or AI attribution |
+| `registry-gate` | always | `scripts/ci/gate_local.sh` (`make registry-gate`) |
+| `changelog-gate` | always | `scripts/ci/check_changelog_pr.py` and `scripts/ci/changelog_fragments.py check` |
+| `ci-script-tests` | `.github/`, `scripts/ci/`, Makefile, Dockerfiles, compose files, charts, `go.mod`/`go.sum`, requirements | the static tests (workflow permissions, action and tool pins, image digests, Dependabot coverage, proof comment; about 30 s) plus the tests named after a changed `scripts/ci` file; `SCOPE=all` runs the full `unittest discover` of `scripts/ci/tests` (about 400 s, measured) and the registry gate self-tests of `conformance.yaml` (`test_check_registry_touch.sh`, `test_gate_workflow_emulation.sh`; 156 s on CI) |
+| `actionlint`, `zizmor` | `.github/` | the workflow-lint commands (skipped with a notice when not installed) |
+| `harness-tests` | `scripts/bench/ab/`, `scripts/proof/` | `pytest scripts/bench/ab/tests scripts/proof/tests` |
+| `chart-tests` | `charts/` | `helm lint --strict`, `test_images.sh`, `test_templates.sh` |
+| `deps`, `conformance-check` | registry, docs, tests, fragments or product files | `make deps-*`, `make conformance-check` (confgen `-check`, generated-docs drift, Go conformance tests) |
+| `golangci-lint`, `go vet`, `go test` (logs, traces) | Go files of that module; `go.mod`, `go.sum`, `patches/` or `.golangci.yml` make lint and vet module-wide | `golangci-lint run --new-from-rev=origin/main`, `go vet` and `go test -short -count=1` on the touched packages, `GOWORK=off`, `GOMEMLIMIT=4GiB` |
+
+At the end it prints the 11 parts of the PR evidence pack as a checklist (the PR body is not parsed).
+
+Notes:
+
+- The scope is the committed diff `merge-base(origin/main, HEAD)..HEAD`, what a push publishes. The gates read `HEAD`;
+  the lint and test steps read the working tree, so uncommitted edits are reported in the `scope` row.
+- A step skipped because a tool is missing is listed under `NOT VERIFIED locally`: CI still runs it. For the Python
+  harness tests, make a venv once: `python3 -m venv ~/.cache/lakehouse-pre-push-venv` and
+  `~/.cache/lakehouse-pre-push-venv/bin/pip install --require-hashes -r scripts/ci/requirements.txt -r scripts/proof/requirements.txt` (what the PR proof job installs),
+  then `PRE_PUSH_PYTHON=~/.cache/lakehouse-pre-push-venv/bin/python make pre-push`. `GOLANGCI_LINT=<path>` selects a
+  linter binary (CI pins `GOLANGCI_LINT_VERSION` in `ci.yaml`; the row notes a version mismatch). zizmor is looked up on `PATH` and next to `PRE_PUSH_PYTHON`:
+  install it into that venv with `pip install --require-hashes --only-binary=:all: -r .github/workflow-lint-requirements.txt`
+  (the pinned file CI uses); set `GH_TOKEN` for its online audits. `PRE_PUSH_OFFLINE=1` skips the fetch (the verdict may then be against a stale base).
+- `go test` cannot pick packages for a module-wide input (`go.mod`, `go.sum`, `patches/`, `.golangci.yml`): that row is
+  SKIPPED and listed as NOT VERIFIED; run `make pre-push SCOPE=all`.
+- `SCOPE=all` took 15.1 min on a laptop (measured: 904 s wall, golangci-lint 6-11 s, `go test -short` 2.8 min for the logs
+  module and 1.8 min for the traces module, the `scripts/ci` tests and gate self-tests 8.7 min), and the `-short` runs of the
+  `parquets3` packages fit the 10 min `-timeout` without CI's sharding on that machine. Use it before a large change, not before every push.
+- `make deps-*` only checks that the dependency trees exist: after a change to `patches/` or a pin, refresh them as the
+  Makefile does (a stale tree fails the Go steps).
+- The full output of each step is kept in `<git dir>/pre-push-logs/` (overwritten by every run; the table shows the first
+  line of a failure and the failing step's last lines are printed under it). Run directly, `python3 scripts/ci/pre_push.py`
+  exits 1 when a step FAILs and 2 on a usage error; through `make` any failure is reported as `Error 2`.
+- The tests of a changed `scripts/ci` file are chosen by name (`foo.py` selects `test_foo*.py`), so a test of a script that
+  only imports the changed one is not selected; `SCOPE=all` runs them all.
+- What it cannot catch: jobs that need a Docker stack (e2e, parity, PR proof, parquet-readers), flaky tests, `-race`
+  runs of packages it did not select, tests of packages that merely depend on the touched ones, code scanning and
+  `github-code-quality` review threads, the independent review, and the PR body itself.
 
 ### Test time budget
 
