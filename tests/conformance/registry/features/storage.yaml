@@ -623,6 +623,9 @@
     - internal/parquetwriter/writer_test.go#TestTokenBloomKeysFollowRowGroupIndex
     - internal/parquetwriter/writer_test.go#TestPackageHasNoGlobalState
     - internal/parquetwriter/structcheck/structcheck_test.go#TestDiffNamesEveryKindOfDifference
+    - internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeReportsWhatTheFooterHolds
+    - internal/parquetwriter/structcheck/structcheck_test.go#TestIdenticalStructuresHaveNoDiff
+    - internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeRejectsGarbage
     - internal/compaction/merge_panic_contained_test.go#TestCompact_PanickingMergeIsContainedAndLeavesSourcesUntouched
     - internal/compaction/shared_writer_options_test.go#TestWriteCompactedIsTheSharedWriterWithTheGivenOptions
   docs:

@@ -2149,7 +2149,7 @@
         "rows": 0,
         "rows_pending": 0,
         "rows_targeting_hot": 0,
-        "tests": 19,
+        "tests": 22,
         "bench": [],
         "perf_cells": 0,
         "perf_scenario": false,
