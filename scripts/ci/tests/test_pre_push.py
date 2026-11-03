@@ -1636,6 +1636,8 @@ class DependentsAndPartials(unittest.TestCase):
         out = "generated files are stale: UPSTREAM_COVERAGE.md differs\nmake: *** [conformance-check] Error 1\n"
         self.assertEqual(pp.failure_line(out, 2), "generated files are stale: UPSTREAM_COVERAGE.md differs")
         self.assertEqual(pp.failure_line("make: *** [x] Error 1\n", 2), "make: *** [x] Error 1")
+        self.assertEqual(pp.failure_line("docs/features.md differs from the generator output\nmake: *** [x] Error 1\n", 2),
+                         "docs/features.md differs from the generator output")
 
     def test_a_linter_built_with_an_older_go_is_unverified_not_red(self):
         msg = "can't load config: the Go language version (go1.26) used to build golangci-lint is lower than the targeted Go version (1.27.3)\n"
