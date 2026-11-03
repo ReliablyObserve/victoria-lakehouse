@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -137,8 +139,6 @@ GO_INERT = (
 # metrics reads the traces parquets3 sources, schema scans for writers): they run on every Go change, about 5 s together
 # (measured). Tests of other packages that read sources are not known to this table (CONTRIBUTING: what it cannot catch).
 GO_SOURCE_READERS = (("logs", "internal/upstreamreuse", ""), ("logs", "internal/metrics", ""), ("logs", "internal/schema", ""))
-# Go packages CI tests (`go test` / `go vet`): everything else a diff touches is linted or built but not selected.
-CI_TESTED_LOGS = ("internal/", "cmd/", "scripts/ci/parquet-readback/")
 
 # ------------------------------------------------------------------------------------------ CI job map
 # One row per job of the workflows this tool mirrors: whether the job always runs (no `if:`), the pre-push steps
@@ -226,7 +226,51 @@ CI_JOBS = {
         "zizmor": "zizmor (online audits need GH_TOKEN)",
     }},
 }
-# Steps with no pr-proof job equivalent here but named in the CONTRIBUTING table: pr-proof.yaml:457 runs the ab tests.
+# What each mirrored step runs, as a short digest of its command, action arguments, environment and directory
+# (step_digest). A workflow edit that changes a command inside an existing step (a swapped test file, an added
+# `-tags` flag) changes the digest, and test_pre_push fails until this table, and the step it mirrors, is looked at.
+# Regenerate with `python3 scripts/ci/pre_push.py --ci-digests` (needs PyYAML) and review the diff.
+CI_STEP_DIGESTS = {
+    'changelog-pr.yaml:changelog-check:Check changelog': '1c6fbd1efd',
+    'changelog-pr.yaml:changelog-tests:Install test dependencies': '726d539dd5',
+    'changelog-pr.yaml:changelog-tests:Run CI script tests': '0ae3c4b83c',
+    'ci.yaml:build-logs:Build lakehouse-logs': 'd94bc024b6',
+    'ci.yaml:build-traces:Build lakehouse-traces': '1b08a249ec',
+    'ci.yaml:helm:Lint Helm chart': 'd0bc2b7683',
+    'ci.yaml:helm:Verify Helm images and templates': '98ff1e6d94',
+    'ci.yaml:lint-logs:Clone the logs-pin VictoriaLogs tree': 'eb44958182',
+    'ci.yaml:lint-logs:Coverage gate self-test': '507bb30177',
+    'ci.yaml:lint-logs:Patch-set consistency (vl-logs vs vl-traces)': '5406e1d2af',
+    'ci.yaml:lint-logs:Patch-set consistency guard self-test': '77b2ad1a93',
+    'ci.yaml:lint-logs:Upstream sync probe self-test': 'add2dd1ad5',
+    'ci.yaml:lint-logs:Upstream sync publish self-test': '55372efe35',
+    'ci.yaml:lint-logs:golangci-lint --build-tags e2e,chaos ./tests/ingestmatrix/... ./tests/e2e/... ./tests/conformance/...': '17ba4e8fd1',
+    'ci.yaml:lint-logs:golangci-lint --build-tags parity,chaos ./tests/parity/...': '8b5dd2877d',
+    'ci.yaml:lint-logs:golangci-lint ./internal/... ./cmd/...': 'ab395ab5a2',
+    'ci.yaml:lint-logs:loki-vl-proxy bump self-test': '6e65e29a7b',
+    'ci.yaml:lint-traces:golangci-lint': '7db732f07d',
+    'ci.yaml:lint-traces:golangci-lint --build-tags parity,chaos,e2e ./...': '521fe8eb1f',
+    'ci.yaml:test-logs:Check gofmt -s (logs)': '13e553cc06',
+    'ci.yaml:test-logs:Coverage check (logs)': '0ce9952629',
+    'ci.yaml:test-logs:Test logs module': 'cb86b7f9ec',
+    'ci.yaml:test-logs:Vet logs module': '26e2dba1cf',
+    'ci.yaml:test-traces:Check gofmt -s (traces)': '6a7fae35d9',
+    'ci.yaml:test-traces:Coverage check (traces)': '17dfb84639',
+    'ci.yaml:test-traces:Test traces module': '5b9a912fc1',
+    'ci.yaml:test-traces:Vet traces module': '50ab45740a',
+    'conformance.yaml:conformance-inventory:Conformance drift and generated files check': 'e279fd82f9',
+    'conformance.yaml:conformance-inventory:Prepare deps (no-op when cache hit)': '746665cebe',
+    'conformance.yaml:conformance-inventory:Registry gate self-tests': 'ead94c4077',
+    'proof-metrics.yaml:proof-metrics:Fixture generator output is committed': 'aef91a920e',
+    'proof-metrics.yaml:proof-metrics:Fixtures match their recorded expectations': 'f8419f0b5c',
+    'proof-metrics.yaml:proof-metrics:Install test dependencies': '7d3fd406ed',
+    'proof-metrics.yaml:proof-metrics:Lint': '9d0e9b5b21',
+    'proof-metrics.yaml:proof-metrics:Proof stack compose file is valid': 'd3a74a2832',
+    'proof-metrics.yaml:proof-metrics:Unit tests with coverage floor': '925d9db981',
+    'workflow-lint.yaml:workflow-lint:actionlint': 'a61c8fcb74',
+    'workflow-lint.yaml:workflow-lint:zizmor': '959a1dbf0e',
+}
+CI_IGNORED_ACTIONS = ("actions/checkout@", "actions/setup-", "actions/cache", "actions/upload-artifact@")
 VENV_HINT = (
     "python3 -m venv ~/.cache/lakehouse-pre-push-venv && ~/.cache/lakehouse-pre-push-venv/bin/pip install --require-hashes -r "
     "scripts/ci/requirements.txt -r scripts/proof/requirements.txt; "
@@ -246,7 +290,7 @@ IDENT_RE = re.compile(r"(?i)claude|anthropic")
 ERROR_LINE_TIERS = (
     re.compile(r"^(FAIL|ERROR|FAILED)\b[:\s]|^--- FAIL|^panic:|^E\s{3}"),
     re.compile(r"^\S[^\s:]*:\d+(:\d+)?: "),
-    re.compile(r"(?i)(\berror\b|\bfail(ed|ure)?\b|undefined|cannot |not found|required on|mismatch)"),
+    re.compile(r"(?i)(\berror\b|\bfail(ed|ure)?\b|undefined|cannot |not found|required on|mismatch|stale)"),
 )
 
 
@@ -556,6 +600,40 @@ def attribution_problems(log_text: str) -> list:
     return bad
 
 
+def step_digest(step: dict) -> str:
+    """Short digest of what a workflow step runs: command, action arguments, environment and working directory."""
+    body = {"run": " ".join(str(step.get("run", "")).split()), "with": step.get("with") or {}, "env": step.get("env") or {},
+            "wd": step.get("working-directory", "")}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:10]
+
+
+def step_key(step: dict) -> Optional[str]:
+    """The name CI_JOBS knows a workflow step by: its `name`, the lint action's arguments, or its content when it has
+    no name (an unnamed `run` step, an unlisted action). None for the setup steps nothing mirrors."""
+    if step.get("name"):
+        return str(step["name"])
+    uses = str(step.get("uses", ""))
+    if uses.startswith("golangci/golangci-lint-action"):
+        return ("golangci-lint " + str((step.get("with") or {}).get("args", ""))).strip()
+    if uses:
+        return None if uses.startswith(CI_IGNORED_ACTIONS) else "uses " + uses.split("@", 1)[0]
+    return "run " + step_digest(step)
+
+
+def ci_digest_table(jobs_of) -> dict:
+    """{"workflow:job:step key": digest} for every step of every mirrored job; jobs_of(workflow) -> parsed jobs."""
+    out = {}
+    for key, spec in CI_JOBS.items():
+        if spec["steps"] is None:
+            continue
+        w, j = key.split(":")
+        for st in jobs_of(w)[j].get("steps", []):
+            k = step_key(st)
+            if k:
+                out[f"{key}:{k}"] = step_digest(st)
+    return out
+
+
 def one_line(text: str, limit: int = 100) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -568,11 +646,12 @@ def tail(text: str, n: int = 12) -> str:
 def failure_line(out: str, rc: int) -> str:
     """The first line of the output that looks like the error, else the last line (actionlint ends with `| ^`)."""
     lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+    causes = [ln for ln in lines if not ln.startswith("make:")]  # make's own `*** [target] Error 1` is the symptom, not the cause
     for tier in ERROR_LINE_TIERS:
-        for ln in lines:
+        for ln in causes:
             if tier.search(ln):
                 return ln.strip()
-    return lines[-1].strip() if lines else f"exit {rc}"
+    return (causes or lines)[-1].strip() if lines else f"exit {rc}"
 
 
 # ------------------------------------------------------------------------------------------ step helpers
@@ -728,6 +807,9 @@ def step_registry_gate(ctx: Ctx) -> Result:
     return r
 
 
+CHANGELOG_LOCAL_NOTE = " (PR_AUTHOR_LOGIN/PR_HEAD_REPO/PR_BASE_REPO are unset locally: the release-metadata and Dependabot paths are not judged as in CI)"
+
+
 def step_changelog(ctx: Ctx) -> Result:
     r = run_cmds(ctx, [
         ("changelog gate", [ctx.py, "scripts/ci/check_changelog_pr.py", "--base", ctx.base, "--head", "HEAD"], {}),
@@ -735,7 +817,7 @@ def step_changelog(ctx: Ctx) -> Result:
     ])
     if r.status == PASS:
         gate = [ln for ln in r.log.splitlines() if ln.startswith("changelog gate:")]
-        r.detail = one_line(gate[-1][len("changelog gate: "):] if gate else "ok", 90)
+        r.detail = one_line((gate[-1][len("changelog gate: "):] if gate else "ok") + CHANGELOG_LOCAL_NOTE, 150)
     return r
 
 
@@ -822,7 +904,10 @@ def step_lint_logs_selftests(ctx: Ctx) -> Result:
             ("check_patches_equal.sh", ["bash", "scripts/ci/check_patches_equal.sh"], {"env": env})]
     if ctx.scope_all:
         cmds += [(os.path.basename(t), ["bash", t], {}) for t in LINT_LOGS_SELFTESTS[1:]]
-    return run_cmds(ctx, cmds, "patch-set consistency against a pristine pin clone" + (" + the four other lint-logs self-tests" if ctx.scope_all else ""))
+    r = run_cmds(ctx, cmds, "patch-set consistency against a pristine pin clone" + (" + the four other lint-logs self-tests" if ctx.scope_all else ""))
+    if r.status == PASS and not ctx.scope_all:
+        r.partial = "ran 2 of the 6 lint-logs patch-set and self-test commands of ci.yaml (the other four run with PREPUSH_SCOPE=all)"
+    return r
 
 
 def tool_pin(ctx: Ctx, tool: str) -> str:
@@ -883,7 +968,7 @@ def harness_env() -> tuple:
     """(env, private dir): the harness tests get their own TMPDIR and compose project name, so they never share the
     stack lock (<tmp>/lh-ab-<project>.lock) or the port block of a proof or A/B run that is going on."""
     d = tempfile.mkdtemp(prefix="pp-harness-")
-    return {"TMPDIR": d, "AB_PROJECT": f"lh-pp-{os.getpid()}"}, d
+    return {"TMPDIR": d, "AB_PROJECT": f"lh-pp-{os.getpid()}", "COVERAGE_FILE": os.path.join(d, ".coverage")}, d
 
 
 def generator_drift(ctx: Ctx) -> Result:
@@ -997,6 +1082,9 @@ def go_compiles(module: str):
     return applies
 
 
+LINT_UNUSABLE_RE = re.compile(r"can't load config|targeted Go version|lower than the targeted")
+
+
 def step_lint(module: str):
     def run(ctx: Ctx) -> Result:
         exe = os.path.expanduser(ctx.sys.environ.get("GOLANGCI_LINT") or "") or ctx.sys.which("golangci-lint")
@@ -1010,7 +1098,16 @@ def step_lint(module: str):
             if tags:
                 cmd += ["--build-tags", tags]
             cmds.append(("golangci-lint", cmd + pats, {"cwd": module_dir(ctx, module), "env": ctx.go_env()}))
-        return run_cmds(ctx, cmds, "whole packages as CI (the tagged tests/ runs: findings new since the merge base)" + version_note(ctx, "golangci-lint", exe))
+        note = version_note(ctx, "golangci-lint", exe)
+        r = run_cmds(ctx, cmds, "whole packages as CI (the tagged tests/ runs: findings new since the merge base)" + note)
+        if r.status == FAIL and LINT_UNUSABLE_RE.search(r.log):
+            pin = tool_pin(ctx, "golangci-lint")
+            return Result(SKIPPED, f"the local golangci-lint cannot load the config{note or ''}: it was built with an older Go than go.mod targets; install "
+                          f"the pinned v{pin or '<GOLANGCI_LINT_VERSION>'} built with the repository's Go version and set GOLANGCI_LINT=<path>; CI lint runs it",
+                          r.log, unverified=True)
+        if r.status == FAIL and note:
+            r.detail += note
+        return r
     return run
 
 
@@ -1038,7 +1135,10 @@ def step_vet(module: str):
 def step_build(module: str):
     def run(ctx: Ctx) -> Result:
         kw = {"cwd": module_dir(ctx, module), "env": ctx.go_env()}
-        return run_cmds(ctx, [("go build", ["go", "build", *vet_patterns(module)], kw)], "whole module builds (host platform)")
+        r = run_cmds(ctx, [("go build", ["go", "build", *vet_patterns(module)], kw)], "whole module builds (host platform)")
+        if r.status == PASS:
+            r.partial = "host platform only: CI builds linux and darwin, amd64 and arm64"
+        return r
     return run
 
 
@@ -1049,6 +1149,69 @@ def go_list_dirs(ctx: Ctx, module: str, pats) -> tuple:
     if rc != 0:
         return [], f"go list exit {rc}: {one_line(failure_line(out, rc), 70)}"
     return sorted(os.path.relpath(ln.strip(), str(base)) for ln in out.splitlines() if ln.strip()), ""
+
+
+def module_path(ctx: Ctx, module: str) -> str:
+    try:
+        m = re.search(r"(?m)^module\s+(\S+)", (module_dir(ctx, module) / "go.mod").read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+    return m.group(1) if m else ""
+
+
+def changed_import_paths(ctx: Ctx) -> set:
+    """Import paths of the live Go packages whose non-test code the diff changes, in both modules (a changed
+    _test.go file cannot change what importers see)."""
+    out = set()
+    for f in ctx.files:
+        if not f.endswith(".go") or f.endswith("_test.go") or is_deps_path(f) or "/testdata/" in f:
+            continue
+        m = module_of(f)
+        mp = module_path(ctx, m)
+        d = rel_to_module(m, go_pkg_dir(f))
+        base = module_dir(ctx, m) / d
+        if mp and base.is_dir() and any(base.glob("*.go")):
+            out.add(mp if d == "." else f"{mp}/{d}")
+    return out
+
+
+def dependents_of(ctx: Ctx, module: str) -> list:
+    """Packages of the module that import (also through their tests) a package the diff changes and are not
+    changed themselves: their tests can fail although no file of theirs changed. The logs module is compiled into
+    the traces module (replace ../), so a logs change reaches traces packages too."""
+    key = f"deps-{module}"
+    if key in ctx.cache:
+        return ctx.cache[key]
+    changed = changed_import_paths(ctx)
+    prefix = module_path(ctx, module)
+    found: set = set()
+    if changed and prefix:
+        pats = ["./..."] if module == "traces" else ["./internal/...", "./cmd/..."]
+        rc, out = ctx.sys.run(["go", "list", "-test", "-f", '{{.ImportPath}}|{{join .Deps " "}}', *pats],
+                              cwd=module_dir(ctx, module), env=ctx.go_env())
+        if rc == 0:
+            for ln in out.splitlines():
+                if "|" not in ln:
+                    continue
+                ip, deps = ln.split("|", 1)
+                base = re.sub(r" \[.*\]$", "", ip)
+                base = base[: -len(".test")] if base.endswith(".test") else base
+                base = base[: -len("_test")] if base.endswith("_test") else base
+                if base.startswith(prefix) and base not in changed and changed & set(deps.split()):
+                    found.add(base)
+    ctx.cache[key] = sorted(found)
+    return ctx.cache[key]
+
+
+def dependents_note(ctx: Ctx, module: str, targets: dict) -> str:
+    """The reason text for packages that import a changed package and were not selected (empty when none)."""
+    prefix = module_path(ctx, module)
+    picked = {f"{prefix}/{d}" if d != "." else prefix for d in targets}
+    deps = [d for d in dependents_of(ctx, module) if d not in picked]
+    if not deps:
+        return ""
+    short = [d[len(prefix) + 1:] if d != prefix else "." for d in deps]
+    return f"{len(deps)} package(s) import the changed ones and were not tested ({one_line(', '.join(short[:6]), 70)}{', ...' if len(short) > 6 else ''})"
 
 
 def is_parquets3(d: str) -> bool:
@@ -1101,17 +1264,26 @@ def step_test(module: str):
         else:
             targets = test_targets(ctx, module)
         unmapped = [] if ctx.scope_all else st["unmapped"]
+        deps_note = "" if ctx.scope_all else dependents_note(ctx, module, targets)
         if not targets:
+            if deps_note:
+                return Result(SKIPPED, deps_note + "; CI runs the whole suite: run PREPUSH_SCOPE=all", unverified=True)
             if unmapped:
                 return Result(SKIPPED, f"cannot tell which Go tests read {one_line(', '.join(unmapped), 60)} ({len(unmapped)} path(s) with no row in GO_TEST_READERS "
                               "or GO_INERT); CI runs the whole suite: run PREPUSH_SCOPE=all", unverified=True)
-            return Result(SKIPPED, "no changed path is a Go package or is read by a Go test (CI runs this job; the diff cannot change its result)")
+            return Result(SKIPPED, "no changed path is a Go package, is read by a Go test, or is imported by a package of this module (CI runs this job; the diff cannot change its result)")
         cmds = go_test_cmds(ctx, module, targets)
         r = run_cmds(ctx, cmds, f"{len(targets)} package(s); -short only for parquets3 as CI" + (", -race" if ctx.race else ", no -race (CI uses it)"))
-        if r.status == PASS and unmapped:
-            r.partial = f"{len(unmapped)} changed path(s) no row maps to a Go test ({one_line(', '.join(unmapped), 50)}): CI runs the whole suite"
-        elif r.status == PASS and not ctx.scope_all:
-            r.partial = "packages picked from the diff, unsharded, no coverage gate (CI runs every package)"
+        if r.status == PASS:
+            why = []
+            if unmapped:
+                why.append(f"{len(unmapped)} changed path(s) no row maps to a Go test ({one_line(', '.join(unmapped), 50)}): CI runs the whole suite")
+            if deps_note:
+                why.append(deps_note)
+            if not ctx.scope_all:
+                why.append("packages picked from the diff (CI runs every package)")
+            why.append("unsharded, no 90% coverage gate" + ("" if ctx.race else ", no -race (CI uses it)"))
+            r.partial = "; ".join(why)
         return r
     return run
 
@@ -1119,9 +1291,9 @@ def step_test(module: str):
 def go_test_applies(module: str):
     def applies(ctx: Ctx) -> Optional[str]:
         st = go_plan(ctx)[module]
-        if ctx.scope_all or st["wide"] or st["dirs"] or st["readers"] or st["unmapped"]:
+        if ctx.scope_all or st["wide"] or st["dirs"] or st["readers"] or st["unmapped"] or dependents_of(ctx, module):
             return None
-        return "no changed path is a Go package or is read by a Go test (CI runs this job; the diff cannot change its result)"
+        return "no changed path is a Go package, is read by a Go test, or is imported by a package of this module (CI runs this job; the diff cannot change its result)"
     return applies
 
 
@@ -1282,12 +1454,30 @@ def parse_args(argv):
     ap.add_argument("--race", action="store_true", help="add -race to the go test")
     ap.add_argument("--offline", action="store_true", default=os.environ.get("PRE_PUSH_OFFLINE") == "1",
                     help="do not fetch origin/main (the verdict may be against a stale base)")
+    ap.add_argument("--ci-digests", action="store_true", help="print the CI_STEP_DIGESTS table of the current workflows and exit (needs PyYAML)")
     return ap.parse_args(argv)
+
+
+def print_ci_digests(out) -> int:
+    try:
+        import yaml  # PyYAML, only for this maintenance command
+    except ImportError:
+        print("pre-push: --ci-digests needs PyYAML (the venv of PRE_PUSH_PYTHON)", file=sys.stderr)
+        return 2
+    root = Path(__file__).resolve().parents[2]
+    table = ci_digest_table(lambda w: yaml.safe_load((root / ".github/workflows" / w).read_text(encoding="utf-8"))["jobs"])
+    print("CI_STEP_DIGESTS = {", file=out)
+    for k in sorted(table):
+        print(f"    {k!r}: {table[k]!r},", file=out)
+    print("}", file=out)
+    return 0
 
 
 def main(argv=None, system: Optional[Sys] = None, out=None) -> int:
     out = out or sys.stdout
     a = parse_args(sys.argv[1:] if argv is None else argv)
+    if a.ci_digests:
+        return print_ci_digests(out)
     if a.scope not in ("diff", "all"):
         print(f"pre-push: unknown PREPUSH_SCOPE {a.scope!r} (diff or all)", file=sys.stderr)
         return 2

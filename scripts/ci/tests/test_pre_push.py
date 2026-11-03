@@ -1207,36 +1207,82 @@ def workflow_paths_filtered(name):
     return bool(isinstance(on, dict) and (on.get("pull_request") or {}).get("paths"))
 
 
-def step_key(step):
-    if step.get("name"):
-        return step["name"]
-    uses = step.get("uses", "")
-    if uses.startswith("golangci/golangci-lint-action"):
-        return ("golangci-lint " + (step.get("with") or {}).get("args", "")).strip()
-    return None
+CI_WORKFLOWS = ("ci.yaml", "conformance.yaml", "proof-metrics.yaml", "changelog-pr.yaml", "workflow-lint.yaml")
+
+
+def drift_problems(jobs_of):
+    """What differs between CI_JOBS / CI_STEP_DIGESTS and the workflows jobs_of(name) returns."""
+    out = []
+    actual = {f"{w}:{j}" for w in CI_WORKFLOWS for j in jobs_of(w)}
+    out += [f"new CI job {k}: add it to CI_JOBS" for k in sorted(actual - set(pp.CI_JOBS))]
+    out += [f"CI_JOBS names a job that no longer exists: {k}" for k in sorted(set(pp.CI_JOBS) - actual)]
+    for key, spec in pp.CI_JOBS.items():
+        if spec["steps"] is None or key not in actual:
+            continue
+        w, j = key.split(":")
+        keys = {k for k in (pp.step_key(s) for s in jobs_of(w)[j].get("steps", [])) if k}
+        out += [f"new or changed CI step in {key}: {k}" for k in sorted(keys - set(spec["steps"]))]
+        out += [f"CI_JOBS names a step that no longer exists in {key}: {k}" for k in sorted(set(spec["steps"]) - keys)]
+    now = pp.ci_digest_table(jobs_of)
+    out += [f"the command of a mirrored step changed: {k}" for k in sorted(k for k in now if k in pp.CI_STEP_DIGESTS and now[k] != pp.CI_STEP_DIGESTS[k])]
+    out += [f"mirrored step without a digest: {k}" for k in sorted(set(now) - set(pp.CI_STEP_DIGESTS))]
+    out += [f"digest of a step that no longer exists: {k}" for k in sorted(set(pp.CI_STEP_DIGESTS) - set(now))]
+    return out
 
 
 @unittest.skipUnless(shutil.which("git") and importlib.util.find_spec("yaml"), "needs git and PyYAML")
 class CiJobMapDrift(unittest.TestCase):
-    """A job or a step added to a mirrored workflow must be added to CI_JOBS, so a new CI check is noticed instead of
-    silently missing from the preview (review finding F11)."""
+    """A job, a step or a command of a mirrored workflow that changes must be looked at in CI_JOBS / CI_STEP_DIGESTS, so
+    a new or changed CI check is noticed instead of silently missing from the preview (review findings F11 and B2).
+    Detected: a new or removed job, a new, removed or renamed step (named, unnamed or an unlisted action), and any change
+    of the `run`, `with`, `env` or `working-directory` of a mirrored step. Not detected: changes of job-level settings
+    (needs, strategy, runner) and of steps of jobs the tool does not mirror."""
 
-    WORKFLOWS = ("ci.yaml", "conformance.yaml", "proof-metrics.yaml", "changelog-pr.yaml", "workflow-lint.yaml")
+    def mutated(self, job_key, edit):
+        import copy
+        w, j = job_key.split(":")
+        jobs = copy.deepcopy(workflow_jobs(w))
+        edit(jobs[j])
+        return lambda name: jobs if name == w else workflow_jobs(name)
 
-    def test_every_job_of_a_mirrored_workflow_is_in_the_map_and_vice_versa(self):
-        actual = {f"{w}:{j}" for w in self.WORKFLOWS for j in workflow_jobs(w)}
-        self.assertEqual(sorted(actual - set(pp.CI_JOBS)), [], "new CI job: add it to CI_JOBS (and to the CONTRIBUTING table)")
-        self.assertEqual(sorted(set(pp.CI_JOBS) - actual), [], "CI_JOBS names a job that no longer exists")
+    def test_the_workflows_match_the_map(self):
+        self.assertEqual(drift_problems(workflow_jobs), [], "run: python3 scripts/ci/pre_push.py --ci-digests, review the diff")
 
-    def test_every_step_of_a_mirrored_job_is_in_the_map_and_vice_versa(self):
-        for key, spec in pp.CI_JOBS.items():
-            if spec["steps"] is None:
-                continue
-            w, j = key.split(":")
-            with self.subTest(key):
-                actual = {k for k in (step_key(s) for s in workflow_jobs(w)[j].get("steps", [])) if k}
-                self.assertEqual(sorted(actual - set(spec["steps"])), [], "new CI step: add it to CI_JOBS")
-                self.assertEqual(sorted(set(spec["steps"]) - actual), [], "CI_JOBS names a step that no longer exists")
+    def test_a_command_swapped_inside_an_existing_step_is_detected(self):
+        """The original F11 case: a test file of conformance.yaml replaced by another inside 'Registry gate self-tests'."""
+        def edit(job):
+            for st in job["steps"]:
+                if st.get("name") == "Registry gate self-tests":
+                    st["run"] = st["run"].replace("test_pr_classify_toolchain.py", "test_something_else.py")
+        problems = drift_problems(self.mutated("conformance.yaml:conformance-inventory", edit))
+        self.assertTrue(any("Registry gate self-tests" in p and "command" in p for p in problems), problems)
+
+    def test_an_unnamed_run_step_is_detected(self):
+        problems = drift_problems(self.mutated("conformance.yaml:conformance-inventory", lambda job: job["steps"].append({"run": "make surprise"})))
+        self.assertTrue(any("new or changed CI step" in p and "run " in p for p in problems), problems)
+
+    def test_a_flag_added_to_a_go_test_line_is_detected(self):
+        def edit(job):
+            for st in job["steps"]:
+                if st.get("name") == "Test logs module":
+                    st["run"] = st["run"].replace("go test ./cmd/... -race", "go test -tags slow ./cmd/... -race")
+        problems = drift_problems(self.mutated("ci.yaml:test-logs", edit))
+        self.assertTrue(any("Test logs module" in p for p in problems), problems)
+
+    def test_an_unlisted_action_step_and_a_renamed_step_are_detected(self):
+        p1 = drift_problems(self.mutated("ci.yaml:helm", lambda job: job["steps"].append({"uses": "some/action@v1"})))
+        self.assertTrue(any("uses some/action" in p for p in p1), p1)
+        def rename(job):
+            job["steps"][1]["name"] = "Lint the chart"
+        p2 = drift_problems(self.mutated("ci.yaml:helm", rename))
+        self.assertTrue(any("Lint the chart" in p for p in p2), p2)
+
+    def test_a_new_job_is_detected(self):
+        import copy
+        jobs = copy.deepcopy(workflow_jobs("ci.yaml"))
+        jobs["brand-new"] = {"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]}
+        problems = drift_problems(lambda w: jobs if w == "ci.yaml" else workflow_jobs(w))
+        self.assertTrue(any("new CI job ci.yaml:brand-new" in p for p in problems), problems)
 
     def test_always_flag_matches_the_job_condition(self):
         for key, spec in pp.CI_JOBS.items():
@@ -1512,8 +1558,150 @@ class DocsDoNotOverstate(unittest.TestCase):
 
     def test_what_it_cannot_catch_is_listed(self):
         tail_ = self.section[self.section.index("cannot catch"):]
-        for word in ("Docker", "Flaky", "Linux-only", "coverage", "-race", "Code scanning", "depend on the touched ones"):
+        for word in ("Docker", "Flaky", "Linux-only", "coverage", "-race", "Code scanning", "import a touched package", "PR_AUTHOR_LOGIN"):
             self.assertIn(word, tail_)
+
+
+class DependentsAndPartials(unittest.TestCase):
+    """Review findings B3 and m1-m6: importers of a changed package, partial rows in every mode, error lines, linter."""
+
+    def tree(self):
+        root = mkdtemp("pp-deps-")
+        go_tree(root, "internal/a", "internal/b", "internal/c", "lakehouse-traces/internal/t")
+        (pathlib.Path(root) / "go.mod").write_text("module example.com/m\n\ngo 1.27\n")
+        (pathlib.Path(root) / "lakehouse-traces/go.mod").write_text("module example.com/m/lakehouse-traces\n\ngo 1.27\n")
+        return root
+
+    @staticmethod
+    def go_list_script(logs_out, traces_out=""):
+        def script(cmd, kw):
+            if cmd[:3] == ["go", "list", "-test"]:
+                return 0, traces_out if str(kw["cwd"]).endswith("lakehouse-traces") else logs_out
+            return None
+        return script
+
+    LOGS = ("example.com/m/internal/a|\n"
+            "example.com/m/internal/b|example.com/m/internal/a\n"
+            "example.com/m/internal/b.test|example.com/m/internal/a example.com/m/internal/b\n"
+            "example.com/m/internal/c [example.com/m/internal/c.test]|example.com/m/internal/c\n")
+    TRACES = ("example.com/m/lakehouse-traces/internal/t|example.com/m/internal/a example.com/m/lakehouse-traces/internal/t\n"
+              "example.com/m/lakehouse-traces/internal/t_test [example.com/m/lakehouse-traces/internal/t.test]|example.com/m/internal/a\n")
+
+    def test_importers_of_a_changed_package_are_reported_not_silently_green(self):
+        root = self.tree()
+        s = FakeSys(root, self.go_list_script(self.LOGS, self.TRACES))
+        ctx = make_ctx(["internal/a/a.go"], root=root, sys_=s)
+        r = pp.step_test("logs")(ctx)
+        self.assertEqual(r.status, pp.PASS)
+        self.assertIn("1 package(s) import the changed ones and were not tested (internal/b)", r.partial)
+
+    def test_a_logs_change_that_traces_imports_is_not_skipped_for_the_traces_module(self):
+        root = self.tree()
+        s = FakeSys(root, self.go_list_script(self.LOGS, self.TRACES))
+        ctx = make_ctx(["internal/a/a.go"], root=root, sys_=s)
+        self.assertIsNone(pp.go_test_applies("traces")(ctx))
+        r = pp.step_test("traces")(ctx)
+        self.assertEqual((r.status, r.unverified), (pp.SKIPPED, True), r.detail)
+        self.assertIn("import the changed ones and were not tested", r.detail)
+        self.assertIn("internal/t", r.detail)
+        self.assertNotIn("cannot change its result", r.detail)
+
+    def test_a_test_file_change_has_no_importers_to_worry_about(self):
+        root = self.tree()
+        s = FakeSys(root, self.go_list_script(self.LOGS, self.TRACES))
+        ctx = make_ctx(["internal/a/a_test.go"], root=root, sys_=s)
+        self.assertEqual(pp.dependents_of(ctx, "logs"), [])
+        self.assertIn("cannot change its result", pp.go_test_applies("traces")(ctx))
+
+    def test_a_package_with_no_importers_and_the_other_module_unaffected_stays_skipped(self):
+        root = self.tree()
+        s = FakeSys(root, self.go_list_script(self.LOGS, self.TRACES))
+        ctx = make_ctx(["internal/c/c.go"], root=root, sys_=s)
+        self.assertEqual(pp.dependents_of(ctx, "logs"), [])
+        self.assertEqual(pp.dependents_of(ctx, "traces"), [])
+
+    def test_partial_in_every_mode_scope_all_and_race_included(self):
+        root = self.tree()
+        go_out = f"{root}/internal/a\n"
+        s = FakeSys(root, lambda cmd, kw: (0, go_out) if cmd[:2] == ["go", "list"] else None)
+        for race in (False, True):
+            ctx = make_ctx([], scope_all=True, race=race, sys_=s, root=root)
+            r = pp.step_test("logs")(ctx)
+            self.assertEqual(r.status, pp.PASS)
+            self.assertIn("coverage gate", r.partial)
+            self.assertEqual("no -race" in r.partial, not race)
+        self.assertIn("host platform only", pp.step_build("logs")(make_ctx([], scope_all=True, sys_=s, root=root)).partial)
+
+    def test_make_error_lines_do_not_hide_the_cause(self):
+        out = "generated files are stale: UPSTREAM_COVERAGE.md differs\nmake: *** [conformance-check] Error 1\n"
+        self.assertEqual(pp.failure_line(out, 2), "generated files are stale: UPSTREAM_COVERAGE.md differs")
+        self.assertEqual(pp.failure_line("make: *** [x] Error 1\n", 2), "make: *** [x] Error 1")
+
+    def test_a_linter_built_with_an_older_go_is_unverified_not_red(self):
+        msg = "can't load config: the Go language version (go1.26) used to build golangci-lint is lower than the targeted Go version (1.27.3)\n"
+        root = self.tree()
+        (pathlib.Path(root) / ".github/workflows").mkdir(parents=True)
+        (pathlib.Path(root) / ".github/workflows/ci.yaml").write_text("env:\n  GOLANGCI_LINT_VERSION: v2.14.0\n")
+        def script(cmd, kw):
+            if cmd[1:2] == ["--version"]:
+                return 0, "golangci-lint has version 2.12.2 built with go1.26 from x\n"
+            if cmd[1:2] == ["run"]:
+                return 3, msg
+            return None
+        s = FakeSys(root, script, tools={"golangci-lint"})
+        r = pp.step_lint("logs")(make_ctx(["internal/a/a.go"], root=root, sys_=s))
+        self.assertEqual((r.status, r.unverified), (pp.SKIPPED, True), r.detail)
+        self.assertIn("v2.14.0", r.detail)
+        self.assertIn("local 2.12.2", r.detail)
+
+    def test_a_real_lint_failure_still_fails_and_shows_the_version_note(self):
+        root = self.tree()
+        (pathlib.Path(root) / ".github/workflows").mkdir(parents=True)
+        (pathlib.Path(root) / ".github/workflows/ci.yaml").write_text("env:\n  GOLANGCI_LINT_VERSION: v2.14.0\n")
+        def script(cmd, kw):
+            if cmd[1:2] == ["--version"]:
+                return 0, "golangci-lint has version 2.12.2 built with go1.27.3\n"
+            if cmd[1:2] == ["run"]:
+                return 1, "internal/a/a.go:3:1: ineffectual assignment (ineffassign)\n"
+            return None
+        s = FakeSys(root, script, tools={"golangci-lint"})
+        r = pp.step_lint("logs")(make_ctx(["internal/a/a.go"], root=root, sys_=s))
+        self.assertEqual(r.status, pp.FAIL)
+        self.assertIn("ineffassign", r.detail)
+        self.assertIn("CI pins 2.14.0", r.detail)
+
+    def test_lint_logs_selftests_say_they_ran_two_of_six_outside_scope_all(self):
+        root = mkdtemp()
+        (pathlib.Path(root) / ".github/workflows").mkdir(parents=True)
+        (pathlib.Path(root) / ".github/workflows/ci.yaml").write_text("env:\n  VL_VERSION_LOGS: v1.53.0\n")
+        cache = mkdtemp()
+        pin = pathlib.Path(cache) / "vl-logs-v1.53.0"
+        pin.mkdir()
+        (pin / "go.mod").write_text("module x\n")
+        s = FakeSys(root, environ={"PATH": "", "PRE_PUSH_CACHE": cache})
+        r = pp.step_lint_logs_selftests(make_ctx([PATCHES + "vl-logs/x"], sys_=s, root=root))
+        self.assertIn("2 of the 6", r.partial)
+        r = pp.step_lint_logs_selftests(make_ctx([], scope_all=True, sys_=FakeSys(root, environ={"PATH": "", "PRE_PUSH_CACHE": cache}), root=root))
+        self.assertEqual(r.partial, "")
+
+    def test_changelog_gate_row_says_the_ci_only_paths_were_not_judged(self):
+        r = pp.step_changelog(make_ctx(sys_=FakeSys(mkdtemp(), lambda cmd, kw: (0, "changelog gate: ok\n"))))
+        self.assertIn("PR_AUTHOR_LOGIN", r.detail)
+        self.assertIn("Dependabot", r.detail)
+
+    def test_harness_coverage_file_lives_in_the_private_directory(self):
+        env, d = pp.harness_env()
+        try:
+            self.assertEqual(os.path.dirname(env["COVERAGE_FILE"]), d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_docs_state_the_exit_code_through_make_correctly(self):
+        section = (REPO / "CONTRIBUTING.md").read_text()
+        self.assertNotIn("any failure is reported as `Error 2`", section)
+        self.assertIn("`Error 1`", section)
+        self.assertIn("PR_AUTHOR_LOGIN", section)
+        self.assertNotIn("full fidelity", section)
 
 
 if __name__ == "__main__":
