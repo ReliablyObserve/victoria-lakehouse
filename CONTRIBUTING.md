@@ -74,7 +74,7 @@ this table; `test_pre_push.py` checks the job and step names against the workflo
 | `golangci-lint (logs)`, `golangci-lint (traces)` | a Go file, an embedded asset under a package, or `go.mod`, `go.sum`, `patches/`, `.golangci.yml`; a logs-module change lints both modules | whole packages as CI: `./internal/... ./cmd/...`, traces `./...`; the tagged `tests/` runs with findings new since the merge base | `lint-logs`: ci.yaml:633, :640, :651; `lint-traces`: ci.yaml:676, :691 | the linter is the local binary (the row notes a version mismatch with `GOLANGCI_LINT_VERSION`) |
 | `go vet (logs)`, `go vet (traces)` | as above | `gofmt -s -l` and `go vet` of the whole module (`./internal/... ./cmd/...`; traces `./...`) | `test-logs`: ci.yaml:283, :335; `test-traces`: ci.yaml:356, :392 | none known |
 | `go build (logs)`, `go build (traces)` | as above | `go build` of the whole module | `build-logs`: ci.yaml:717; `build-traces`: ci.yaml:749 | the host platform only (CI builds linux and darwin) |
-| `go test (logs)`, `go test (traces)` | a changed Go package; a non-Go file under a package; a file a Go test reads (`GO_TEST_READERS` in `pre_push.py`: `docs/` -> `internal/config`, `internal/delete`; `alerts/`, `dashboards/` -> `internal/metrics`; `charts/` -> the compaction PDB test; `deployment/`, `README.md` -> `internal/config`; `benchmarks/` -> `cmd/bench`) | `go test -count=1 -p 2 -timeout=10m` on those packages, `-short` only for `parquets3` as CI; the module-wide inputs and unmapped paths are NOT VERIFIED | `test-logs`: ci.yaml:311; `test-traces`: ci.yaml:366 | marked partial: only the picked packages, no `-race` unless `RACE=1`, no sharding, no 90% coverage gate |
+| `go test (logs)`, `go test (traces)` | a changed Go package (any Go change also runs the three source-scanning packages of `GO_SOURCE_READERS`); a non-Go file under a package; a file a Go test reads (`GO_TEST_READERS` in `pre_push.py`: `docs/` -> `internal/config`, `internal/delete`; `alerts/`, `dashboards/` -> `internal/metrics`; `charts/` -> the compaction PDB test; `deployment/`, `README.md` -> `internal/config`; `benchmarks/` -> `cmd/bench`) | `go test -count=1 -p 2 -timeout=10m` on those packages, `-short` only for `parquets3` as CI; the module-wide inputs and unmapped paths are NOT VERIFIED | `test-logs`: ci.yaml:311; `test-traces`: ci.yaml:366 | marked partial: only the picked packages, no `-race` unless `RACE=1`, no sharding, no 90% coverage gate |
 
 `PREPUSH_SCOPE=all` runs every step: the full discovery, the self-tests, `go test` of every package of both modules
 (`-short` for `parquets3` only), and no `--new-from-rev` on the plain lint. At the end the tool prints the 11 parts
@@ -92,7 +92,8 @@ Notes:
   then `PRE_PUSH_PYTHON=~/.cache/lakehouse-pre-push-venv/bin/python make pre-push`. `GOLANGCI_LINT=<path>` selects a
   linter binary. zizmor is looked up on `PATH` and next to `PRE_PUSH_PYTHON`:
   install it into that venv with `pip install --require-hashes --only-binary=:all: -r .github/workflow-lint-requirements.txt`
-  (the pinned file CI uses); set `GH_TOKEN` for its online audits. `PRE_PUSH_OFFLINE=1` skips the fetch (the verdict may then be against a stale base).
+  (the pinned file CI uses); set `GH_TOKEN` for its online audits. `PRE_PUSH_OFFLINE=1` skips the fetch (the verdict may then be against a stale base). `PRE_PUSH_CACHE=<dir>` moves the
+  cache of the pristine logs-pin clone (default `~/.cache/lakehouse-pre-push`).
 - `make deps-*` only checks that the dependency trees exist: after a change to `patches/` or a pin, refresh them as the
   Makefile does (a stale tree fails the Go steps).
 - The full output of each step is kept in `<git dir>/pre-push-logs/` (overwritten by every run; the table shows the first
@@ -112,9 +113,9 @@ What it **cannot catch** (CI will):
   `s3-compat`, `docker-logs`/`docker-traces`, `helm-config-drift`, `bench-selftest`, the benchmarks, the perf cells.
 - Flaky tests and retries, Linux-only failures (this runs on your OS and architecture), `-race` runs it did not select
   (it never adds `-race` by itself), the sharding and time-budget gates, and the 90% coverage gate.
-- Tests of packages that depend on the touched ones, and tests that scan the Go sources of other packages
-  (`internal/upstreamreuse`, `internal/schema`, `internal/metrics`): they run only when their own package or a file listed in
-  `GO_TEST_READERS` changed.
+- Tests of packages that depend on the touched ones, and tests that scan the Go sources of packages other than
+  `internal/upstreamreuse`, `internal/metrics` and `internal/schema` (which run on every Go change, `GO_SOURCE_READERS`):
+  they run only when their own package or a file listed in `GO_TEST_READERS` changed.
 - Code scanning (CodeQL, Semgrep, govulncheck, Trivy), dependency review, `github-code-quality` review threads, the
   independent review, and the PR body itself.
 

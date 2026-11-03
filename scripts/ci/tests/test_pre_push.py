@@ -149,7 +149,8 @@ class ScopeMapping(unittest.TestCase):
         ("changelog fragment", ["changelog.d/9.fixed.md"], {"product": "0", "skip_go": "true"}, {"registry-gate-selftests"}),
         ("logs go file", ["internal/storage/x.go"], {"product": "1", "skip_go": "false"}, LOGS_CHANGE),
         ("logs testdata only", ["internal/storage/testdata/a.golden"], {"product": "1", "skip_go": "false"}, {"go test (logs)"}),
-        ("traces go file", ["lakehouse-traces/internal/x/y.go"], {"product": "1", "skip_go": "false"}, GO_TRACES),
+        ("traces go file: the source-scanning logs packages run too", ["lakehouse-traces/internal/x/y.go"], {"product": "1", "skip_go": "false"},
+         GO_TRACES | {"go test (logs)"}),
         ("mirrored go in both", ["internal/a/a.go", "lakehouse-traces/internal/a/a.go"], {"product": "1", "skip_go": "false"},
          LOGS_CHANGE | GO_TRACES),
         ("go file with CI scope skip_go=true still runs every Go step", ["internal/a/a.go"], {"product": "0", "skip_go": "true"},
@@ -1146,8 +1147,6 @@ class GoTestReadersDrift(unittest.TestCase):
                 continue
             with self.subTest(top):
                 known = self.table_pairs(top)
-                self.assertTrue(known or pp.is_inert(top + "/") or pp.is_inert(top),
-                                f"{top}: read by {sorted(pairs)} but in neither GO_TEST_READERS nor GO_INERT")
                 if not known:
                     self.fail(f"{top} is GO_INERT but a Go test of {sorted(pairs)} names it: add a GO_TEST_READERS row")
                 self.assertLessEqual(pairs, known, f"{top}: add the missing package to GO_TEST_READERS")
@@ -1236,7 +1235,6 @@ class CiJobMapDrift(unittest.TestCase):
             w, j = key.split(":")
             with self.subTest(key):
                 actual = {k for k in (step_key(s) for s in workflow_jobs(w)[j].get("steps", [])) if k}
-                actual -= {"Prepare VL deps (logs)"}  # none: deps job only
                 self.assertEqual(sorted(actual - set(spec["steps"])), [], "new CI step: add it to CI_JOBS")
                 self.assertEqual(sorted(set(spec["steps"]) - actual), [], "CI_JOBS names a step that no longer exists")
 
@@ -1277,6 +1275,14 @@ class GateAndSelftestSteps(unittest.TestCase):
         self.assertTrue(any("test_check_registry_touch.sh" in x for x in ran))
         self.assertTrue(any("test_gate_workflow_emulation.sh" in x for x in ran))
         self.assertTrue(any("test_pr_classify_toolchain.py" in x for x in ran))
+
+    def test_source_scanning_packages_run_on_every_go_change(self):
+        root = probe_root("internal/upstreamreuse", "internal/metrics", "internal/schema")
+        ctx = make_ctx(["lakehouse-traces/internal/t/t.go"], root=root)
+        self.assertEqual(set(pp.test_targets(ctx, "logs")), {"internal/upstreamreuse", "internal/metrics", "internal/schema"})
+        self.assertEqual(pp.test_targets(make_ctx(["docs/x.md"], root=root), "logs").get("internal/schema"), None)
+        for m, d, _ in pp.GO_SOURCE_READERS:
+            self.assertTrue(any((REPO / d).glob("*_test.go")), d)
 
     def test_selftests_do_not_apply_to_an_unrelated_diff(self):
         ctx = make_ctx(["internal/a/a.go"])
@@ -1495,6 +1501,14 @@ class DocsDoNotOverstate(unittest.TestCase):
             path = REPO / ".github/workflows" / wf
             self.assertTrue(path.is_file(), wf)
             self.assertLessEqual(int(b or a), len(path.read_text().splitlines()), f"{wf}:{a}")
+
+    def test_no_local_tooling_names_in_the_public_tables(self):
+        for name in (".claude", "AGENTS.md"):
+            self.assertNotIn(name, " ".join(pp.GO_INERT))
+            self.assertNotIn(name, self.section)
+
+    def test_the_cache_variable_is_documented(self):
+        self.assertIn("PRE_PUSH_CACHE", self.section)
 
     def test_what_it_cannot_catch_is_listed(self):
         tail_ = self.section[self.section.index("cannot catch"):]

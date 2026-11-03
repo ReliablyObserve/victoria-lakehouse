@@ -131,8 +131,12 @@ GO_TEST_READERS = {
 GO_INERT = (
     ".github/", "bench-results/", "results/", "website/", "scripts/", "tests/", "changelog.d/",
     "CHANGELOG.md", "UPSTREAM_COVERAGE.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "Makefile",
-    "Dockerfile", ".gitignore", ".dockerignore", ".gitleaks.toml", "go.work", "go.work.sum", ".claude/", "AGENTS.md",
+    "Dockerfile", ".gitignore", ".dockerignore", ".gitleaks.toml", "go.work", "go.work.sum",
 )
+# Packages whose tests scan the Go sources of other packages (upstreamreuse walks internal/, cmd/ and the traces tree,
+# metrics reads the traces parquets3 sources, schema scans for writers): they run on every Go change, about 5 s together
+# (measured). Tests of other packages that read sources are not known to this table (CONTRIBUTING: what it cannot catch).
+GO_SOURCE_READERS = (("logs", "internal/upstreamreuse", ""), ("logs", "internal/metrics", ""), ("logs", "internal/schema", ""))
 # Go packages CI tests (`go test` / `go vet`): everything else a diff touches is linted or built but not selected.
 CI_TESTED_LOGS = ("internal/", "cmd/", "scripts/ci/parquet-readback/")
 
@@ -457,6 +461,9 @@ def go_plan(ctx: "Ctx") -> dict:
         if is_inert(f):
             continue
         plan[m]["unmapped"].append(f)
+    if any(f.endswith(".go") and not is_deps_path(f) for f in ctx.files):
+        for rm, rdir, run in GO_SOURCE_READERS:
+            plan[rm]["readers"].setdefault(rdir, run)
     if plan["logs"]["compile"]:
         plan["traces"]["compile"] = True
     for m in plan:
@@ -891,7 +898,7 @@ def generator_drift(ctx: Ctx) -> Result:
         work = os.path.join(tmp, "tree")
         os.makedirs(work)
         with tarfile.open(tar) as tf:
-            tf.extractall(work, filter="data") if sys.version_info >= (3, 12) else tf.extractall(work)  # noqa: S202 - our own archive
+            tf.extractall(work, filter="data")  # Python 3.12+, as CI
         cases = os.path.join(work, "scripts", "proof", "fixtures", "cases")
         before = os.path.join(tmp, "before")
         shutil.copytree(cases, before)
