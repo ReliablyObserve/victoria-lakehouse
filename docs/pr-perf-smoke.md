@@ -309,7 +309,8 @@ and without the hash both started at 24000; other names do derive a block below 
 ports were in use, the holder is named in the log (`ss -Htanp "( sport = :P )"`, best effort) and the run is re-attempted once on another block, after the files
 of the first attempt are removed; the comment says so ("Re-attempted once ...", with the exit code of the second attempt). A regression, an invalid run, a stack of the
 project that already runs, or a second port collision is never re-attempted. A crash of the wrapper itself (an exception, not a stop of `pr_smoke.py`) is
-"did not complete", exit 3, with the same comment files.
+"did not complete", exit 3, with the same comment files; so is a `pr_smoke.py` that died without writing a verdict that agrees with its exit status (its argument
+parser, an import, a crash outside its own error handling).
 
 What the re-attempt covers, and what it does not. It covers the time between the probe and the preflight of `pr_smoke.py` (seconds). Between that preflight and
 `docker compose up` lie the image builds (measured: job 125531632310 of run 41519493968, "building the images" at 20:29:28 and the compose start at 20:34:12, 4 min 44 s); a port taken in that window fails `compose up` with a
