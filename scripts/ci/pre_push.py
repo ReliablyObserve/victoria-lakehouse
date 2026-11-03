@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""`make pre-push`: the scoped fast tier of CI, run locally before a push.
+"""`make pre-push`: a preview of the fast, always-run tier of CI, run locally before a push.
 
-It runs, in one go and with the same inputs CI uses, the checks that fail most often AFTER a push, so
-a red head is caught before it costs a CI cycle. It re-implements nothing: every step calls the tool
-or script CI calls (scripts/ci/pr_classify.py, gate_local.sh, check_changelog_pr.py,
-changelog_fragments.py, `make conformance-check`, actionlint, zizmor, the scripts/ci unit tests,
-pytest of the proof harness, helm, golangci-lint, go vet, go test).
+It calls the same tools and scripts the CI jobs call (scripts/ci/pr_classify.py, gate_local.sh,
+check_changelog_pr.py, changelog_fragments.py, `make conformance-check`, actionlint, zizmor, the
+scripts/ci unit tests, pytest of the proof harness, helm, golangci-lint, gofmt, go vet, go build, go
+test) and re-implements none of them. It is NOT the same as CI: it picks the Go test packages from the
+diff, runs without -race unless asked, does not shard, and cannot run the Docker-stack jobs, so every
+row says what it covered and the summary lists what it did not verify (CONTRIBUTING.md, "make pre-push",
+has the per-step table with the workflow file:line and the list of what it cannot catch).
 
-    make pre-push                  what the diff against origin/main touches
-    make pre-push SCOPE=all        every step, whatever the diff
-    make pre-push RACE=1           adds -race to the focused go test
+    make pre-push                       what the diff against origin/main touches
+    make pre-push PREPUSH_SCOPE=all     every step, whatever the diff
+    make pre-push RACE=1                adds -race to the go test
 
-Scope comes from the committed diff `merge-base(origin/main, HEAD)..HEAD` (what a push publishes),
-the same input scripts/ci/pr_classify.py --ci-scope gets in CI. Uncommitted edits are NOT judged by the
-gates (they read HEAD); the lint and test steps read the working tree, so a dirty tree is reported.
+Scope comes from the committed diff `merge-base(origin/main, HEAD)..HEAD` (what a push publishes).
+Uncommitted edits are NOT judged by the gates (they read HEAD); the lint and test steps read the working
+tree, so a dirty tree (tracked or untracked files) is reported.
 
 Result per step: PASS, FAIL, or SKIPPED(reason). Exit 0 when nothing FAILed, 1 when a step FAILed,
 2 on a usage error (not a git repository, base not resolvable); `make` turns any non-zero exit into 2.
-The full output of every step that printed any is kept in <git dir>/pre-push-logs/, overwritten by each run. A SKIPPED step that is skipped
-because a tool is missing is listed as NOT VERIFIED: CI will still run it.
-
-This is a preview, not a replacement: it cannot run Docker-stack jobs, flaky-test retries, code
-scanning, or the review-thread checks (see docs and CONTRIBUTING.md, "make pre-push").
+The headline is `PASS (N not verified)` when rows were skipped because a tool or input is missing or
+ran only in part; the summary then names those rows and every always-run CI job that was not run here.
+The full output of every step that printed any is kept in <git dir>/pre-push-logs/, overwritten by each run.
 
 Stdlib only.
 """
@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -60,17 +61,14 @@ EVIDENCE_EXTRA = (
     "Before handover: all GHA checks green on the head, zero unresolved review threads, zero open code-scanning alerts",
 )
 
+
 # ------------------------------------------------------------------------------------------ scope tables
 TRACES_DIR = "lakehouse-traces"
-# Paths whose change can make `make conformance-check` fail: the registry and its tests, the generated
-# docs, the changelog fragments (an `added` bullet needs a feature), the perf-shape sets, and any product file.
-CONFORMANCE_PREFIXES = ("tests/", "docs/", "changelog.d/", "scripts/bench/ab/")
-CONFORMANCE_FILES = ("README.md", "UPSTREAM_COVERAGE.md", "CHANGELOG.md")
 # The cheap static tests of workflows, tool pins, image digests and Dependabot coverage (about 30 s together,
 # measured). They read .github/, the shell scripts of scripts/ci, the Makefile, Dockerfiles, compose files and
 # manifests, so they run when the diff touches any of those (STATIC_*). The full `unittest discover` of
-# scripts/ci/tests that the changelog-tests job runs took about 400 s here (measured), so it runs for
-# SCOPE=all only; a changed scripts/ci file runs its own tests (tests_for_ci_file) plus the static set.
+# scripts/ci/tests that the changelog-tests job runs on every PR is slow (about 400 s here, measured), so it
+# runs for PREPUSH_SCOPE=all only; a changed scripts/ci file runs its own tests (tests_for_ci_file) plus the static set.
 STATIC_TESTS = (
     "test_workflow_permissions.py",
     "test_workflow_action_pins.py",
@@ -82,10 +80,27 @@ STATIC_TESTS = (
     "test_dependabot_coverage.py",
     "test_proof_comment.py",
 )
-# conformance.yaml runs these next to `make conformance-check` (about 156 s on CI, 345 s + 86 s here under load, measured).
+# conformance.yaml (job conformance-inventory) runs these next to `make conformance-check`. The first two clone the
+# real repository (changelog.d, registry and features included) and take about 8 minutes together (measured), so they
+# run for PREPUSH_SCOPE=all only and are reported NOT VERIFIED when the diff touches what they clone.
 GATE_SELFTESTS = ("scripts/ci/tests/test_check_registry_touch.sh", "scripts/ci/tests/test_gate_workflow_emulation.sh")
+GATE_SELFTEST_PY = "scripts/ci/tests/test_pr_classify_toolchain.py"
+GATE_SELFTEST_INPUTS = ("changelog.d/", "tests/conformance/registry/", "docs/features.md")
+# lint-logs (ci.yaml) runs these shell self-tests, and check_patches_equal.sh against a pristine logs-pin clone.
+LINT_LOGS_SELFTESTS = (
+    "scripts/ci/tests/check_patches_equal_test.sh",
+    "scripts/ci/tests/check_coverage_test.sh",
+    "scripts/ci/tests/upstream_sync_probe_test.sh",
+    "scripts/ci/tests/upstream_sync_publish_test.sh",
+    "scripts/ci/tests/loki_vl_proxy_bump_test.sh",
+)
 STATIC_PREFIXES = (".github/", "scripts/ci/", "deployment/", "charts/")
 STATIC_NAMES = re.compile(r"(^|/)(Makefile|go\.mod|go\.sum|Dockerfile[^/]*|requirements[^/]*\.(txt|in)|docker-compose[^/]*\.ya?ml)$")
+# proof-metrics.yaml path filter, plus the ab harness tests (pr-proof.yaml:457).
+HARNESS_PREFIXES = (
+    "scripts/bench/ab/", "scripts/proof/", "deployment/docker/proof/", "deployment/docker/docker-compose-proof.yml",
+    "tests/parity/testdata/tiecut_golden.json",
+)
 # Inputs that shape a whole Go module: no package is "touched", yet CI runs everything for them.
 WIDE_MODULE_FILES = {
     "go.mod": ("logs",), "go.sum": ("logs",),
@@ -94,6 +109,120 @@ WIDE_MODULE_FILES = {
 }
 # patches/<set>/...: the set names the module it patches; a file directly under patches/ concerns both.
 PATCH_SET_MODULES = {"vl-logs": ("logs",), "vl-traces": ("traces",), "vt-traces": ("traces",)}
+# Files whose logic the CI scope and gate steps run from the BASE branch, not from this branch.
+BASE_SIDE_FILES = ("scripts/ci/pr_classify.py", ".github/actions/ci-scope/")
+
+# Non-Go paths that a Go test of a CI-tested package reads (the test_pre_push drift test greps every Go file of
+# those packages for the top-level repository names and fails when this table misses one):
+#   path prefix -> ((module, package dir, -run regex or ""), ...)
+# A non-Go file under a Go package directory needs no row: it belongs to that package (embedded assets, testdata).
+# tests/conformance reads many of these too, but `make conformance-check` always runs it.
+GO_TEST_READERS = {
+    "docs/": (("logs", "internal/config", ""), ("logs", "internal/delete", "")),
+    "README.md": (("logs", "internal/config", ""),),
+    "deployment/": (("logs", "internal/config", ""),),
+    "alerts/": (("logs", "internal/metrics", ""),),
+    "dashboards/": (("logs", "internal/metrics", ""),),
+    "charts/": (("logs", "internal/compaction", "^TestCompaction_PDB_NoSimultaneousEviction$"),),
+    "benchmarks/": (("logs", "cmd/bench", ""),),
+}
+# Paths no Go test of a CI-tested package reads (proved by the same drift test). They can still change what other
+# jobs report; the rows for those jobs say so.
+GO_INERT = (
+    ".github/", "bench-results/", "results/", "website/", "scripts/", "tests/", "changelog.d/",
+    "CHANGELOG.md", "UPSTREAM_COVERAGE.md", "CONTRIBUTING.md", "SECURITY.md", "LICENSE", "Makefile",
+    "Dockerfile", ".gitignore", ".dockerignore", ".gitleaks.toml", "go.work", "go.work.sum", ".claude/", "AGENTS.md",
+)
+# Go packages CI tests (`go test` / `go vet`): everything else a diff touches is linted or built but not selected.
+CI_TESTED_LOGS = ("internal/", "cmd/", "scripts/ci/parquet-readback/")
+
+# ------------------------------------------------------------------------------------------ CI job map
+# One row per job of the workflows this tool mirrors: whether the job always runs (no `if:`), the pre-push steps
+# that mirror it, and for mirrored jobs one entry per workflow step saying what covers it. test_pre_push parses the
+# workflow files and fails when a job or a step of a mirrored job is missing here, so a new CI step is noticed.
+# Step keys are the step `name`, or "golangci-lint <args>" for the unnamed lint action steps.
+NC = "NOT COVERED: "
+CI_JOBS = {
+    "ci.yaml:scope": {"always": True, "local": ("scope",), "steps": None},
+    "ci.yaml:deps": {"always": True, "local": ("deps",), "steps": None},
+    "ci.yaml:helm-config-drift": {"always": True, "local": (), "steps": None},
+    "ci.yaml:bench-selftest": {"always": True, "local": (), "steps": None},
+    "ci.yaml:field-metadata-perf": {"always": False, "local": (), "steps": None},
+    "ci.yaml:parquet-readback": {"always": False, "local": (), "steps": None},
+    "ci.yaml:test-logs": {"always": True, "local": ("go vet (logs)", "go test (logs)"), "steps": {
+        "Check gofmt -s (logs)": "go vet (logs)",
+        "Test logs module": "go test (logs): packages picked from the diff, -race only with RACE=1, no sharding",
+        "Coverage check (logs)": NC + "the 90% coverage gate",
+        "Vet logs module": "go vet (logs)",
+    }},
+    "ci.yaml:test-traces": {"always": True, "local": ("go vet (traces)", "go test (traces)"), "steps": {
+        "Check gofmt -s (traces)": "go vet (traces)",
+        "Test traces module": "go test (traces): packages picked from the diff, -race only with RACE=1, no sharding",
+        "Coverage check (traces)": NC + "the 90% coverage gate",
+        "Vet traces module": "go vet (traces)",
+    }},
+    "ci.yaml:test-parquets3-heavy": {"always": False, "local": (), "steps": None},
+    "ci.yaml:storage-health-compaction": {"always": False, "local": (), "steps": None},
+    "ci.yaml:parity-unit": {"always": False, "local": (), "steps": None},
+    "ci.yaml:lint-logs": {"always": True, "local": ("golangci-lint (logs)", "lint-logs-selftests"), "steps": {
+        "Clone the logs-pin VictoriaLogs tree": "lint-logs-selftests",
+        "Patch-set consistency guard self-test": "lint-logs-selftests",
+        "Patch-set consistency (vl-logs vs vl-traces)": "lint-logs-selftests",
+        "Coverage gate self-test": "lint-logs-selftests",
+        "Upstream sync probe self-test": "lint-logs-selftests",
+        "Upstream sync publish self-test": "lint-logs-selftests",
+        "loki-vl-proxy bump self-test": "lint-logs-selftests",
+        "golangci-lint ./internal/... ./cmd/...": "golangci-lint (logs)",
+        "golangci-lint --build-tags e2e,chaos ./tests/ingestmatrix/... ./tests/e2e/... ./tests/conformance/...": "golangci-lint (logs)",
+        "golangci-lint --build-tags parity,chaos ./tests/parity/...": "golangci-lint (logs)",
+    }},
+    "ci.yaml:lint-traces": {"always": True, "local": ("golangci-lint (traces)",), "steps": {
+        "golangci-lint": "golangci-lint (traces)",
+        "golangci-lint --build-tags parity,chaos,e2e ./...": "golangci-lint (traces)",
+    }},
+    "ci.yaml:build-logs": {"always": True, "local": ("go build (logs)",), "steps": {
+        "Build lakehouse-logs": "go build (logs): the host platform only, no linux/darwin matrix",
+    }},
+    "ci.yaml:build-traces": {"always": True, "local": ("go build (traces)",), "steps": {
+        "Build lakehouse-traces": "go build (traces): the host platform only, no linux/darwin matrix",
+    }},
+    "ci.yaml:docker-logs": {"always": True, "local": (), "steps": None},
+    "ci.yaml:docker-traces": {"always": True, "local": (), "steps": None},
+    "ci.yaml:security-logs": {"always": False, "local": (), "steps": None},
+    "ci.yaml:security-traces": {"always": False, "local": (), "steps": None},
+    "ci.yaml:helm": {"always": True, "local": ("chart-tests",), "steps": {
+        "Lint Helm chart": "chart-tests",
+        "Verify Helm images and templates": "chart-tests",
+    }},
+    "ci.yaml:benchmarks-logs": {"always": False, "local": (), "steps": None},
+    "ci.yaml:benchmarks-traces": {"always": False, "local": (), "steps": None},
+    "conformance.yaml:conformance-inventory": {"always": True, "local": ("deps", "conformance-check", "registry-gate-selftests"), "steps": {
+        "Prepare deps (no-op when cache hit)": "deps",
+        "Conformance drift and generated files check": "conformance-check",
+        "Registry gate self-tests": "registry-gate-selftests",
+    }},
+    # proof-metrics.yaml has a workflow-level path filter, so it is not an always-run job
+    "proof-metrics.yaml:proof-metrics": {"always": False, "local": ("harness-tests",), "steps": {
+        "Install test dependencies": "harness-tests (the venv of PRE_PUSH_PYTHON)",
+        "Lint": "harness-tests",
+        "Unit tests with coverage floor": "harness-tests",
+        "Proof stack compose file is valid": NC + "needs Docker (`docker compose config`)",
+        "Fixtures match their recorded expectations": "harness-tests",
+        "Fixture generator output is committed": "harness-tests (run in a copy of HEAD, never in the worktree)",
+    }},
+    "changelog-pr.yaml:changelog-check": {"always": True, "local": ("changelog-gate",), "steps": {
+        "Check changelog": "changelog-gate",
+    }},
+    "changelog-pr.yaml:changelog-tests": {"always": True, "local": ("ci-script-tests",), "steps": {
+        "Install test dependencies": "ci-script-tests (the venv of PRE_PUSH_PYTHON)",
+        "Run CI script tests": "ci-script-tests: the full discovery only with PREPUSH_SCOPE=all, else the tests of the changed files plus the static set",
+    }},
+    "workflow-lint.yaml:workflow-lint": {"always": True, "local": ("actionlint", "zizmor"), "steps": {
+        "actionlint": "actionlint",
+        "zizmor": "zizmor (online audits need GH_TOKEN)",
+    }},
+}
+# Steps with no pr-proof job equivalent here but named in the CONTRIBUTING table: pr-proof.yaml:457 runs the ab tests.
 VENV_HINT = (
     "python3 -m venv ~/.cache/lakehouse-pre-push-venv && ~/.cache/lakehouse-pre-push-venv/bin/pip install --require-hashes -r "
     "scripts/ci/requirements.txt -r scripts/proof/requirements.txt; "
@@ -106,6 +235,9 @@ ATTRIBUTION_RE = re.compile(
     r"(?i)claude-session[ \t]*:|claude\.ai/code|generated[ \t]+with[ \t]+\[?claude|noreply@anthropic\.com|\U0001F916"
 )
 IDENT_RE = re.compile(r"(?i)claude|anthropic")
+# The line of a failing command's output that says what failed (actionlint ends with a "| ^" marker, go test with
+# a bare "FAIL"): the first line that looks like an error, else the last line.
+ERROR_LINE_RE = re.compile(r"(?i)(\berror\b|\bfail(ed|ure)?\b|panic:|:\d+:\d+:|undefined|cannot |not found|required on|mismatch)")
 
 
 # ------------------------------------------------------------------------------------------ data types
@@ -114,7 +246,8 @@ class Result:
     status: str
     detail: str = ""
     log: str = ""
-    unverified: bool = False  # SKIPPED because a tool is missing: CI will still run the check
+    unverified: bool = False  # SKIPPED because a tool or input is missing: CI will still run the check
+    partial: str = ""  # not SKIPPED, but part of what CI runs for this row was not run here (the reason)
 
 
 @dataclasses.dataclass
@@ -125,6 +258,7 @@ class Outcome:
     seconds: float
     log: str = ""
     unverified: bool = False
+    partial: str = ""
 
 
 @dataclasses.dataclass
@@ -167,6 +301,10 @@ class Sys:
         d = self.root / rel
         return sorted(p.name for p in d.iterdir()) if d.is_dir() else []
 
+    def has_go(self, rel):
+        d = self.root / rel
+        return d.is_dir() and any(d.glob("*.go"))
+
 
 @dataclasses.dataclass
 class Ctx:
@@ -192,14 +330,22 @@ class Ctx:
     def go_env(self) -> dict:
         return {"GOWORK": "off", "GOMEMLIMIT": self.sys.environ.get("GOMEMLIMIT") or "4GiB"}
 
+    def lint_base(self) -> str:
+        """What CI's only-new-issues compares against: the merge base of the pull request."""
+        return self.merge_base or self.base
+
 
 # ------------------------------------------------------------------------------------------ pure scope logic
 def under(files, *prefixes) -> bool:
     return any(f.startswith(p) for f in files for p in prefixes)
 
 
-def is_go_path(f: str) -> bool:
-    return not (f.startswith("deps/") or "/deps/" in f or "/vendor/" in f) and (f.endswith(".go") or "/testdata/" in f)
+def is_deps_path(f: str) -> bool:
+    return f.startswith("deps/") or "/deps/" in f or "/vendor/" in f
+
+
+def module_of(f: str) -> str:
+    return "traces" if f.startswith(TRACES_DIR + "/") else "logs"
 
 
 def go_pkg_dir(f: str) -> str:
@@ -209,58 +355,24 @@ def go_pkg_dir(f: str) -> str:
     return os.path.dirname(f) or "."
 
 
-def split_modules(files) -> dict:
-    """Module name -> sorted package dirs relative to the module root, for the changed Go paths."""
-    out: dict = {"logs": set(), "traces": set()}
-    pre = TRACES_DIR + "/"
-    for f in files:
-        if not is_go_path(f):
-            continue
-        d = go_pkg_dir(f)
-        if f.startswith(pre):
-            rel = d[len(pre):] if d != TRACES_DIR else "."
-            out["traces"].add(rel or ".")
-        else:
-            out["logs"].add(d)
-    return {k: sorted(v) for k, v in out.items()}
+def nearest_go_dir(sys_: Sys, f: str) -> Optional[str]:
+    """The nearest ancestor directory of a non-Go file that holds Go files on disk (embedded assets, testdata)."""
+    d = os.path.dirname(f)
+    while d:
+        if sys_.has_go(d):
+            return d
+        d = os.path.dirname(d)
+    return None
+
+
+def rel_to_module(module: str, d: str) -> str:
+    if module == "traces":
+        return d[len(TRACES_DIR) + 1:] if d != TRACES_DIR else "."
+    return d
 
 
 def pattern(d: str) -> str:
     return "./" + d if d != "." else "."
-
-
-def vet_test_dirs(module: str, dirs) -> list:
-    """Directories that get go vet and go test: tests/ holds build-tagged suites that need Docker (CI jobs
-    e2e, parity and conformance run them), so it is linted but not run here."""
-    return [d for d in dirs if not (module == "logs" and (d == "tests" or d.startswith("tests/")))]
-
-
-def lint_invocations(module: str, dirs, scope_all: bool) -> list:
-    """[(build tags, [patterns])] mirroring the lint steps of .github/workflows/ci.yaml."""
-    if module == "traces":
-        if scope_all:
-            return [("", ["./..."])]
-        return [("", [pattern(d) for d in dirs])] if dirs else []
-    if scope_all:
-        return [
-            ("", ["./internal/...", "./cmd/..."]),
-            ("parity,chaos", ["./tests/parity/..."]),
-            ("e2e,chaos", ["./tests/ingestmatrix/...", "./tests/e2e/...", "./tests/conformance/..."]),
-        ]
-    plain = [pattern(d) for d in dirs if d.startswith(("internal/", "cmd/")) or d in ("internal", "cmd")]
-    parity = [pattern(d) for d in dirs if d == "tests/parity" or d.startswith("tests/parity/")]
-    tagged = [
-        pattern(d) for d in dirs
-        if re.match(r"tests/(ingestmatrix|e2e|conformance)(/|$)", d)
-    ]
-    out = []
-    if plain:
-        out.append(("", plain))
-    if parity:
-        out.append(("parity,chaos", parity))
-    if tagged:
-        out.append(("e2e,chaos", tagged))
-    return out
 
 
 def wide_modules(files) -> set:
@@ -273,6 +385,87 @@ def wide_modules(files) -> set:
             parts = f.split("/")
             out.update(PATCH_SET_MODULES.get(parts[1], ("logs", "traces")) if len(parts) > 2 else ("logs", "traces"))
     return out
+
+
+def reader_rows(f: str):
+    """The GO_TEST_READERS rows of the longest prefix that matches a path (empty when none does)."""
+    best = ""
+    for prefix in GO_TEST_READERS:
+        if (f == prefix or f.startswith(prefix)) and len(prefix) > len(best):
+            best = prefix
+    return GO_TEST_READERS.get(best, ())
+
+
+def is_inert(f: str) -> bool:
+    return any(f == p or (p.endswith("/") and f.startswith(p)) for p in GO_INERT) or f.startswith("Dockerfile")
+
+
+def go_plan(ctx: "Ctx") -> dict:
+    """What the diff means for the Go jobs, per module: `compile` (vet, lint and build must run: a Go file, an
+    embedded asset or a module-wide input changed), `dirs` (changed package directories), `readers` ({dir: -run
+    regex or ""} for packages whose tests read a changed non-Go file), `unmapped` (changed paths that no row
+    explains) and `wide`. A change to the logs module compiles into the traces module too (replace ../)."""
+    if "go" in ctx.cache:
+        return ctx.cache["go"]
+    plan = {m: {"compile": False, "dirs": set(), "readers": {}, "unmapped": [], "wide": False} for m in ("logs", "traces")}
+    wide = wide_modules(ctx.files)
+    for m in wide:
+        plan[m]["compile"] = plan[m]["wide"] = True
+    for f in ctx.files:
+        if is_deps_path(f) or f in WIDE_MODULE_FILES or f.startswith("patches/"):
+            continue  # deps/ is not a diff; go.mod, go.sum and patches/ are module-wide (wide_modules)
+        m = module_of(f)
+        if f.endswith(".go"):
+            plan[m]["dirs"].add(rel_to_module(m, go_pkg_dir(f)))
+            if "/testdata/" not in f:
+                plan[m]["compile"] = True
+            continue
+        d = nearest_go_dir(ctx.sys, f)
+        if d is not None:
+            plan[m]["dirs"].add(rel_to_module(m, d))
+            if "/testdata/" not in f and not f.endswith((".md", ".txt")):
+                plan[m]["compile"] = True
+            continue
+        rows = reader_rows(f)
+        if rows:
+            for rm, rdir, run in rows:
+                cur = plan[rm]["readers"]
+                if rdir in cur and cur[rdir] != run:
+                    cur[rdir] = ""  # one reader needs the whole package
+                else:
+                    cur.setdefault(rdir, run)
+            continue
+        if is_inert(f):
+            continue
+        plan[m]["unmapped"].append(f)
+    if plan["logs"]["compile"]:
+        plan["traces"]["compile"] = True
+    for m in plan:
+        plan[m]["dirs"] = sorted(plan[m]["dirs"])
+    ctx.cache["go"] = plan
+    return plan
+
+
+def vet_test_dirs(module: str, dirs) -> list:
+    """Directories that get go test: tests/ holds build-tagged suites that need Docker (CI jobs e2e, parity and
+    conformance run them), so they are linted but not run here."""
+    return [d for d in dirs if not (module == "logs" and (d == "tests" or d.startswith("tests/")))]
+
+
+def lint_invocations(module: str) -> list:
+    """[(build tags, [patterns], only_new)] mirroring the lint steps of .github/workflows/ci.yaml. The plain run
+    has no only-new-issues in CI, so it lints whole packages; the tagged tests/ runs are only-new-issues there."""
+    if module == "traces":
+        return [("", ["./..."], False), ("parity,chaos,e2e", ["./..."], True)]
+    return [
+        ("", ["./internal/...", "./cmd/..."], False),
+        ("e2e,chaos", ["./tests/ingestmatrix/...", "./tests/e2e/...", "./tests/conformance/..."], True),
+        ("parity,chaos", ["./tests/parity/..."], True),
+    ]
+
+
+def vet_patterns(module: str) -> list:
+    return ["./..."] if module == "traces" else ["./internal/...", "./cmd/..."]
 
 
 def static_trigger(files) -> bool:
@@ -346,9 +539,18 @@ def tail(text: str, n: int = 12) -> str:
     return "\n".join(text.rstrip().splitlines()[-n:])
 
 
+def failure_line(out: str, rc: int) -> str:
+    """The first line of the output that looks like the error, else the last line (actionlint ends with `| ^`)."""
+    lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+    for ln in lines:
+        if ERROR_LINE_RE.search(ln):
+            return ln.strip()
+    return lines[-1].strip() if lines else f"exit {rc}"
+
+
 # ------------------------------------------------------------------------------------------ step helpers
 def scoped(ctx: Ctx, present: bool, what: str) -> Optional[str]:
-    """None when the step should run: SCOPE=all, or the diff touches `what`."""
+    """None when the step should run: PREPUSH_SCOPE=all, or the diff touches `what`."""
     if ctx.scope_all or present:
         return None
     return f"diff touches no {what}"
@@ -361,9 +563,7 @@ def run_cmds(ctx: Ctx, cmds, ok_detail: str = "") -> Result:
         rc, out = ctx.sys.run(cmd, **kw)
         log.append(f"$ {' '.join(cmd)}\n{out}")
         if rc != 0:
-            lines = [ln for ln in out.strip().splitlines() if ln.strip()]
-            why = lines[-1] if lines else f"exit {rc}"
-            return Result(FAIL, f"{label} exit {rc}: {one_line(why, 70)}", "\n".join(log))
+            return Result(FAIL, f"{label} exit {rc}: {one_line(failure_line(out, rc), 70)}", "\n".join(log))
     return Result(PASS, ok_detail, "\n".join(log))
 
 
@@ -385,6 +585,21 @@ def step_fetch(ctx: Ctx) -> Result:
     return Result(PASS, f"origin/{branch} is current")
 
 
+def tree_note(porcelain: str) -> str:
+    """The note on uncommitted work: tracked edits and untracked files, which the gates (HEAD) do not see."""
+    lines = [ln for ln in porcelain.splitlines() if ln.strip()]
+    untracked = sum(1 for ln in lines if ln.startswith("??"))
+    tracked = len(lines) - untracked
+    parts = []
+    if tracked:
+        parts.append(f"{tracked} uncommitted tracked change(s)")
+    if untracked:
+        parts.append(f"{untracked} untracked file(s)")
+    if not parts:
+        return ""
+    return "; " + " and ".join(parts) + " NOT seen by the gates (go vet, lint and test do read the working tree)"
+
+
 def step_scope(ctx: Ctx) -> Result:
     rc, mb = ctx.git("merge-base", ctx.base, "HEAD")
     if rc != 0:
@@ -404,14 +619,17 @@ def step_scope(ctx: Ctx) -> Result:
         return Result(FAIL, f"pr_classify.py failed (scope treated as full): {one_line(tail(out, 2), 70)}", out)
     ctx.classify, ctx.classify_ok = parse_keyvals(out), True
     c = ctx.classify
-    dirty = ctx.git("status", "--porcelain", "--untracked-files=no")[1].strip()
-    note = f"; {len(dirty.splitlines())} uncommitted tracked change(s) NOT seen by the gates" if dirty else ""
-    mode = "SCOPE=all" if ctx.scope_all else "diff"
+    note = tree_note(ctx.git("status", "--porcelain", "--untracked-files=normal")[1])
+    mode = "PREPUSH_SCOPE=all" if ctx.scope_all else "diff"
+    partial = ""
+    if any(f.startswith(BASE_SIDE_FILES) for f in ctx.files):
+        partial = "the diff changes the classifier or the ci-scope action: CI scopes the run with the copy on the base branch, this ran this branch's copy"
     return Result(
         PASS,
         f"{mode}: {len(ctx.files)} file(s), ci_class={c.get('ci_class', '?')} skip_go={c.get('skip_go', '?')} "
-        f"product={c.get('product', '?')}{note}",
+        f"(informational: no Go job is skipped on it){note}" + (f"; {partial}" if partial else ""),
         out,
+        partial=partial,
     )
 
 
@@ -465,12 +683,19 @@ def gate_detail(log: str) -> tuple:
     return verdict, kind, rule
 
 
+GATE_CHANGED_NOTICE = "this branch changes the gate itself"
+
+
 def step_registry_gate(ctx: Ctx) -> Result:
     env = {"REGISTRY_GATE_OFFLINE": "1", "GOWORK": "off"}  # the fetch step already fetched (or was told not to)
     r = run_cmds(ctx, [("registry gate", ["bash", "scripts/ci/gate_local.sh", ctx.base], {"env": env})])
     verdict, kind, rule = gate_detail(r.log)
     if r.status == PASS:
         r.detail = one_line(f"{verdict or 'passed'}; {kind}" if kind else verdict or "passed", 100)
+        if GATE_CHANGED_NOTICE in r.log:
+            # CI judges the pull request with the gate code of the base branch: this verdict only previews the new gate.
+            r.partial = "the branch changes the gate itself: CI judges it with main's copy of the gate, this run previews the new one"
+            r.detail = one_line("PREVIEW ONLY, " + r.partial + "; " + r.detail, 220)
     elif rule:
         r.detail = one_line(f"{verdict or 'FAIL'}: {rule}", 160)
     return r
@@ -496,9 +721,7 @@ def step_ci_scripts(ctx: Ctx) -> Result:
         return Result(SKIPPED, "PyYAML missing for the scripts/ci tests: " + VENV_HINT, unverified=True)
     if ctx.scope_all:
         cmds = [("unittest", [ctx.py, "-m", "unittest", "discover", "-s", "scripts/ci/tests"], {})]
-        # the registry gate self-tests of conformance.yaml: shell scripts, so discovery does not run them
-        cmds += [(os.path.basename(t), ["bash", t], {"env": {"GOWORK": "off"}}) for t in GATE_SELFTESTS]
-        return run_cmds(ctx, cmds, "scripts/ci/tests full discovery (changelog-tests) + registry gate self-tests (conformance.yaml)")
+        return run_cmds(ctx, cmds, "scripts/ci/tests full discovery (changelog-tests)")
     names = ctx.sys.listdir("scripts/ci/tests")
     chosen = {t for f in ctx.files for t in tests_for_ci_file(f, names)}
     if static_trigger(ctx.files):
@@ -511,7 +734,68 @@ def step_ci_scripts(ctx: Ctx) -> Result:
     cmds += [(os.path.basename(t), ["bash", t], {}) for t in sh]
     if not cmds:
         return Result(SKIPPED, "no scripts/ci test maps to the changed files")
-    return run_cmds(ctx, cmds, f"{len(py)} python + {len(sh)} shell test file(s)")
+    r = run_cmds(ctx, cmds, f"{len(py)} python + {len(sh)} shell test file(s) of the changed files (CI discovers every test)")
+    if r.status == PASS:
+        r.partial = "CI runs the full discovery of scripts/ci/tests on every pull request; this ran the tests of the changed files and the static set"
+    return r
+
+
+def applies_gate_selftests(ctx: Ctx) -> Optional[str]:
+    if ctx.scope_all or under(ctx.files, *GATE_SELFTEST_INPUTS):
+        return None
+    return "diff touches nothing the self-tests clone (changelog.d, registry, features page); a changed gate script runs them in ci-script-tests"
+
+
+def step_gate_selftests(ctx: Ctx) -> Result:
+    if not ctx.scope_all:
+        return Result(
+            SKIPPED,
+            "CI conformance-inventory runs this (~8 min, clones the repository with changelog.d, the registry and docs/features.md): "
+            "run PREPUSH_SCOPE=all",
+            unverified=True,
+        )
+    cmds = [(os.path.basename(t), ["bash", t], {"env": {"GOWORK": "off"}}) for t in GATE_SELFTESTS]
+    cmds.append((os.path.basename(GATE_SELFTEST_PY), [ctx.py, "-m", "unittest", GATE_SELFTEST_PY], {}))
+    return run_cmds(ctx, cmds, "registry gate self-tests + classifier toolchain test (conformance.yaml)")
+
+
+def applies_lint_logs_selftests(ctx: Ctx) -> Optional[str]:
+    return scoped(ctx, under(ctx.files, "patches/"), "patches/ file")
+
+
+def logs_pin_tree(ctx: Ctx):
+    """(path, reason): a pristine shallow clone of the logs-pin VictoriaLogs tag, cached outside the repository."""
+    try:
+        m = re.search(r"VL_VERSION_LOGS:\s*(v[\d.]+)", (ctx.root / ".github/workflows/ci.yaml").read_text(encoding="utf-8"))
+    except OSError:
+        m = None
+    if not m:
+        return None, "cannot read VL_VERSION_LOGS from ci.yaml"
+    ver = m.group(1)
+    cache = Path(os.path.expanduser(ctx.sys.environ.get("PRE_PUSH_CACHE") or "~/.cache/lakehouse-pre-push")) / f"vl-logs-{ver}"
+    if (cache / "go.mod").is_file():
+        return cache, ""
+    if ctx.offline:
+        return None, f"no cached clone of VictoriaLogs {ver} and PRE_PUSH_OFFLINE=1"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    rc, out = ctx.sys.run(["git", "clone", "--quiet", "--depth", "1", "--branch", ver,
+                           "https://github.com/VictoriaMetrics/VictoriaLogs.git", str(cache)])
+    if rc != 0:
+        shutil.rmtree(cache, ignore_errors=True)
+        return None, f"cannot clone VictoriaLogs {ver}: {one_line(failure_line(out, rc), 60)}"
+    return cache, ""
+
+
+def step_lint_logs_selftests(ctx: Ctx) -> Result:
+    pin, why = logs_pin_tree(ctx)
+    if pin is None:
+        return Result(SKIPPED, f"{why}; CI lint-logs runs the patch-set checks", unverified=True)
+    env = {"LOGS_PIN_TREE": str(pin)}
+    cmds = [("check_patches_equal_test.sh", ["bash", LINT_LOGS_SELFTESTS[0]], {"env": env}),
+            ("check_patches_equal.sh", ["bash", "scripts/ci/check_patches_equal.sh"], {"env": env})]
+    if ctx.scope_all:
+        cmds += [(os.path.basename(t), ["bash", t], {}) for t in LINT_LOGS_SELFTESTS[1:]]
+    return run_cmds(ctx, cmds, "patch-set consistency against a pristine pin clone" + (" + the four other lint-logs self-tests" if ctx.scope_all else ""))
 
 
 def tool_pin(ctx: Ctx, tool: str) -> str:
@@ -562,14 +846,87 @@ def step_zizmor(ctx: Ctx) -> Result:
     r = run_cmds(ctx, [("zizmor", [exe, "--no-progress", "--config", ".github/zizmor.yml", ".github"], {})])
     if r.status == PASS:
         r.detail = "no findings beyond .github/zizmor.yml"
+        if not (ctx.sys.environ.get("GH_TOKEN") or ctx.sys.environ.get("GITHUB_TOKEN")):
+            r.partial = "no GH_TOKEN: the online audits (CI runs them with the workflow token) were not run"
+            r.detail += "; " + r.partial
     return r
 
 
+def harness_env() -> tuple:
+    """(env, private dir): the harness tests get their own TMPDIR and compose project name, so they never share the
+    stack lock (<tmp>/lh-ab-<project>.lock) or the port block of a proof or A/B run that is going on."""
+    d = tempfile.mkdtemp(prefix="pp-harness-")
+    return {"TMPDIR": d, "AB_PROJECT": f"lh-pp-{os.getpid()}"}, d
+
+
+def generator_drift(ctx: Ctx) -> Result:
+    """The committed fixture cases must equal the generator's output (proof-metrics.yaml). The generator runs in a
+    copy of HEAD under a temporary directory, never in the worktree, so it cannot overwrite edits."""
+    tmp = tempfile.mkdtemp(prefix="pp-fixgen-")
+    try:
+        tar = os.path.join(tmp, "proof.tar")
+        rc, out = ctx.git("archive", "--format=tar", "-o", tar, "HEAD", "--", "scripts/proof")
+        if rc != 0:
+            return Result(FAIL, f"git archive HEAD scripts/proof failed: {one_line(failure_line(out, rc), 60)}", out)
+        work = os.path.join(tmp, "tree")
+        os.makedirs(work)
+        with tarfile.open(tar) as tf:
+            tf.extractall(work, filter="data") if sys.version_info >= (3, 12) else tf.extractall(work)  # noqa: S202 - our own archive
+        cases = os.path.join(work, "scripts", "proof", "fixtures", "cases")
+        before = os.path.join(tmp, "before")
+        shutil.copytree(cases, before)
+        rc, out = ctx.sys.run([ctx.py, "scripts/proof/fixtures/_gen.py"], cwd=work)
+        if rc != 0:
+            return Result(FAIL, f"_gen.py exit {rc}: {one_line(failure_line(out, rc), 60)}", out)
+        diff = tree_diff(before, cases)
+        if diff:
+            return Result(FAIL, f"fixture generator output is not committed ({len(diff)} file(s) differ, e.g. {diff[0]}); run scripts/proof/fixtures/_gen.py and commit",
+                          "\n".join(diff))
+        return Result(PASS, "generator output equals the committed cases", out)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def tree_diff(a: str, b: str) -> list:
+    """Relative paths that exist on one side only or differ in content."""
+    def files(root):
+        return {os.path.relpath(os.path.join(dp, f), root) for dp, _, fs in os.walk(root) for f in fs}
+    fa, fb = files(a), files(b)
+    out = [f"only before: {f}" for f in sorted(fa - fb)] + [f"only after: {f}" for f in sorted(fb - fa)]
+    for f in sorted(fa & fb):
+        if Path(a, f).read_bytes() != Path(b, f).read_bytes():
+            out.append(f"changed: {f}")
+    return out
+
+
+def applies_harness(ctx: Ctx) -> Optional[str]:
+    return scoped(ctx, any(f.startswith(HARNESS_PREFIXES) for f in ctx.files), "scripts/bench/ab, scripts/proof, proof compose, proof deployment or tiecut golden file")
+
+
 def step_harness(ctx: Ctx) -> Result:
-    if not py_has(ctx, "pytest") or not py_has(ctx, "yaml"):
-        return Result(SKIPPED, "pytest/PyYAML missing for scripts/bench/ab and scripts/proof tests: " + VENV_HINT, unverified=True)
-    cmds = [("pytest", [ctx.py, "-m", "pytest", "scripts/bench/ab/tests", "scripts/proof/tests", "-q", "-p", "no:cacheprovider"], {})]
-    return run_cmds(ctx, cmds, "scripts/bench/ab/tests + scripts/proof/tests")
+    missing = [m for m in ("pytest", "yaml", "pyflakes", "pytest_cov") if not py_has(ctx, m)]
+    if missing:
+        return Result(SKIPPED, f"{', '.join(missing)} missing for the scripts/bench/ab and scripts/proof checks: " + VENV_HINT, unverified=True)
+    env, tmp = harness_env()
+    try:
+        cov = ["--cov=scripts.proof.metrics", "--cov=scripts.proof.runner", "--cov=scripts.proof.visual", "--cov=scripts.proof.stack",
+               "--cov=scripts.proof.comment", "--cov-report=term-missing", "--cov-fail-under=90"]
+        r = run_cmds(ctx, [
+            ("pyflakes", [ctx.py, "-m", "pyflakes", "scripts/proof"], {}),
+            ("pytest scripts/bench/ab/tests", [ctx.py, "-m", "pytest", "scripts/bench/ab/tests", "-q", "-p", "no:cacheprovider"], {"env": env}),
+            ("pytest scripts/proof/tests", [ctx.py, "-m", "pytest", "scripts/proof/tests", "-q", "-p", "no:cacheprovider", *cov], {"env": env}),
+            ("fixtures --check", [ctx.py, "-m", "scripts.proof.metrics", "scripts/proof/fixtures/cases", "--check"], {}),
+        ], "pyflakes + ab tests + proof tests (coverage floor 90) + fixtures --check")
+        if r.status != PASS:
+            return r
+        g = generator_drift(ctx)
+        g.log = r.log + "\n" + g.log
+        if g.status == PASS:
+            g.detail = r.detail + " + generator output committed"
+            g.partial = "`docker compose config -q` of the proof stack (proof-metrics.yaml) was not run: no Docker locally"
+        return g
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def step_charts(ctx: Ctx) -> Result:
@@ -580,7 +937,8 @@ def step_charts(ctx: Ctx) -> Result:
         ("helm lint", [exe, "lint", "charts/victoria-lakehouse/", "--strict"], {}),
         ("test_images.sh", ["bash", "charts/victoria-lakehouse/test_images.sh"], {}),
         ("test_templates.sh", ["bash", "charts/victoria-lakehouse/test_templates.sh"], {}),
-    ], "helm lint --strict + test_images.sh + test_templates.sh")
+        ("test_release_image_tags.py", [ctx.py, "scripts/ci/tests/test_release_image_tags.py"], {}),
+    ], "helm lint --strict + test_images.sh + test_templates.sh + test_release_image_tags.py")
 
 
 def step_deps(ctx: Ctx) -> Result:
@@ -593,49 +951,23 @@ def step_conformance(ctx: Ctx) -> Result:
     if not ctx.sys.which("make"):
         return Result(SKIPPED, "make not installed", unverified=True)
     return run_cmds(ctx, [("make conformance-check", ["make", "conformance-check"], {"env": ctx.go_env()})],
-                    "confgen -check, conformance tests, ab selection check")
+                    "confgen -check, conformance tests, ab selection check (CI runs it on every pull request)")
 
 
-def applies_conformance(ctx: Ctx) -> Optional[str]:
-    present = ctx.classify.get("product") == "1" or not ctx.classify_ok and bool(ctx.files)
-    present = present or under(ctx.files, *CONFORMANCE_PREFIXES) or any(f in CONFORMANCE_FILES for f in ctx.files)
-    return scoped(ctx, present, "registry, docs, test, fragment or product file")
-
-
-def go_state(ctx: Ctx) -> dict:
-    """Cached per module: the touched package dirs, `all` (SCOPE=all or a module-wide input changed) and `wide`."""
-    if "go" not in ctx.cache:
-        mods = split_modules(ctx.files)
-        wide = wide_modules(ctx.files)
-        ctx.cache["go"] = {
-            m: {"dirs": mods[m], "all": ctx.scope_all or m in wide, "wide": m in wide} for m in ("logs", "traces")
-        }
-    return ctx.cache["go"]
-
-
-def go_skip(ctx: Ctx, module: str) -> Optional[str]:
-    if not ctx.scope_all and ctx.classify_ok and ctx.classify.get("skip_go") == "true":
-        return "CI scope: skip_go=true"
-    st = go_state(ctx)[module]
-    if not st["dirs"] and not st["all"]:
-        return f"diff touches no Go file of the {module} module"
-    return None
-
-
+# ------------------------------------------------------------------------------------------ Go steps
 def module_dir(ctx: Ctx, module: str) -> Path:
     return ctx.root / TRACES_DIR if module == "traces" else ctx.root
 
 
-def live_dirs(ctx: Ctx, module: str, dirs) -> list:
-    base = module_dir(ctx, module)
-    return [d for d in dirs if (base / d).is_dir() and any((base / d).glob("*.go"))]
-
-
-def vt_patterns(ctx: Ctx, module: str) -> list:
-    st = go_state(ctx)[module]
-    if st["all"]:
-        return ["./..."] if module == "traces" else ["./internal/...", "./cmd/..."]
-    return [pattern(d) for d in live_dirs(ctx, module, vet_test_dirs(module, st["dirs"]))]
+def go_compiles(module: str):
+    """The Go compile-time jobs (lint, vet, build) are required checks that always run in CI. They can only change
+    when a Go file, an embedded asset or a module-wide input changed (a logs-module change reaches the traces module
+    through its replace directive)."""
+    def applies(ctx: Ctx) -> Optional[str]:
+        if ctx.scope_all or go_plan(ctx)[module]["compile"]:
+            return None
+        return f"no Go file, embedded asset or module-wide input of the {module} build changed (CI runs this job; the diff cannot change its result)"
+    return applies
 
 
 def step_lint(module: str):
@@ -643,57 +975,127 @@ def step_lint(module: str):
         exe = os.path.expanduser(ctx.sys.environ.get("GOLANGCI_LINT") or "") or ctx.sys.which("golangci-lint")
         if not exe:
             return Result(SKIPPED, "golangci-lint not installed (CI pins it in ci.yaml GOLANGCI_LINT_VERSION); set GOLANGCI_LINT=<path>", unverified=True)
-        st = go_state(ctx)[module]
-        invs = lint_invocations(module, [] if st["all"] else live_dirs(ctx, module, st["dirs"]), st["all"])
-        if not invs:
-            return Result(SKIPPED, "no lintable package in the diff (tests/ packages other than the CI-linted ones)")
         cmds = []
-        for tags, pats in invs:
-            cmd = [exe, "run", f"--new-from-rev={ctx.base}"]
+        for tags, pats, only_new in lint_invocations(module):
+            cmd = [exe, "run"]
+            if only_new:
+                cmd.append(f"--new-from-rev={ctx.lint_base()}")
             if tags:
                 cmd += ["--build-tags", tags]
             cmds.append(("golangci-lint", cmd + pats, {"cwd": module_dir(ctx, module), "env": ctx.go_env()}))
-        r = run_cmds(ctx, cmds, f"no new findings vs {ctx.base}" + version_note(ctx, "golangci-lint", exe))
-        return r
+        return run_cmds(ctx, cmds, "whole packages as CI (the tagged tests/ runs: findings new since the merge base)" + version_note(ctx, "golangci-lint", exe))
     return run
+
+
+def gofmt_paths(ctx: Ctx, module: str) -> list:
+    if module == "traces":
+        return ["internal/", *[n for n in ctx.sys.listdir(TRACES_DIR) if n.endswith(".go")]]
+    return ["cmd/", "internal/"]
 
 
 def step_vet(module: str):
     def run(ctx: Ctx) -> Result:
-        pats = vt_patterns(ctx, module)
-        if not pats:
-            return Result(SKIPPED, "no vet-able package in the diff")
-        return run_cmds(ctx, [("go vet", ["go", "vet", *pats], {"cwd": module_dir(ctx, module), "env": ctx.go_env()})],
-                        f"{len(pats)} package pattern(s)")
+        kw = {"cwd": module_dir(ctx, module), "env": ctx.go_env()}
+        rc, out = ctx.sys.run(["gofmt", "-s", "-l", *gofmt_paths(ctx, module)], **kw)
+        log = f"$ gofmt -s -l\n{out}"
+        if rc != 0:
+            return Result(FAIL, f"gofmt exit {rc}: {one_line(failure_line(out, rc), 70)}", log)
+        if out.strip():
+            return Result(FAIL, f"gofmt -s required on: {one_line(' '.join(out.split()), 90)}", log)
+        r = run_cmds(ctx, [("go vet", ["go", "vet", *vet_patterns(module)], kw)], "gofmt -s + go vet, the whole module as CI")
+        r.log = log + "\n" + r.log
+        return r
     return run
+
+
+def step_build(module: str):
+    def run(ctx: Ctx) -> Result:
+        kw = {"cwd": module_dir(ctx, module), "env": ctx.go_env()}
+        return run_cmds(ctx, [("go build", ["go", "build", *vet_patterns(module)], kw)], "whole module builds (host platform)")
+    return run
+
+
+def go_list_dirs(ctx: Ctx, module: str, pats) -> tuple:
+    """(module-relative package dirs, error text) of the packages the patterns match."""
+    base = module_dir(ctx, module)
+    rc, out = ctx.sys.run(["go", "list", "-f", "{{.Dir}}", *pats], cwd=base, env=ctx.go_env())
+    if rc != 0:
+        return [], f"go list exit {rc}: {one_line(failure_line(out, rc), 70)}"
+    return sorted(os.path.relpath(ln.strip(), str(base)) for ln in out.splitlines() if ln.strip()), ""
+
+
+def is_parquets3(d: str) -> bool:
+    return d.rstrip("/").endswith("internal/storage/parquets3")
+
+
+def test_targets(ctx: Ctx, module: str) -> dict:
+    """{module-relative package dir: -run regex or ""} of the packages the diff makes worth running."""
+    st = go_plan(ctx)[module]
+    base = module_dir(ctx, module)
+    out: dict = {}
+    for d in vet_test_dirs(module, st["dirs"]):
+        if (base / d).is_dir() and any((base / d).glob("*.go")):
+            out[d] = ""
+    for d, run in st["readers"].items():
+        if (base / d).is_dir() and any((base / d).glob("*.go")) and out.get(d, None) != "":
+            out[d] = run
+    return out
+
+
+def go_test_cmds(ctx: Ctx, module: str, targets: dict) -> list:
+    """-short only for parquets3: that is the only package CI runs with it (ci.yaml 'Test logs module')."""
+    common = ["-count=1", "-p", "2", "-timeout=10m"] + (["-race"] if ctx.race else [])
+    kw = {"cwd": module_dir(ctx, module), "env": ctx.go_env()}
+    whole = sorted(d for d, r in targets.items() if r == "" and not is_parquets3(d))
+    short = sorted(d for d, r in targets.items() if r == "" and is_parquets3(d))
+    cmds = []
+    if whole:
+        cmds.append(("go test", ["go", "test", *common, *[pattern(d) for d in whole]], kw))
+    if short:
+        cmds.append(("go test -short (parquets3)", ["go", "test", "-short", *common, *[pattern(d) for d in short]], kw))
+    for run in sorted({r for r in targets.values() if r}):
+        pk = sorted(d for d, r in targets.items() if r == run)
+        cmds.append(("go test -run", ["go", "test", "-run", run, *common, *[pattern(d) for d in pk]], kw))
+    return cmds
 
 
 def step_test(module: str):
     def run(ctx: Ctx) -> Result:
-        st = go_state(ctx)[module]
-        if st["wide"] and not ctx.scope_all:
-            return Result(SKIPPED, "go.mod/go.sum/patches/.golangci.yml changed for this module: lint and vet ran module-wide, "
-                          "but CI runs the whole suite and this step cannot pick packages; run make pre-push SCOPE=all", unverified=True)
-        pats = vt_patterns(ctx, module)
-        if not pats:
-            return Result(SKIPPED, "no testable package in the diff")
-        cmd = ["go", "test", "-short", "-count=1", "-p", "2", "-timeout=10m"]
-        if ctx.race:
-            cmd.append("-race")
-        return run_cmds(ctx, [("go test", cmd + pats, {"cwd": module_dir(ctx, module), "env": ctx.go_env()})],
-                        f"{len(pats)} package pattern(s) -short" + (" -race" if ctx.race else ""))
+        st = go_plan(ctx)[module]
+        if ctx.scope_all:
+            pats = ["./internal/...", "./cmd/..."] if module == "logs" else ["./internal/...", "."]
+            dirs, err = go_list_dirs(ctx, module, pats)
+            if err or not dirs:
+                return Result(FAIL, err or "go list found no package to test")
+            targets = {d: "" for d in dirs}
+        elif st["wide"]:
+            return Result(SKIPPED, "go.mod/go.sum/patches/.golangci.yml changed for this module: lint, vet and build ran module-wide, "
+                          "but CI runs the whole suite and this step cannot pick packages; run make pre-push PREPUSH_SCOPE=all", unverified=True)
+        else:
+            targets = test_targets(ctx, module)
+        unmapped = [] if ctx.scope_all else st["unmapped"]
+        if not targets:
+            if unmapped:
+                return Result(SKIPPED, f"cannot tell which Go tests read {one_line(', '.join(unmapped), 60)} ({len(unmapped)} path(s) with no row in GO_TEST_READERS "
+                              "or GO_INERT); CI runs the whole suite: run PREPUSH_SCOPE=all", unverified=True)
+            return Result(SKIPPED, "no changed path is a Go package or is read by a Go test (CI runs this job; the diff cannot change its result)")
+        cmds = go_test_cmds(ctx, module, targets)
+        r = run_cmds(ctx, cmds, f"{len(targets)} package(s); -short only for parquets3 as CI" + (", -race" if ctx.race else ", no -race (CI uses it)"))
+        if r.status == PASS and unmapped:
+            r.partial = f"{len(unmapped)} changed path(s) no row maps to a Go test ({one_line(', '.join(unmapped), 50)}): CI runs the whole suite"
+        elif r.status == PASS and not ctx.scope_all:
+            r.partial = "packages picked from the diff, unsharded, no coverage gate (CI runs every package)"
+        return r
     return run
 
 
-def go_applies(module: str):
-    return lambda ctx: go_skip(ctx, module)
-
-
-def deps_applies(ctx: Ctx) -> Optional[str]:
-    for m in ("logs", "traces"):
-        if go_skip(ctx, m) is None:
+def go_test_applies(module: str):
+    def applies(ctx: Ctx) -> Optional[str]:
+        st = go_plan(ctx)[module]
+        if ctx.scope_all or st["wide"] or st["dirs"] or st["readers"] or st["unmapped"]:
             return None
-    return "no Go step in scope"
+        return "no changed path is a Go package or is read by a Go test (CI runs this job; the diff cannot change its result)"
+    return applies
 
 
 def build_steps() -> list:
@@ -707,17 +1109,20 @@ def build_steps() -> list:
         Step("registry-gate", always, step_registry_gate),
         Step("changelog-gate", always, step_changelog),
         Step("ci-script-tests", applies_ci_scripts, step_ci_scripts),
+        Step("registry-gate-selftests", applies_gate_selftests, step_gate_selftests),
+        Step("lint-logs-selftests", applies_lint_logs_selftests, step_lint_logs_selftests),
         Step("actionlint", lambda c: scoped(c, under(c.files, ".github/"), ".github/ file"), step_actionlint),
         Step("zizmor", lambda c: scoped(c, under(c.files, ".github/"), ".github/ file"), step_zizmor),
-        Step("harness-tests", lambda c: scoped(c, under(c.files, "scripts/bench/ab/", "scripts/proof/"), "scripts/bench/ab or scripts/proof file"), step_harness),
+        Step("harness-tests", applies_harness, step_harness),
         Step("chart-tests", lambda c: scoped(c, under(c.files, "charts/"), "charts/ file"), step_charts),
-        Step("deps", deps_applies, step_deps),
-        Step("conformance-check", applies_conformance, step_conformance),
+        Step("deps", always, step_deps),
+        Step("conformance-check", always, step_conformance),
     ]
     for module in ("logs", "traces"):
-        steps.append(Step(f"golangci-lint ({module})", go_applies(module), step_lint(module)))
-        steps.append(Step(f"go vet ({module})", go_applies(module), step_vet(module)))
-        steps.append(Step(f"go test ({module})", go_applies(module), step_test(module)))
+        steps.append(Step(f"golangci-lint ({module})", go_compiles(module), step_lint(module)))
+        steps.append(Step(f"go vet ({module})", go_compiles(module), step_vet(module)))
+        steps.append(Step(f"go build ({module})", go_compiles(module), step_build(module)))
+        steps.append(Step(f"go test ({module})", go_test_applies(module), step_test(module)))
     return steps
 
 
@@ -736,7 +1141,7 @@ def execute(ctx: Ctx, steps, progress: Optional[Callable[[str], None]] = None) -
                 res = step.run(ctx)
         except Exception as ex:  # noqa: BLE001 - a crashing step is a FAIL, never a silent pass
             res = Result(FAIL, f"internal error: {type(ex).__name__}: {ex}")
-        outcomes.append(Outcome(step.name, res.status, res.detail, time.monotonic() - t0, res.log, res.unverified))
+        outcomes.append(Outcome(step.name, res.status, res.detail, time.monotonic() - t0, res.log, res.unverified, res.partial))
     return outcomes
 
 
@@ -761,14 +1166,44 @@ def render_table(outcomes) -> str:
     return "\n".join(lines)
 
 
+def not_verified(outcomes) -> list:
+    """Rows that did not fully check what CI checks: skipped for a missing tool or input, or run in part."""
+    return [o for o in outcomes if o.unverified or (o.partial and o.status != FAIL)]
+
+
+def jobs_not_run(outcomes) -> tuple:
+    """([always-run CI jobs with a local step that was SKIPPED], [always-run CI jobs with no local step at all])."""
+    status = {o.name: o.status for o in outcomes}
+    skipped, never = [], []
+    for job, spec in CI_JOBS.items():
+        if not spec["always"]:
+            continue
+        if not spec["local"]:
+            never.append(job)
+            continue
+        off = [n for n in spec["local"] if status.get(n) == SKIPPED]
+        if off:
+            skipped.append(f"{job} ({', '.join(off)})")
+    return skipped, never
+
+
 def render_summary(outcomes) -> str:
     n = {s: sum(1 for o in outcomes if o.status == s) for s in (PASS, FAIL, SKIPPED)}
     total = sum(o.seconds for o in outcomes)
-    head = f"RESULT: {'FAIL' if n[FAIL] else 'PASS'} ({n[FAIL]} failed, {n[PASS]} passed, {n[SKIPPED]} skipped) in {fmt_secs(total)}"
-    unv = [o for o in outcomes if o.unverified]
-    out = [head]
-    if unv:
-        out.append("NOT VERIFIED locally (tool missing, CI will still run these): " + ", ".join(o.name for o in unv))
+    nv = not_verified(outcomes)
+    word = "FAIL" if n[FAIL] else "PASS"
+    mark = f" ({len(nv)} not verified)" if nv else ""
+    out = [f"RESULT: {word}{mark} - {n[FAIL]} failed, {n[PASS]} passed, {n[SKIPPED]} skipped in {fmt_secs(total)}"]
+    if nv:
+        out.append("NOT VERIFIED locally (CI still runs these, or runs more than this did):")
+        for o in nv:
+            why = o.partial or o.detail
+            out.append(f"  {o.name}: {one_line(why, 150)}")
+    skipped, never = jobs_not_run(outcomes)
+    if skipped:
+        out.append("Always-run CI jobs with a local step that was skipped: " + "; ".join(skipped))
+    if never:
+        out.append("Always-run CI jobs with no local equivalent (they cannot be run here): " + ", ".join(never))
     return "\n".join(out)
 
 
@@ -814,10 +1249,10 @@ def write_logs(outcomes, d: Path) -> Optional[Path]:
 
 
 def parse_args(argv):
-    ap = argparse.ArgumentParser(description="Run the scoped fast tier of CI locally before a push.")
+    ap = argparse.ArgumentParser(description="Preview the fast, always-run tier of CI locally before a push.")
     ap.add_argument("--base", default="origin/main", help="base to compare with (default origin/main)")
-    ap.add_argument("--scope", default="diff", help="diff: only what the diff touches; all: every step regardless of the diff")
-    ap.add_argument("--race", action="store_true", help="add -race to the focused go test")
+    ap.add_argument("--scope", default="diff", help="diff: only what the diff touches; all: every step, whatever the diff (make: PREPUSH_SCOPE)")
+    ap.add_argument("--race", action="store_true", help="add -race to the go test")
     ap.add_argument("--offline", action="store_true", default=os.environ.get("PRE_PUSH_OFFLINE") == "1",
                     help="do not fetch origin/main (the verdict may be against a stale base)")
     return ap.parse_args(argv)
@@ -827,7 +1262,7 @@ def main(argv=None, system: Optional[Sys] = None, out=None) -> int:
     out = out or sys.stdout
     a = parse_args(sys.argv[1:] if argv is None else argv)
     if a.scope not in ("diff", "all"):
-        print(f"pre-push: unknown SCOPE {a.scope!r} (diff or all)", file=sys.stderr)
+        print(f"pre-push: unknown PREPUSH_SCOPE {a.scope!r} (diff or all)", file=sys.stderr)
         return 2
     if system is None:
         p = subprocess.run(["git", "rev-parse", "--show-toplevel"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
