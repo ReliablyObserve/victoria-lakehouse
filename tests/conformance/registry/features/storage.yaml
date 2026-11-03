@@ -600,6 +600,48 @@
     sides are tested, including the out-of-order page-bound cases that first exposed the
     aggregation bug behind them.
 
+- id: lh.feature.storage.flush_compacted_structure
+  title: Flushed and compacted files carry the same pruning structures
+  status: shipped
+  area: storage
+  surfaces: [storage]
+  tests:
+    - internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedLogsHaveTheSameStructure
+    - internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedTracesHaveTheSameStructure
+    - internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestBodyTokenSearchPrunesCompactedLikeFlushed
+    - internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestCompactedTokenBloomsMatchTheirRowGroups
+    - internal/storage/parquets3/writer_bytes_golden_test.go#TestFlushWriterBytesGolden
+    - lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedLogsHaveTheSameStructure
+    - lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedTracesHaveTheSameStructure
+    - lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestBodyTokenSearchPrunesCompactedLikeFlushed
+    - lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestCompactedTokenBloomsMatchTheirRowGroups
+    - lakehouse-traces/internal/storage/parquets3/writer_bytes_golden_test.go#TestFlushWriterBytesGolden
+    - internal/parquetwriter/writer_test.go#TestWriteIsByteReproducible
+    - internal/parquetwriter/writer_test.go#TestConcurrentWritersWithDifferentOptionsDoNotInteract
+    - internal/parquetwriter/writer_test.go#TestOptionsDecideTheStructure
+    - internal/parquetwriter/writer_test.go#TestFooterEntriesPerSignal
+    - internal/parquetwriter/writer_test.go#TestTokenBloomKeysFollowRowGroupIndex
+    - internal/parquetwriter/writer_test.go#TestPackageHasNoGlobalState
+    - internal/parquetwriter/structcheck/structcheck_test.go#TestDiffNamesEveryKindOfDifference
+    - internal/compaction/merge_panic_contained_test.go#TestCompact_PanickingMergeIsContainedAndLeavesSourcesUntouched
+    - internal/compaction/shared_writer_options_test.go#TestWriteCompactedIsTheSharedWriterWithTheGivenOptions
+  docs:
+    - docs/open-parquet-format.md#one-writer-for-flush-and-compaction
+  notes: >-
+    The proof cell for MAIN RULE 4 (compaction never reduces prunability, issue #344). The golden
+    tests run the same rows through the real flush writer and through Compactor.Compact and compare
+    the decoded footer structure (footer keys, split-block bloom columns, statistics, page index),
+    not bytes; the flush writer's own bytes are pinned by TestFlushWriterBytesGolden in both
+    modules. The external-reader matrix (parquet-readers job) reads the compacted layer too.
+  highlight: >-
+    **One writer for flush and compaction**: a compacted Parquet file carries the same body token blooms, split-block blooms, footer entries, statistics and page index as a flushed one, because both call one pure encoder, so a body search does not get slower as data ages.
+  description: >-
+    Flush and compaction encode their output through one library (internal/parquetwriter) with
+    explicit options, so the pruning structures cannot drift apart: the compactor used to carry its
+    own copy of the encoding and had dropped the body token blooms. The encoder holds no state and
+    is deterministic, and a compaction whose merge or encode step panics fails that group instead of
+    the process.
+
 - id: lh.feature.storage.zstd_compression
   title: ZSTD compression tuning by age
   status: shipped
