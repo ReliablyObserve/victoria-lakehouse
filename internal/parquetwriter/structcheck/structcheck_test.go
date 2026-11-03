@@ -1,9 +1,12 @@
 package structcheck_test
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/parquet-go/parquet-go"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetwriter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetwriter/structcheck"
@@ -126,5 +129,81 @@ func mustMention(t *testing.T, diff []string, want string) {
 func TestDescribeRejectsGarbage(t *testing.T) {
 	if _, err := structcheck.Describe([]byte("not parquet")); err == nil {
 		t.Fatal("Describe accepted garbage")
+	}
+}
+
+// Diff on hand-built structures covers the differences a writer pair can show that
+// the two shared-writer outputs cannot be made to show.
+func TestDiffOnBuiltStructures(t *testing.T) {
+	col := func(path string) structcheck.Column {
+		return structcheck.Column{Path: path, Type: "BYTE_ARRAY", Codec: "ZSTD", Encodings: []string{"PLAIN"}, MinMax: "aa", BloomBytes: 64, ColumnIndex: true, OffsetIndex: true}
+	}
+	base := func() *structcheck.Structure {
+		return &structcheck.Structure{
+			CreatedBy: "app 1", NumRows: 10, KeyValues: map[string]string{"k": "d1"},
+			RowGroups: []structcheck.RowGroup{{NumRows: 10, Sorting: []string{"ts"}, Columns: []structcheck.Column{col("a"), col("b")}}},
+		}
+	}
+	if d := structcheck.Diff(base(), base()); len(d) != 0 {
+		t.Fatalf("equal structures: %v", d)
+	}
+	mutate := func(f func(s *structcheck.Structure)) []string {
+		g := base()
+		f(g)
+		return structcheck.Diff(base(), g)
+	}
+	cases := []struct {
+		name string
+		f    func(s *structcheck.Structure)
+		want string
+	}{
+		{"created_by", func(s *structcheck.Structure) { s.CreatedBy = "app 2" }, "created_by"},
+		{"num_rows", func(s *structcheck.Structure) { s.NumRows = 11 }, "num_rows: 10 -> 11"},
+		{"new footer key", func(s *structcheck.Structure) { s.KeyValues["extra"] = "d2" }, `footer key "extra": absent -> present`},
+		{"changed footer value", func(s *structcheck.Structure) { s.KeyValues["k"] = "d9" }, `footer key "k": value differs`},
+		{"row group rows", func(s *structcheck.Structure) { s.RowGroups[0].NumRows = 9 }, "row group 0: rows 10 -> 9"},
+		{"sorting", func(s *structcheck.Structure) { s.RowGroups[0].Sorting = []string{"ts desc"} }, "sorting columns"},
+		{"column count", func(s *structcheck.Structure) { s.RowGroups[0].Columns = s.RowGroups[0].Columns[:1] }, "columns 2 -> 1"},
+		{"column path", func(s *structcheck.Structure) { s.RowGroups[0].Columns[1].Path = "z" }, `path "b" -> "z"`},
+		{"type and codec", func(s *structcheck.Structure) { s.RowGroups[0].Columns[0].Codec = "SNAPPY" }, "type/codec"},
+		{"encodings", func(s *structcheck.Structure) { s.RowGroups[0].Columns[0].Encodings = []string{"RLE"} }, "encodings"},
+		{"statistics", func(s *structcheck.Structure) { s.RowGroups[0].Columns[0].NullCount = 3 }, "statistics"},
+		{"bloom size", func(s *structcheck.Structure) { s.RowGroups[0].Columns[0].BloomBytes = 0 }, "split-block bloom 64 bytes -> 0 bytes"},
+		{"page index", func(s *structcheck.Structure) { s.RowGroups[0].Columns[0].OffsetIndex = false }, "page index"},
+	}
+	for _, c := range cases {
+		mustMention(t, mutate(c.f), c.want)
+	}
+}
+
+func TestDescribeReportsTheSortOrder(t *testing.T) {
+	r := rows(100, true)
+	var buf bytes.Buffer
+	w := parquet.NewGenericWriter[schema.LogRow](&buf, parquet.SortingWriterConfig(parquet.SortingColumns(parquet.Ascending("timestamp_unix_nano"), parquet.Descending("service.name"))))
+	if _, err := w.Write(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := structcheck.Describe(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(s.RowGroups[0].Sorting, ","); got != "timestamp_unix_nano,service.name desc" {
+		t.Errorf("sorting = %q", got)
+	}
+	if got := s.BloomColumns(); len(got) != 0 {
+		t.Errorf("a file written without blooms reports bloom columns %v", got)
+	}
+}
+
+func TestBloomColumnsMarksAPartialColumn(t *testing.T) {
+	s := &structcheck.Structure{RowGroups: []structcheck.RowGroup{
+		{Columns: []structcheck.Column{{Path: "a", BloomBytes: 8}, {Path: "b", BloomBytes: 8}}},
+		{Columns: []structcheck.Column{{Path: "a", BloomBytes: 8}, {Path: "b"}}},
+	}}
+	if got := strings.Join(s.BloomColumns(), ","); got != "a,b (partial)" {
+		t.Errorf("BloomColumns = %q", got)
 	}
 }

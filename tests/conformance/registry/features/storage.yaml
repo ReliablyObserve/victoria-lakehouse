@@ -626,6 +626,14 @@
     - internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeReportsWhatTheFooterHolds
     - internal/parquetwriter/structcheck/structcheck_test.go#TestIdenticalStructuresHaveNoDiff
     - internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeRejectsGarbage
+    - internal/parquetwriter/structcheck/structcheck_test.go#TestDiffOnBuiltStructures
+    - internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeReportsTheSortOrder
+    - internal/parquetwriter/structcheck/structcheck_test.go#TestBloomColumnsMarksAPartialColumn
+    - internal/parquetwriter/tokenbloom_test.go#TestTokenizeSplitsLowercasesAndDeduplicates
+    - internal/parquetwriter/tokenbloom_test.go#TestTokenBloomHasNoFalseNegativesAndRoundTrips
+    - internal/parquetwriter/tokenbloom_test.go#TestTokenBloomEdgeCases
+    - internal/parquetwriter/tokenbloom_test.go#TestTokenBloomUnmarshalRejectsShortAndTruncatedData
+    - internal/parquetwriter/tokenbloom_test.go#TestBuildTokenBloomMetadata
     - internal/compaction/merge_panic_contained_test.go#TestCompact_PanickingMergeIsContainedAndLeavesSourcesUntouched
     - internal/compaction/shared_writer_options_test.go#TestWriteCompactedIsTheSharedWriterWithTheGivenOptions
   docs:
