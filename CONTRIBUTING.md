@@ -99,6 +99,10 @@ Notes:
   error line of a failure and the failing step's last lines are printed under it). Run directly, `python3 scripts/ci/pre_push.py`
   exits 1 when a step FAILs and 2 on a usage error; through `make` any failure is reported as `Error 2`.
 - The variable is `PREPUSH_SCOPE`, not `SCOPE`, so an exported `SCOPE` in your shell cannot switch it.
+- Time (measured on one laptop, single runs): a diff that changes only `docs/` took 29 s, a one-package Go change 41 s,
+  `PREPUSH_SCOPE=all` 19.0 min (the `scripts/ci` discovery 3.7 min, the registry gate self-tests 7.1 min, the proof
+  harness 1.1 min, `go test` of the logs module 3.4 min and of the traces module 2.6 min without `-race`, the rest under 1 min).
+  Use `PREPUSH_SCOPE=all` before a large change, not before every push.
 - The tests of a changed `scripts/ci` file are chosen by name (`foo.py` selects `test_foo*.py`), so a test of a script that
   only imports the changed one is not selected; `PREPUSH_SCOPE=all` runs them all.
 
