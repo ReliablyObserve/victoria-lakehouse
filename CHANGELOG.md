@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.20] - 2026-11-03
+
+### Changed
+
+- **The tests behind the committed-segment retirement loop (#611) now fail when the loop is missing, late or never stops, and the durability page states the clock condition of the buffer-to-object hand-off.** The fleet test runs the real flusher on both insert pods and stalls a drain while compaction merges earlier segments, a committed segment must be retired within the grace plus 250 ms while a drain is blocked, and a new test pins that the loop ends with `Stop`; the one-insert-two-select multi-instance test also queries the insert pod. `docs/durability.md` says that the hand-off needs the compacting pod's clock and the object store's marker time to agree within about ten minutes at the defaults (the writer's clock cancels out), what happens beyond that (rows twice for at most one grace, none lost) and where the upstream swap lives; the clock-independent design is tracked in #860. No product behaviour changes.
+
+- **`make pre-push` runs the scoped fast tier of CI locally before a push.** It calls the existing tools (`pr_classify.py --ci-scope`, the registry and changelog gates, `make conformance-check`, actionlint and zizmor, the `scripts/ci` and harness tests, helm, `golangci-lint --new-from-rev`, `go vet` and a focused `go test -short`) for what the diff touches, checks that the branch contains `origin/main` and that commits are signed without AI attribution, and prints a PASS/FAIL/SKIPPED table with a non-zero exit on any FAIL. `SCOPE=all` runs everything, `RACE=1` adds `-race`; it changes no CI workflow or gate.
+
+### Fixed
+
+- **A read whose listed object was removed keeps the trace-by-ID fast path when the bloom facet proves the object irrelevant, and yields to the caller's cancellation (#772 follow-up).** The traces trace-by-ID footer lookup ignores a gone object only when the in-memory pmeta trace_id bloom facet proves it never held the trace (no S3 read, exact: blooms have no false negatives); otherwise it stays a miss and the span scan fails for the object. A caller's cancellation or deadline now overrides a gone object, as at upstream. The Jaeger and Tempo trace-by-ID answers for a removed object are 400, not 502, and Jaeger services and Tempo tags and metrics 400 as well: VictoriaTraces' own handlers stringify the storage error with `%s` and drop the status (upstream behaviour, not patched); Jaeger and Tempo search and the `/select/logsql/*` endpoints answer 502.
+
+- **The latency-probe test of the PR proof harness no longer fails under host load (#862; tooling test only, no change to the Lakehouse binaries or to runtime behaviour).** `test_probe_times_the_proxied_leg_against_the_direct_leg` timed a real 30 ms sleep against the probe's 10 ms tolerance and failed about 5 % of runs on a loaded host (10 of 200, measured), which turned the `api` job's `Test the harness` step into "did not complete" on a good PR. The probe is now checked against a virtual clock that only the fake servers move (exact added time, delay on the proxied leg only, no-delay and swapped-leg controls), plus a one-sided real-clock test that host load does not plausibly break (about 70x margin, measured).
+
+- **A crash of the API matrix wrapper of the PR proof workflow is now "did not complete" instead of a regression (tooling only, no change to the Lakehouse binaries or to runtime behaviour).** The wrapper exits 3 with its comment files on any crash, drops the busy first attempt's files before the one re-attempt, records the exit code of the second attempt, tries to name the holder of a busy port in the log and starts the probe of port blocks at a block chosen by the project name; see `docs/pr-perf-smoke.md`.
+
 ## [0.167.19] - 2026-11-02
 
 ### Fixed
