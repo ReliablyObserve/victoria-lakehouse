@@ -579,19 +579,27 @@ func (s *Storage) processOneFile(ctx context.Context, fi manifest.FileInfo, star
 	if err == nil {
 		return nil
 	}
+	return s.fileReadFailure(ctx, fi, startNs, endNs, filter, hasTombstones, filteredWriteBlock, err)
+}
+
+// fileReadFailure is what a failed read of one object means for the query. The
+// context decides first, as at upstream (the caller's cancellation or deadline
+// overrides a storage error, netselect storageNode.handleError; getFirstError
+// only maps the unavailable-storage error to 502): a read that was stopped
+// (its caller, or the row ceiling) is reported by RunQuery, and a read it aborted
+// is not a failing or a gone object. Then a listed object that is gone, then any
+// other failure, which leaves rows of a selected object out of the answer: the
+// read fails rather than answer with a silent hole.
+func (s *Storage) fileReadFailure(ctx context.Context, fi manifest.FileInfo, startNs, endNs int64, filter *logstorage.Filter, hasTombstones bool, filteredWriteBlock logstorage.WriteDataBlockFunc, err error) error {
+	if ctx.Err() != nil {
+		return nil
+	}
 	if isObjectGone(err, fi.Key) {
 		// Listed, then removed by a compaction or a retention run (#772). Its rows
 		// are in a compacted object this query did not list, or deleted: the answer
 		// is complete only if the manifest alone gives them exactly, else it fails.
 		return s.handle404Recovery(ctx, fi, startNs, endNs, filter, hasTombstones, filteredWriteBlock, err)
 	}
-	if ctx.Err() != nil {
-		// The query was stopped (its caller, or the row ceiling); the stop is
-		// reported by RunQuery, and a read it aborted is not a failing object.
-		return nil
-	}
-	// Any other failure leaves rows of a selected object out of the answer:
-	// fail the read rather than answer with a silent hole.
 	metrics.QueryFileErrorsTotal.Inc()
 	logger.Warnf("query file error: %s; key=%s", err, fi.Key)
 	return unreadableObjectError(fi.Key, err)

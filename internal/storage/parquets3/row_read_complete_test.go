@@ -450,13 +450,34 @@ func TestRowRead_RemovedObject_FailsWith502(t *testing.T) {
 	}
 }
 
-// A removed object stays tolerated only where the manifest gives its rows exactly
-// (#772): a timestamp-only count of an object entirely inside the window is
-// answered from the manifest without reading it, so the removal changes nothing,
-// and a window that cuts the object fails with 502 (the name is the one the
-// registry row and its parity lock have always cited; the guarantee is narrowed).
+// A removed object is tolerated only when the manifest gives its rows exactly
+// (#772): a timestamp-only query (a count or a `_time` bucketing) with no filter and
+// no tombstone, over a window that holds the object entirely, is answered from the
+// manifest by manifestFastPath without a single request for the gone key, so the
+// removal changes nothing and the answer is exact. It is not tolerated otherwise (see
+// TestRowRead_RemovedObject_CutByTheWindowFails502 and TestRowRead_RemovedObject_FailsWith502).
 func TestRowRead_RemovedObject_StaysTolerated(t *testing.T) {
-	checkCountFromManifestWithRemovedObject(t)
+	fx, goneGets, run := rcManifestKnownFixture(t)
+	rows, err := run(fx.start, fx.end) // the window holds every object
+	if err != nil || rows != rcFiles*rcRowsPerFile {
+		t.Fatalf("count over a window that holds the removed object: %d rows, err %v; want %d rows and no error", rows, err, rcFiles*rcRowsPerFile)
+	}
+	if n := goneGets.Load(); n != 0 {
+		t.Fatalf("the manifest-answered count requested the gone key %d times, want 0", n)
+	}
+}
+
+// The same removed object, outside the manifest's reach: a window that cuts the
+// objects leaves the rows of the removed one inside the window unknown to the
+// manifest, so the read goes to S3 for it and fails with 502 (the object was
+// removed while the query ran).
+func TestRowRead_RemovedObject_CutByTheWindowFails502(t *testing.T) {
+	fx, goneGets, run := rcManifestKnownFixture(t)
+	_, err := run(fx.now.UnixNano(), fx.end) // the window cuts every object
+	goneReadError(t, err, fx.keys[1])
+	if goneGets.Load() == 0 {
+		t.Fatal("the cut window never requested the gone key: the 502 did not come from reading it")
+	}
 }
 
 // The control of the failure above: an object that was never listed changes
@@ -794,7 +815,14 @@ func TestRowRead_EverySurface_FailsOnUnreadableObject(t *testing.T) {
 		t.Run(name+"/removed", func(t *testing.T) {
 			fx := newRCFixture(t, 4, rcKeyFmt)
 			fx.removeObject(fx.keys[1])
+			gone, errs := metrics.QueryFileNotFoundTotal.Get(), metrics.QueryFileErrorsTotal.Get()
 			goneReadError(t, surface(fx), fx.keys[1])
+			if got := metrics.QueryFileNotFoundTotal.Get(); got <= gone {
+				t.Fatalf("%s: the removed object was not counted as not found (%d -> %d)", name, gone, got)
+			}
+			if got := metrics.QueryFileErrorsTotal.Get(); got != errs {
+				t.Fatalf("%s: a removed object was counted as an unreadable one (%d -> %d)", name, errs, got)
+			}
 		})
 	}
 }

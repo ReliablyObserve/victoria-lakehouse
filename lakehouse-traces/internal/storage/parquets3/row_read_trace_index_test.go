@@ -23,6 +23,8 @@ import (
 	otelpb "github.com/VictoriaMetrics/VictoriaTraces/lib/protoparser/opentelemetry/pb"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/pmeta"
 	vtstorageadapter "github.com/ReliablyObserve/victoria-lakehouse/lakehouse-traces/internal/vtstorage_adapter"
 )
 
@@ -83,6 +85,62 @@ func TestLookupTraceIndex_UnreadableFooterBeatsTheAggregateOfTheOthers(t *testin
 			}
 		})
 	}
+
+	// The in-RAM pmeta bloom facet (no S3 read) can prove that a gone file never
+	// held the trace: it cannot narrow the bound, so the others' bound stands (no
+	// loss of the fast path). A facet that may contain the trace, or cannot answer,
+	// leaves the entry unknown. An unreadable (not gone) footer is never excluded.
+	facet := func(s *Storage, keys []string, holdsTrace map[int]bool, otherPartition bool) {
+		s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
+		for i, k := range keys {
+			ids := []string{"trace-other"}
+			if holdsTrace[i] {
+				ids = []string{"trace-xyz"}
+			}
+			partition := manifest.ExtractTenantPartition(k)
+			if otherPartition {
+				partition += "-elsewhere" // a facet exists, but not for these files' partition
+			}
+			s.catalog.OnFileFlush(pmeta.FileContribution{Partition: partition, FileKey: k,
+				BloomValues: map[string][]string{"trace_id": ids}})
+		}
+	}
+	for _, c := range []struct {
+		name       string
+		gone       int
+		unreadable bool
+		holds      map[int]bool
+		noFacet    bool
+		elsewhere  bool
+		wantFound  bool
+	}{
+		{name: "a gone file the facet excludes still gives a hit", gone: 2, holds: map[int]bool{0: true, 1: true}, wantFound: true},
+		{name: "a gone file the facet may contain is a miss", gone: 1, holds: map[int]bool{0: true, 1: true}},
+		{name: "a gone file with no facet to ask is a miss", gone: 2, noFacet: true},
+		{name: "a gone file whose partition has no facet is a miss", gone: 2, elsewhere: true, holds: map[int]bool{0: true, 1: true}},
+		{name: "an unreadable file the facet excludes is still a miss", gone: 2, unreadable: true, holds: map[int]bool{0: true, 1: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fs, s, keys := traceIndexFixture(t)
+			if !c.noFacet {
+				facet(s, keys, c.holds, c.elsewhere)
+			}
+			if c.unreadable {
+				fs.setFault(keys[c.gone], accessDenied)
+			} else {
+				fs.mock.mu.Lock()
+				delete(fs.mock.files, keys[c.gone])
+				fs.mock.mu.Unlock()
+			}
+			start, end, found, err := s.LookupTraceIndex(context.Background(), nil, "trace-xyz")
+			if err != nil || found != c.wantFound {
+				t.Fatalf("got (%d, %d, found=%v, err=%v), want found=%v", start, end, found, err, c.wantFound)
+			}
+			if c.wantFound && (start != 500 && start != 1_000 || end != 5_000) {
+				t.Fatalf("bound (%d, %d), want the bound of the files still there", start, end)
+			}
+		})
+	}
 }
 
 // The VictoriaTraces index lookup through the adapter: with an unreadable file
@@ -134,4 +192,36 @@ func TestTraceByIDIndexQuery_UnreadableObjectFailsTheLookup(t *testing.T) {
 	if !errors.As(err, &esc) || esc.StatusCode != http.StatusBadGateway {
 		t.Fatalf("the index lookup failed with %v, want status 502", err)
 	}
+}
+
+// checkFileBloom prunes by the in-RAM pmeta bloom facet only when the facet can
+// answer for the file's partition: a facet that exists only for another partition
+// (or an empty one) cannot prune, and the per-file `.bloom` fallback is used (one
+// GET). The facet part is shared with the gone-object gate of LookupTraceIndex.
+func TestCheckFileBloom_FacetOfAnotherPartitionDoesNotPrune(t *testing.T) {
+	query := `trace_id:="trace-xyz"`
+	install := func(s *Storage, keys []string, partitionSuffix string) {
+		s.catalog = newCatalogStore(config.PmetaConfig{Enabled: true}, "traces/")
+		for _, k := range keys {
+			s.catalog.OnFileFlush(pmeta.FileContribution{Partition: manifest.ExtractTenantPartition(k) + partitionSuffix, FileKey: k,
+				BloomValues: map[string][]string{"trace_id": {"trace-other"}}})
+		}
+	}
+	check := func(t *testing.T, suffix string) (pruned bool, gets int64) {
+		fs, s, keys := traceIndexFixture(t)
+		install(s, keys, suffix)
+		before := fs.gets.Load()
+		fi := manifest.FileInfo{Key: keys[2]}
+		return s.checkFileBloom(context.Background(), fi, query), fs.gets.Load() - before
+	}
+	t.Run("a facet that excludes the file prunes it without a read", func(t *testing.T) {
+		if pruned, gets := check(t, ""); !pruned || gets != 0 {
+			t.Fatalf("pruned=%v gets=%d, want pruned by the facet with no GET", pruned, gets)
+		}
+	})
+	t.Run("a facet of another partition cannot prune and the .bloom fallback is read", func(t *testing.T) {
+		if pruned, gets := check(t, "-elsewhere"); pruned || gets != 1 {
+			t.Fatalf("pruned=%v gets=%d, want not pruned and one .bloom GET", pruned, gets)
+		}
+	})
 }
