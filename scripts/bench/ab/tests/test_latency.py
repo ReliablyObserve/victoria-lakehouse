@@ -92,9 +92,11 @@ def test_probe_times_the_proxied_leg_against_the_direct_leg(monkeypatch):
         res = latency.probe(fast.url + "/health", delayed.url + "/health", 300, n=5, warm=1)
         assert res["added_ms"] == 300.0 and res["ok"] is True
         assert res["direct_p50_ms"] == 0.0 and res["proxied_p50_ms"] == 300.0     # the delay lands on the proxied leg only
-        assert len(delayed.calls) == 6 and len(fast.calls) == 6                    # warm + n pairs, both legs requested
-        same = latency.probe(fast.url + "/health", fast.url + "/health", 300, n=5, warm=1)
+        assert res["samples"] == 5 and len(delayed.calls) == 6 and len(fast.calls) == 6   # warm + n pairs, both legs requested
+        before = len(fast.calls)
+        same = latency.probe(fast.url + "/health", fast.url + "/health", 300, n=4, warm=0)
         assert same["added_ms"] == 0.0 and same["ok"] is False                      # no delay between the legs is reported as such
+        assert same["samples"] == 4 and len(fast.calls) - before == 8               # n is honoured (not a fixed 5): 4 pairs, no warm-up
         swapped = latency.probe(delayed.url + "/health", fast.url + "/health", 300, n=5, warm=1)
         assert swapped["added_ms"] == -300.0 and swapped["ok"] is False             # the legs are not interchangeable
     finally:
@@ -113,7 +115,7 @@ def test_probe_measures_real_elapsed_time_of_the_proxied_leg():
     try:
         res = latency.probe(fast.url + "/health", delayed.url + "/health", delay_s * 1000, n=3, warm=0)
         assert res["proxied_p50_ms"] >= delay_s * 1000 - 1     # 1 ms: perf_counter and sleep resolution
-        assert res["added_ms"] > delay_s * 1000 / 2            # the direct leg is not inflated to the delay's order (4x headroom over loaded-host noise)
+        assert res["added_ms"] > delay_s * 1000 / 2            # only a direct-leg median of about 100 ms breaks this: measured direct p50 <= 1.39 ms at load average 185 (about 70x)
     finally:
         fast.close()
         delayed.close()
