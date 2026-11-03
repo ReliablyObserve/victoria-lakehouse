@@ -118,9 +118,11 @@ func TestRowReadHTTP_UnreadableObject_IsNotAnOKAnswer(t *testing.T) {
 					t.Fatalf("%s answered %d %q with a %s object", ep.name, code, body, fault)
 				}
 				// 502 Bad Gateway, the status upstream gives a read whose storage node is
-				// unavailable. Jaeger's handlers format the error with %s, which drops its
-				// status: they stay 400 until an export patch of VictoriaTraces keeps it
-				// (issue #773); the test pins that, it does not endorse it.
+				// unavailable. Where VictoriaTraces' own handler stringifies the stage-1
+				// storage error with %s (trace-by-ID, Jaeger services, Tempo tags and
+				// metrics: vtselect/traces/query/query.go, tempo/query.go, tempo/tempo.go)
+				// the status is dropped and the answer is 400: that is upstream
+				// behaviour, pinned here, not a Lakehouse defect.
 				want := ep.status
 				if want == 0 {
 					want = http.StatusBadGateway

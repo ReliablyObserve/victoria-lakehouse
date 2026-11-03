@@ -8,6 +8,8 @@ package parquets3
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,14 +98,14 @@ func TestGoneObject_ManifestAnswersOnlyWhenExact(t *testing.T) {
 	})
 }
 
-// checkCountFromManifestWithRemovedObject is the one case in which a removed
-// object is tolerated, through RunQuery: a timestamp-only count over objects whose
-// rows the manifest knows is exact although one object was removed (the manifest
-// answers, no read), and fails with 502 as soon as the window cuts the removed
-// object (its rows inside the window are unknown). Run by
-// TestRowRead_RemovedObject_StaysTolerated.
-func checkCountFromManifestWithRemovedObject(t *testing.T) {
-	fx := newRCFixture(t, 4, rcKeyFmt)
+// rcManifestKnownFixture is the fixture of the two removed-object tests below: every
+// object has its row count and exact bounds in the manifest, one object (the second)
+// is removed from the bucket, and the requests for its key are counted. run counts
+// the rows of a timestamp-only query (what a count or a `_time` bucketing reads)
+// over a window.
+func rcManifestKnownFixture(t *testing.T) (fx *rcFixture, goneGets *atomic.Int64, run func(start, end int64) (int, error)) {
+	t.Helper()
+	fx = newRCFixture(t, 4, rcKeyFmt)
 	for i, key := range fx.keys {
 		fi := manifest.FileInfo{Key: key, Size: int64(len(fx.datas[i])), RowCount: rcRowsPerFile,
 			MinTimeNs: fx.now.Add(-time.Minute).UnixNano(), MaxTimeNs: fx.now.Add(time.Minute).UnixNano()}
@@ -111,19 +113,18 @@ func checkCountFromManifestWithRemovedObject(t *testing.T) {
 		fx.s.manifest.AddFile(fx.partitionOf(key), fi)
 	}
 	fx.removeObject(fx.keys[1])
-	run := func(start, end int64) (int, error) {
+	goneGets = new(atomic.Int64) // requests for the gone key
+	fx.fs.setFault(fx.keys[1], func(w http.ResponseWriter, r *http.Request) {
+		goneGets.Add(1)
+		fx.fs.mock.handler(w, r)
+	})
+	run = func(start, end int64) (int, error) {
 		q := mustParseQueryWithTime(t, "* | stats count() n", start, end)
 		rows := 0
 		err := fx.s.RunQuery(storage.WithTimestampOnlyHint(context.Background()), nil, q, func(_ uint, db *logstorage.DataBlock) { rows += db.RowsCount() })
 		return rows, err
 	}
-
-	rows, err := run(fx.start, fx.end) // the window holds every object
-	if err != nil || rows != rcFiles*rcRowsPerFile {
-		t.Fatalf("count over a window that holds the removed object: %d rows, err %v; want %d rows and no error", rows, err, rcFiles*rcRowsPerFile)
-	}
-	_, err = run(fx.now.UnixNano(), fx.end) // the window cuts every object
-	goneReadError(t, err, fx.keys[1])
+	return fx, goneGets, run
 }
 
 // The other signal is unaffected: an object of the traces signal that was removed
@@ -142,4 +143,26 @@ func TestGoneObject_OtherSignalIsUnaffected(t *testing.T) {
 	if got := metrics.QueryFileNotFoundTotal.Get(); got != gone {
 		t.Fatalf("lakehouse_query_file_not_found_total moved (%d -> %d) for an object this signal never listed", gone, got)
 	}
+}
+
+// The caller's cancellation or deadline overrides a storage error, as at
+// upstream: a gone object seen after the caller stopped the read is not reported
+// as a removed object (502), a live read is.
+func TestGoneObject_CallerCancellationOverridesTheGoneObject(t *testing.T) {
+	s := testStorageWithS3(t, "http://127.0.0.1:1")
+	fi := manifest.FileInfo{Key: "logs/dt=2026-05-10/hour=14/gone.parquet"}
+	gone := fmt.Errorf("s3 GetObject %s: %w", fi.Key, &types.NoSuchKey{})
+	write := func(uint, *logstorage.DataBlock) {}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.fileReadFailure(ctx, fi, 0, 1<<62, nil, false, write, gone); err != nil {
+		t.Fatalf("a gone object after the caller cancelled the read was reported as %v, want nil (RunQuery reports the cancellation)", err)
+	}
+	dctx, dcancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer dcancel()
+	if err := s.fileReadFailure(dctx, fi, 0, 1<<62, nil, false, write, gone); err != nil {
+		t.Fatalf("a gone object after the deadline was reported as %v, want nil", err)
+	}
+	goneReadError(t, s.fileReadFailure(context.Background(), fi, 0, 1<<62, nil, false, write, gone), fi.Key)
 }
