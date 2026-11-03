@@ -273,7 +273,7 @@ class CheckedInWeightsTest(unittest.TestCase):
     independent of the Go sources: a renamed test must not turn this red (a
     stale entry only warns at run time, see StaleWeightsTest)."""
 
-    FILES = ("traces-parquets3.json", "traces-parquets3-heavy.json")
+    FILES = ("traces-parquets3.json", "traces-parquets3-heavy.json", "logs-parquets3.json")
 
     def test_files_load(self):
         for fn in self.FILES:
@@ -289,6 +289,17 @@ class CheckedInWeightsTest(unittest.TestCase):
         st.guard_partition(everything, shards)
         loads = st.loads_of(shards, weights)
         self.assertLess(max(loads), sum(loads) / 6 * 1.1, loads)
+
+    def test_the_logs_file_balances_a_package_of_its_size_four_ways(self):
+        # test-logs runs 4 shards: with 3 hash-placed shards, shard 1 carried 1.38x the others (#873)
+        weights = st.load_weights(os.path.join(WEIGHTS_DIR, "logs-parquets3.json"))
+        everything = sorted(set(weights[1]) | {"TestOther%04d" % i for i in range(1400)})
+        shards = st.assign(everything, 4, weights)
+        st.guard_partition(everything, shards)
+        loads = st.loads_of(shards, weights)
+        self.assertLess(max(loads), sum(loads) / 4 * 1.1, loads)
+        hashed = st.loads_of(st.assign(everything, 4), weights)
+        self.assertLess(max(loads), max(hashed), (loads, hashed))
 
     def test_the_heavy_file_puts_its_dominant_test_alone_in_three_shards(self):
         weights = st.load_weights(os.path.join(WEIGHTS_DIR, "traces-parquets3-heavy.json"))
