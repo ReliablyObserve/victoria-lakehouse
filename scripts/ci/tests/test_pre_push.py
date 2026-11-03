@@ -206,11 +206,19 @@ class GoPlanning(unittest.TestCase):
         self.assertEqual(p["logs"]["dirs"], ["internal/b"])
         self.assertFalse(p["logs"]["compile"])
 
-    def test_an_embedded_asset_belongs_to_the_nearest_package(self):
-        p = self.plan(["internal/ui/static/app.js", "internal/ui/vmui/index.html"], "internal/ui")
+    def test_an_embedded_asset_belongs_to_the_nearest_package_and_recompiles_it(self):
+        root = mkdtemp("pp-plan-")
+        go_tree(root, "internal/ui")
+        (pathlib.Path(root) / "internal/ui/embed.go").write_text("package x\n\n//go:embed static\nvar assets string\n")
+        p = pp.go_plan(make_ctx(["internal/ui/static/app.js", "internal/ui/vmui/index.html"], root=root))
         self.assertEqual(p["logs"]["dirs"], ["internal/ui"])
         self.assertTrue(p["logs"]["compile"])
         self.assertEqual(p["logs"]["unmapped"], [])
+
+    def test_a_non_go_file_in_a_package_without_embed_is_a_test_input_only(self):
+        p = self.plan(["tests/conformance/registry/rows/x.yaml"], "tests/conformance/registry")
+        self.assertEqual(p["logs"]["dirs"], ["tests/conformance/registry"])
+        self.assertFalse(p["logs"]["compile"])
 
     def test_markdown_under_a_package_runs_its_tests_but_does_not_recompile(self):
         p = self.plan(["internal/a/README.md"], "internal/a")
@@ -942,6 +950,7 @@ class ReviewProbes(unittest.TestCase):
     def test_F1_an_embedded_asset_belongs_to_its_package(self):
         root = probe_root("internal/ui")
         (pathlib.Path(root) / "internal/ui/static").mkdir()
+        (pathlib.Path(root) / "internal/ui/embed.go").write_text("package x\n\n//go:embed static\nvar assets string\n")
         out, s = run_steps(["internal/ui/static/app.js"], {"product": "1", "skip_go": "false"}, root=root)
         self.assertEqual(out["go test (logs)"].status, pp.PASS, out["go test (logs)"].detail)
         self.assertTrue(any("./internal/ui" in " ".join(c) for c in go_test_patterns(s)))
@@ -1451,6 +1460,46 @@ class HarnessStep(unittest.TestCase):
         self.assertEqual((o.status, o.unverified), (pp.SKIPPED, True))
         self.assertIn("pytest_cov", o.detail)
         self.assertIn("PRE_PUSH_PYTHON", o.detail)
+
+
+class DocsDoNotOverstate(unittest.TestCase):
+    """The review's wording finding: the tool is a preview, and its docs say what it covers and what it cannot catch."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = (REPO / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        cls.section = cls.doc[cls.doc.index("### Before you push"):cls.doc.index("### Test time budget")]
+
+    def test_no_overstating_claims_remain(self):
+        for text, where in ((pp.__doc__, "pre_push.py"), (self.section, "CONTRIBUTING.md"), ((REPO / "Makefile").read_text(), "Makefile")):
+            for phrase in ("same inputs CI uses", "scoped fast tier of CI locally", "calls the tools and scripts CI calls (it re-implements"):
+                self.assertNotIn(phrase, text, where)
+        self.assertIn("preview", self.section)
+        self.assertIn("is not CI", self.section)
+        self.assertIn("NOT the same as CI", pp.__doc__)
+
+    def test_the_scope_variable_is_prefixed_everywhere_it_is_documented(self):
+        for text, where in ((self.section, "CONTRIBUTING.md"), (pp.__doc__, "pre_push.py"), ((REPO / "Makefile").read_text(), "Makefile")):
+            self.assertIsNone(re.search(r"(?<![A-Z_])SCOPE=all", text), where)
+            self.assertIsNone(re.search(r"(?m)^SCOPE\s*\?=", text), where)
+        self.assertIn("PREPUSH_SCOPE=all", self.section)
+
+    def test_every_step_has_a_row_in_the_per_step_table(self):
+        for s in pp.build_steps():
+            self.assertIn(f"`{s.name}`", self.section, f"{s.name} is not in the table")
+
+    def test_the_table_cites_workflow_lines_that_exist(self):
+        refs = re.findall(r"(\b[\w-]+\.yaml):(\d+)(?:-(\d+))?", self.section)
+        self.assertGreater(len(refs), 15)
+        for wf, a, b in refs:
+            path = REPO / ".github/workflows" / wf
+            self.assertTrue(path.is_file(), wf)
+            self.assertLessEqual(int(b or a), len(path.read_text().splitlines()), f"{wf}:{a}")
+
+    def test_what_it_cannot_catch_is_listed(self):
+        tail_ = self.section[self.section.index("cannot catch"):]
+        for word in ("Docker", "Flaky", "Linux-only", "coverage", "-race", "Code scanning", "depend on the touched ones"):
+            self.assertIn(word, tail_)
 
 
 if __name__ == "__main__":

@@ -311,6 +311,19 @@ class Sys:
         d = self.root / rel
         return d.is_dir() and any(d.glob("*.go"))
 
+    def has_embed(self, rel):
+        """True when a Go file of the directory has a go:embed directive (its non-Go files are compile inputs)."""
+        d = self.root / rel
+        if not d.is_dir():
+            return False
+        for g in d.glob("*.go"):
+            try:
+                if "//go:embed" in g.read_text(encoding="utf-8", errors="replace"):
+                    return True
+            except OSError:
+                continue
+        return False
+
 
 @dataclasses.dataclass
 class Ctx:
@@ -407,8 +420,8 @@ def is_inert(f: str) -> bool:
 
 
 def go_plan(ctx: "Ctx") -> dict:
-    """What the diff means for the Go jobs, per module: `compile` (vet, lint and build must run: a Go file, an
-    embedded asset or a module-wide input changed), `dirs` (changed package directories), `readers` ({dir: -run
+    """What the diff means for the Go jobs, per module: `compile` (vet, lint and build must run: a Go file, a file
+    a go:embed directive can embed, or a module-wide input changed), `dirs` (changed package directories), `readers` ({dir: -run
     regex or ""} for packages whose tests read a changed non-Go file), `unmapped` (changed paths that no row
     explains) and `wide`. A change to the logs module compiles into the traces module too (replace ../)."""
     if "go" in ctx.cache:
@@ -429,8 +442,8 @@ def go_plan(ctx: "Ctx") -> dict:
         d = nearest_go_dir(ctx.sys, f)
         if d is not None:
             plan[m]["dirs"].add(rel_to_module(m, d))
-            if "/testdata/" not in f and not f.endswith((".md", ".txt")):
-                plan[m]["compile"] = True
+            if "/testdata/" not in f and ctx.sys.has_embed(d):
+                plan[m]["compile"] = True  # embedded into the binary: vet, lint and build see it
             continue
         rows = reader_rows(f)
         if rows:
