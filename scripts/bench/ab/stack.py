@@ -125,7 +125,8 @@ def candidate_bases(exclude=(), low: int | None = None) -> list[int]:
     """The port blocks to try, in order: blocks wholly below the host's ephemeral range (`low`) before the rest, because a port inside that range can
     be taken by any outgoing connection at any moment (a busy port was measured on a runner). Each group starts at the block derived from the project
     name when it holds it, else the below-range group starts at a block chosen by a hash of the project name, so different projects do not all start at
-    the same block (on Linux the derived block is never below the range)."""
+    the same block (the derived blocks of the two CI projects, lh-ab 45600 and lh-apimx 38300, are above the range on Linux: without the hash both started at
+    24000; other project names do derive a block below the range)."""
     low = ephemeral_low() if low is None else low
     bases = [b for b in allowed_bases() if b not in set(exclude)]
     span = max(max(P.PORT_OFFSETS.values()), max(EXTRA_OFFSETS.values()))

@@ -166,13 +166,28 @@ def record_crash(out: str, e: BaseException) -> None:
         print(f"[api-proof] could not write the did-not-complete files: {werr}", file=sys.stderr, flush=True)
 
 
+def checked_exit(out: str, rc: int) -> int:
+    """pr_smoke.py's exit status is its verdict's (finish_api). A child that died before it wrote a verdict, or whose status is not the verdict's (its argparse
+    error exits 2, a failed import or an exception outside its own try exits 1), is not an invalid run or a regression: "did not complete", exit 3."""
+    try:
+        with open(os.path.join(out, "api-verdict.json"), encoding="utf-8") as f:
+            got = json.load(f).get("exit")
+    except (OSError, ValueError, AttributeError):
+        got = None
+    if got == rc:
+        return rc
+    print(f"[api-proof] pr_smoke.py exited {rc} but its verdict says {got!r}: it died outside its own error handling", file=sys.stderr, flush=True)
+    write_infra_state(out, f"pr_smoke.py exited {rc} without writing a verdict that agrees with it (verdict exit: {got})", infra=False)
+    return 3
+
+
 def cmd_run(a) -> int:
     def attempt(base: int) -> int:
         print(f"[api-proof] API matrix on the port block starting at {base}", file=sys.stderr, flush=True)
         return subprocess.run([sys.executable, PR_SMOKE, "--api-only", "--out", a.out, *a.smoke], env=dict(os.environ, PROOF_PORT_BASE=str(base)), check=False).returncode
     try:
         import stack  # noqa: PLC0415 - inside the try: its import reads files and needs PyYAML, and a failure there is a crash like any other
-        rc = run_with_retry(a.out, lambda exclude: stack.pick_port_base(exclude), attempt)
+        rc = checked_exit(a.out, run_with_retry(a.out, lambda exclude: stack.pick_port_base(exclude), attempt))
     except KeyboardInterrupt as e:
         record_crash(a.out, e)
         raise  # the process dies by the interrupt (the gate's catch-all reads that as "did not complete"), with the files in place

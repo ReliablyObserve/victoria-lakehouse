@@ -304,8 +304,8 @@ pull request that was fine). The holder was not identified; most likely a loopba
 19:06:57 and the `StackBusy` came at 19:07:01). `api_proof.py run` therefore probes for a free block (`stack.pick_port_base`): blocks wholly below the host's
 ephemeral range (read from `/proc/sys/net/ipv4/ip_local_port_range`) first, none in a range other stacks use, and the block must have all its published ports
 free. Within the blocks below the range the first candidate is the derived block when it is one of them, else the one a hash of the project name picks (so
-two projects do not all start at the same block: the derived block of `lh-apimx`, 38300, is above the range, and without the hash every project would start at
-24000); within the blocks above the range the derived block comes first. If the run still stops with exit 4 because its
+two projects do not all start at the same block: the derived blocks of the two CI projects, `lh-ab` (45600) and `lh-apimx` (38300), are above the range on Linux,
+and without the hash both started at 24000; other names do derive a block below the range); within the blocks above the range the derived block comes first. If the run still stops with exit 4 because its
 ports were in use, the holder is named in the log (`ss -Htanp "( sport = :P )"`, best effort) and the run is re-attempted once on another block, after the files
 of the first attempt are removed; the comment says so ("Re-attempted once ...", with the exit code of the second attempt). A regression, an invalid run, a stack of the
 project that already runs, or a second port collision is never re-attempted. A crash of the wrapper itself (an exception, not a stop of `pr_smoke.py`) is

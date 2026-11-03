@@ -81,7 +81,7 @@ def test_the_ephemeral_range_is_read_from_the_host_and_has_a_default(tmp_path):
 
 
 def test_two_projects_start_on_different_blocks_below_the_ephemeral_range(monkeypatch):
-    """On Linux the block derived from the name is never below the range, so without a rotation every project would start at the same block."""
+    """The derived blocks of lh-ab (45600) and lh-apimx (38300) are above the range on Linux; without the hash both started at 24000."""
     firsts = {}
     for name in ("lh-ab", "lh-apimx", "lh-other", "lh-x1"):
         monkeypatch.setattr(stack, "PROJECT", name)
@@ -212,7 +212,7 @@ def test_the_bundle_says_when_the_run_was_re_attempted(tmp_path):
     api.mkdir()
     (api / "api-matrix.md").write_text("<!-- lh-api-matrix -->\n### NEUTRAL API matrix: no change in any endpoint\n")
     (api / "api-verdict.json").write_text('{"exit": 0}')
-    (api / "reattempt.json").write_text(json.dumps({"first_base": 38300, "busy_ports": [38762], "second_base": 24000, "outcome": "recovered"}))
+    (api / "reattempt.json").write_text(json.dumps({"first_base": 38300, "busy_ports": [38762], "second_base": 24000, "outcome": "second attempt exit 0"}))
     out = tmp_path / "o"
     api_proof.main(["bundle", "--out-dir", str(out), "--api-dir", str(api), "--pr-number", "5", "--head-sha", "a" * 40])
     body = (out / "api-matrix.md").read_text()
@@ -317,20 +317,21 @@ def test_the_bundle_of_a_crashed_run_is_incomplete_not_a_regression(tmp_path, mo
     assert rc == 3 and json.loads((o / "manifest.json").read_text())["comments"][0]["verdict"] == "incomplete"
 
 
-REAL_REPORT_HOLDERS = api_proof.report_holders
+REAL_REPORT_HOLDERS = getattr(api_proof, "report_holders", None)  # None where the module has none (the tests are collected against an older tree)
 
 
 @pytest.fixture(autouse=True)
 def no_host_ss(monkeypatch):
     """The unit tests do not run `ss` on the host; the test of the holder report puts the real function back."""
-    monkeypatch.setattr(api_proof, "report_holders", lambda ports: None)
+    monkeypatch.setattr(api_proof, "report_holders", lambda ports: None, raising=False)
 
 
 class Procs:
     """Stands in for subprocess.run: pr_smoke.py runs return the scripted codes and leave the markdown a run leaves; `ss` runs return the scripted text."""
 
-    def __init__(self, out, codes, ss_text="", ss_error=None):
+    def __init__(self, out, codes, ss_text="", ss_error=None, verdict=True):
         self.out, self.codes, self.calls, self.ss_calls, self.ss_text, self.ss_error = out, list(codes), [], [], ss_text, ss_error
+        self.verdict = verdict  # pr_smoke.py writes api-verdict.json with its own exit status; False stands for a child that died before it
 
     def __call__(self, argv, **kw):
         if argv[0] == "ss":
@@ -343,6 +344,9 @@ class Procs:
         os.makedirs(self.out, exist_ok=True)
         with open(os.path.join(self.out, "api-matrix.md"), "w", encoding="utf-8") as f:
             f.write(BUSY_MD if rc == 4 else "<!-- lh-api-matrix -->\n### NEUTRAL\n\n<sub>stamp</sub>\n")
+        if self.verdict:
+            with open(os.path.join(self.out, "api-verdict.json"), "w", encoding="utf-8") as f:
+                json.dump({"exit": rc}, f)
         return SimpleNamespace(returncode=rc)
 
 
@@ -364,28 +368,87 @@ def test_pr_smoke_gets_api_only_out_its_options_after_the_double_dash_and_the_bl
 
 def test_a_second_attempt_that_dies_without_writing_does_not_reuse_the_busy_files_of_the_first(tmp_path, monkeypatch):
     out = str(tmp_path / "out")
-    procs = Procs(out, [4, 3])
-
-    def second_writes_nothing(argv, **kw):
-        if argv[0] != "ss" and len(procs.calls) == 1:
-            procs.calls.append((argv, kw.get("env")))
-            return SimpleNamespace(returncode=3)
-        return procs(argv, **kw)
-    for name in api_proof.DATA_FILES:  # what a busy first attempt leaves
-        os.makedirs(out, exist_ok=True)
+    os.makedirs(out)
+    for name in ("api-matrix.md", *api_proof.DATA_FILES):  # what a busy first attempt leaves
         with open(os.path.join(out, name), "w", encoding="utf-8") as f:
-            f.write("{}")
-    monkeypatch.setattr(api_proof.subprocess, "run", second_writes_nothing)
-    picks = iter([24000, 24100])
-    monkeypatch.setattr(stack, "pick_port_base", lambda exclude=(): next(picks))
-    rc = api_proof.main(["run", "--out", out, "--", "--base", "abc"])
+            f.write(BUSY_MD if name == "api-matrix.md" else "{}")
+
+    def first(base):
+        return 4
+
+    def second_writes_nothing(base):
+        assert os.listdir(out) == [], "the first attempt's files are gone before the second starts"
+        return 3
+    monkeypatch.setattr(api_proof, "report_holders", lambda ports: None)
+    attempts = iter([first, second_writes_nothing])
+    rc = api_proof.run_with_retry(out, pick_from(24000, 24100), lambda base: next(attempts)(base))
     assert rc == 3
-    for name in ("api-matrix.md", "api-verdict.json", *api_proof.DATA_FILES):
-        assert not os.path.exists(os.path.join(out, name)), name
+    assert sorted(os.listdir(out)) == ["reattempt.json"]
     o = tmp_path / "o"
     api_proof.main(["bundle", "--out-dir", str(o), "--api-dir", out, "--pr-number", "5", "--head-sha", "a" * 40])
     body = (o / "api-matrix.md").read_text()
     assert "did not complete" in body and "StackBusy" not in body and "(recovered)" not in body and "second attempt exit 3" in body
+    assert body.index("Re-attempted once") < body.index("<sub>")
+
+
+def test_the_wrapper_leaves_did_not_complete_files_when_the_second_attempt_dies_without_a_verdict(tmp_path, monkeypatch):
+    out = str(tmp_path / "out")
+    procs = Procs(out, [4, 3])
+
+    def run(argv, **kw):
+        if argv[0] != "ss" and len(procs.calls) == 1:
+            procs.verdict = False
+            procs.calls.append((argv, kw.get("env")))
+            return SimpleNamespace(returncode=3)
+        return procs(argv, **kw)
+    monkeypatch.setattr(api_proof.subprocess, "run", run)
+    picks = iter([24000, 24100])
+    monkeypatch.setattr(stack, "pick_port_base", lambda exclude=(): next(picks))
+    assert api_proof.main(["run", "--out", out, "--", "--base", "abc"]) == 3
+    assert read_json(os.path.join(out, "api-verdict.json"))["exit"] == 3
+    assert "StackBusy" not in read_text(os.path.join(out, "api-matrix.md"))
+    o = tmp_path / "o"
+    api_proof.main(["bundle", "--out-dir", str(o), "--api-dir", out, "--pr-number", "5", "--head-sha", "a" * 40])
+    body = (o / "api-matrix.md").read_text()
+    assert "did not complete" in body and "Re-attempted once" in body and "second attempt exit 3" in body
+
+
+@pytest.mark.parametrize("child_rc,verdict_exit,want", [
+    (2, None, 3),    # argparse error of the child: no verdict, was "invalid run"
+    (1, None, 3),    # an exception or import error outside the child's own try: no verdict, was "a regression"
+    (0, None, 3),    # a child that exits 0 without writing anything proved nothing
+    (1, 0, 3),       # a status that is not the verdict's
+    (1, 1, 1),       # a real regression stays a regression
+    (2, 2, 2),       # a real invalid run stays one
+    (0, 0, 0),
+    (4, 4, 4),       # a busy stack that wrote its verdict (nowhere else to go) stays exit 4
+])
+def test_the_exit_of_the_child_is_trusted_only_when_its_verdict_agrees(tmp_path, monkeypatch, child_rc, verdict_exit, want):
+    out = str(tmp_path / "out")
+
+    def run(argv, **kw):
+        if argv[0] == "ss":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        os.makedirs(out, exist_ok=True)
+        if verdict_exit is not None:
+            with open(os.path.join(out, "api-verdict.json"), "w", encoding="utf-8") as f:
+                json.dump({"exit": verdict_exit}, f)
+            with open(os.path.join(out, "api-matrix.md"), "w", encoding="utf-8") as f:
+                f.write(BUSY_MD if child_rc == 4 else "<!-- lh-api-matrix -->\n### x\n")
+        return SimpleNamespace(returncode=child_rc)
+    monkeypatch.setattr(api_proof.subprocess, "run", run)
+    picks = iter([24000])
+
+    def pick(exclude=()):
+        try:
+            return next(picks)
+        except StopIteration:
+            raise stack.NoFreeBlock("only one block") from None
+    monkeypatch.setattr(stack, "pick_port_base", pick)
+    assert api_proof.main(["run", "--out", out, "--", "--bogus-flag"]) == want
+    if want == 3 and verdict_exit != 3:
+        assert read_json(os.path.join(out, "api-verdict.json"))["exit"] == 3
+        assert "did not complete" in read_text(os.path.join(out, "api-matrix.md"))
 
 
 @pytest.mark.parametrize("second,outcome", [(0, "second attempt exit 0"), (1, "second attempt exit 1"), (3, "second attempt exit 3"), (4, "busy again")])
@@ -410,7 +473,7 @@ def test_the_re_attempt_note_comes_before_the_footer_so_the_section_order_holds(
 
 
 def test_the_holder_of_a_busy_port_is_named_in_the_log_and_a_missing_ss_never_fails_the_step(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(api_proof, "report_holders", REAL_REPORT_HOLDERS)
+    monkeypatch.setattr(api_proof, "report_holders", REAL_REPORT_HOLDERS, raising=False)
     fake = Fake(tmp_path, [4, 0])
     procs = Procs(fake.out, [], ss_text='LISTEN 0 4096 127.0.0.1:38762 0.0.0.0:* users:(("docker-proxy",pid=1,fd=4))\n')
     monkeypatch.setattr(api_proof.subprocess, "run", procs)
