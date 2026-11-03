@@ -1,4 +1,7 @@
 """Latency injection is verified, not assumed (the 2026-09 v3.3 baseline had none: wrong container, error swallowed)."""
+import time
+import types
+
 import pytest
 
 import latency
@@ -58,17 +61,61 @@ def test_tolerance_is_a_floor_or_a_quarter():
     assert latency.tolerance(100) == 25
 
 
-def test_probe_times_the_proxied_leg_against_the_direct_leg():
-    import time
+class FakeClock:
+    """Virtual time for `latency._time_get`: only the servers move it, so a timed request costs exactly what its handler adds."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def now(self):
+        return self.t
+
+    def advance(self, seconds):
+        self.t += seconds
+
+
+def _legs(monkeypatch, delay_s):
+    """Two real HTTP servers, the second costing `delay_s` of virtual time per request; the probe reads the virtual clock."""
+    clock = FakeClock()
+    monkeypatch.setattr(latency, "time", types.SimpleNamespace(perf_counter=clock.now, sleep=time.sleep))
 
     def slow(method, path, headers, body):
-        time.sleep(0.03)
+        clock.advance(delay_s)
+        return 200, "ok", {}
+    return Server(lambda *a: (200, "ok", {})), Server(slow)
+
+
+def test_probe_times_the_proxied_leg_against_the_direct_leg(monkeypatch):
+    # Virtual clock: the answer is exact and scheduling cannot move it (the wall-clock version of this test flaked under load, #862).
+    fast, delayed = _legs(monkeypatch, 0.3)
+    try:
+        res = latency.probe(fast.url + "/health", delayed.url + "/health", 300, n=5, warm=1)
+        assert res["added_ms"] == 300.0 and res["ok"] is True
+        assert res["direct_p50_ms"] == 0.0 and res["proxied_p50_ms"] == 300.0     # the delay lands on the proxied leg only
+        assert res["samples"] == 5 and len(delayed.calls) == 6 and len(fast.calls) == 6   # warm + n pairs, both legs requested
+        before = len(fast.calls)
+        same = latency.probe(fast.url + "/health", fast.url + "/health", 300, n=4, warm=0)
+        assert same["added_ms"] == 0.0 and same["ok"] is False                      # no delay between the legs is reported as such
+        assert same["samples"] == 4 and len(fast.calls) - before == 8               # n is honoured (not a fixed 5): 4 pairs, no warm-up
+        swapped = latency.probe(delayed.url + "/health", fast.url + "/health", 300, n=5, warm=1)
+        assert swapped["added_ms"] == -300.0 and swapped["ok"] is False             # the legs are not interchangeable
+    finally:
+        fast.close()
+        delayed.close()
+
+
+def test_probe_measures_real_elapsed_time_of_the_proxied_leg():
+    # Real clock, one-sided: a sleep never returns early, so the proxied leg takes at least the injected delay however loaded the host is.
+    delay_s = 0.2
+
+    def slow(method, path, headers, body):
+        time.sleep(delay_s)
         return 200, "ok", {}
     fast, delayed = Server(lambda *a: (200, "ok", {})), Server(slow)
     try:
-        res = latency.probe(fast.url + "/health", delayed.url + "/health", 30, n=5, warm=1)
-        assert res["ok"] and 20 < res["added_ms"] < 80
-        assert latency.probe(fast.url + "/health", fast.url + "/health", 30, n=5, warm=1)["ok"] is False
+        res = latency.probe(fast.url + "/health", delayed.url + "/health", delay_s * 1000, n=3, warm=0)
+        assert res["proxied_p50_ms"] >= delay_s * 1000 - 1     # 1 ms: perf_counter and sleep resolution
+        assert res["added_ms"] > delay_s * 1000 / 2            # only a direct-leg median of about 100 ms breaks this: measured direct p50 <= 1.39 ms at load average 185 (about 70x)
     finally:
         fast.close()
         delayed.close()
