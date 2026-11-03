@@ -20,15 +20,17 @@ import (
 //
 // A hash that moves is a format change: it needs a reviewer's decision, not a
 // regenerated constant. Set LH_PRINT_FLUSH_GOLDEN=1 to print the current values.
-var flushBytesGolden = map[string]string{
-	"logs-hex/nil-slots":      "485abf4d33cd70101ebed1cf024615ac83582f077ecb4e146cef15b5b66fc819",
-	"logs-hex/slots":          "739c48d8f3cba49ca2d0f60e755a9b25df5404d8271a21f2868a47ca056dae6a",
-	"logs-nonhex/nil-slots":   "db0c2abe69981d452471b4ce98d7a72a144d5c648ca0836f20d5e1593f4631da",
-	"logs-nonhex/slots":       "4c769334fd6be872de520c029daffa6afd0a3d92c43b130004b04be4dd453f87",
-	"traces-hex/nil-slots":    "13ae2d60c773680b5ecf02816605df6847223b1fda3c8a2f86c52de890a92c98",
-	"traces-hex/slots":        "eca63196183d970ec532adfad47852c98075222ccb50395372022e267bbea7f0",
-	"traces-nonhex/nil-slots": "f93ee9a93e2da3daec42b3d5cfd00e86303019fc844103e23336bffe049d88c7",
-	"traces-nonhex/slots":     "c2b97ed6c0177fbe19dd61f31252d6fe563f42888b8fb2ac6748c6994acf2c59",
+func flushBytesGolden() map[string]string {
+	return map[string]string{
+		"logs-hex/nil-slots":      "485abf4d33cd70101ebed1cf024615ac83582f077ecb4e146cef15b5b66fc819",
+		"logs-hex/slots":          "739c48d8f3cba49ca2d0f60e755a9b25df5404d8271a21f2868a47ca056dae6a",
+		"logs-nonhex/nil-slots":   "db0c2abe69981d452471b4ce98d7a72a144d5c648ca0836f20d5e1593f4631da",
+		"logs-nonhex/slots":       "4c769334fd6be872de520c029daffa6afd0a3d92c43b130004b04be4dd453f87",
+		"traces-hex/nil-slots":    "13ae2d60c773680b5ecf02816605df6847223b1fda3c8a2f86c52de890a92c98",
+		"traces-hex/slots":        "eca63196183d970ec532adfad47852c98075222ccb50395372022e267bbea7f0",
+		"traces-nonhex/nil-slots": "f93ee9a93e2da3daec42b3d5cfd00e86303019fc844103e23336bffe049d88c7",
+		"traces-nonhex/slots":     "c2b97ed6c0177fbe19dd61f31252d6fe563f42888b8fb2ac6748c6994acf2c59",
+	}
 }
 
 func printFlushGolden() bool { return os.Getenv("LH_PRINT_FLUSH_GOLDEN") == "1" }
@@ -107,6 +109,7 @@ func flushGoldenCases(t *testing.T) map[string][]byte {
 
 func TestFlushWriterBytesGolden(t *testing.T) {
 	got := flushGoldenCases(t)
+	golden := flushBytesGolden()
 	names := make([]string, 0, len(got))
 	for n := range got {
 		names = append(names, n)
@@ -118,7 +121,7 @@ func TestFlushWriterBytesGolden(t *testing.T) {
 			fmt.Printf("FLUSHGOLDEN %q: %q,\n", n, sum)
 			continue
 		}
-		want, ok := flushBytesGolden[n]
+		want, ok := golden[n]
 		if !ok {
 			t.Errorf("%s: no golden hash recorded (got %s)", n, sum)
 			continue
@@ -127,7 +130,7 @@ func TestFlushWriterBytesGolden(t *testing.T) {
 			t.Errorf("%s: the flush writer's bytes changed: want sha256 %s, got %s (%d bytes)", n, want, sum, len(got[n]))
 		}
 	}
-	if len(flushBytesGolden) != len(got) && !printFlushGolden() {
-		t.Errorf("golden has %d entries, fixtures produce %d", len(flushBytesGolden), len(got))
+	if len(golden) != len(got) && !printFlushGolden() {
+		t.Errorf("golden has %d entries, fixtures produce %d", len(golden), len(got))
 	}
 }
