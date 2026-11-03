@@ -463,8 +463,9 @@ jobs:
 
       # Builds the base and PR images, brings the stack up, seeds, compacts, checks the three sides hold the same rows, sends every executable row
       # three times (a row that fails is sent five more times), judges them by the registry of the BASE commit and writes the comment and the verdict.
-      # The port block is chosen by probing (blocks below the runner's ephemeral range first: an outgoing connection of the runner held a port of the
-      # derived block once), and a run that stopped because its ports were in use is re-attempted once on another block; see api_proof.py run.
+      # The port block is chosen by probing (blocks below the runner's ephemeral range first: a port of the derived block was busy once, holder not
+      # identified, most likely a loopback socket left by the preceding harness-test step, inferred), and a run that stopped at the preflight because
+      # its ports were in use is re-attempted once on another block; see api_proof.py run and docs/pr-perf-smoke.md.
       - name: Up, seed and API matrix
         id: matrix
         if: ${{ env.SCOPE == 'true' }}
@@ -530,7 +531,7 @@ jobs:
           retention-days: 14
 
   # The state of the API matrix as a check: green for 0 and for a skip, red for 1 (regression or new difference), 2 (invalid run) and 3 (did not
-  # complete, which includes the infrastructure state "ports in use" after its one re-attempt, exit 4): a missing proof is not a pass. No `paths:` filter and no `needs`-skip: it always reports on a pull request. Informational for now: whether it
+  # complete, which includes the infrastructure state, exit 4): a missing proof is not a pass. No `paths:` filter and no `needs`-skip: it always reports on a pull request. Informational for now: whether it
   # becomes a required check is the owner's decision and is not made here.
   gate-deterministic:
     name: gate-deterministic
@@ -559,6 +560,6 @@ jobs:
             0) echo "passed" ;;
             1) echo "::error title=API matrix::a regression, a status change or a new difference; see the comment and the job summary of the api job"; exit 1 ;;
             2) echo "::error title=API matrix::invalid run (hot VictoriaLogs/VictoriaTraces did not answer, or no row was exercised); re-run the job"; exit 2 ;;
-            4) echo "::error title=API matrix::did not complete, infrastructure state: the proof stack's ports were in use on this runner on both attempts; nothing about the pull request was measured and this is not a regression; re-run the job"; exit 3 ;;
+            4) echo "::error title=API matrix::did not complete, infrastructure state: the proof stack could not start on this runner (ports in use after the one re-attempt, a stack of the project already running, the lock held, or no free port block; the comment says which); nothing about the pull request was measured and this is not a regression; re-run the job"; exit 3 ;;
             *) echo "::error title=API matrix::did not complete (exit '$RC')"; exit 3 ;;
           esac

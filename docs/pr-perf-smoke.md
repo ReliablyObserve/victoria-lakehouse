@@ -291,19 +291,31 @@ Pending rows are flipped to executed in reviewed registry batches; from then on 
 
 **States.** The exit code of `pr_smoke.py --api-only` is the state of the check: 0 passed, 1 a regression, a status change or a new difference,
 2 an invalid run (hot VL/VT gave no answer to more than max(2, 10 %) of a signal's upstream rows, or no row was exercised), 3 the run did not
-complete (the comment says "did not complete" and why), 4 the stack could not start because its ports were in use (or a stack of the project already
-runs): an infrastructure state, never a regression. The comment starts with the verdict
+complete (the comment says "did not complete" and why; a crash of the wrapper itself is 3 too), 4 the stack could not start (its ports were in use, a
+stack of the project already runs, the lock is held, or no port block is free): an infrastructure state, never a regression. The comment starts with the verdict
 and counts rows per signal, never averaged. The manifest verdict is `pass`, `fail`, `skipped` or `incomplete`: 2, 3 and 4 are `incomplete`, and the body
 says which. `gate-deterministic` is green for 0 and for a skip, red for 1, 2 and 3: a missing proof is not a pass. The job `api` itself stays green when it
 measured something, so a regression is one red check, not two. Exit 4 has its own message in the gate ("infrastructure state ... not a regression") and
 is red like any run that measured nothing.
 
 **Port block and the one re-attempt.** The block derived from the project name (38300 to 38762) lies inside Linux's ephemeral range (32768 to 60999), and on a
-GitHub-hosted runner an outgoing connection held port 38762 (measured: PR 853, `StackBusy: ports already in use on 127.0.0.1: [38762]`, exit 4, a red gate on a
-pull request that was fine). `api_proof.py run` therefore probes for a free block (`stack.pick_port_base`): blocks wholly below the host's ephemeral range
-(read from `/proc/sys/net/ipv4/ip_local_port_range`) first, none in a range other stacks use, the derived block first within each group, and the block must have all
-its published ports free. If the run still stops with exit 4 because its ports were in use, it is re-attempted once on another block; the comment says so
-("Re-attempted once ..."). A regression, an invalid run, a stack of the project that already runs, or a second port collision is never re-attempted.
+GitHub-hosted runner its port 38762 was busy (measured: job 125487988500 of PR 853, `StackBusy: ports already in use on 127.0.0.1: [38762]`, exit 4, a red gate on a
+pull request that was fine). The holder was not identified; most likely a loopback socket left by the preceding harness-test step (inferred: that pytest step ended
+19:06:57 and the `StackBusy` came at 19:07:01). `api_proof.py run` therefore probes for a free block (`stack.pick_port_base`): blocks wholly below the host's
+ephemeral range (read from `/proc/sys/net/ipv4/ip_local_port_range`) first, none in a range other stacks use, and the block must have all its published ports
+free. Within the blocks below the range the first candidate is the derived block when it is one of them, else the one a hash of the project name picks (so
+two projects do not all start at the same block: the derived blocks of the two CI projects, `lh-ab` (45600) and `lh-apimx` (38300), are above the range on Linux,
+and without the hash both started at 24000; other names do derive a block below the range); within the blocks above the range the derived block comes first. If the run still stops with exit 4 because its
+ports were in use, the holder is named in the log (`ss -Htanp "( sport = :P )"`, best effort) and the run is re-attempted once on another block, after the files
+of the first attempt are removed; the comment says so ("Re-attempted once ...", with the exit code of the second attempt). A regression, an invalid run, a stack of the
+project that already runs, or a second port collision is never re-attempted. A crash of the wrapper itself (an exception, not a stop of `pr_smoke.py`) is
+"did not complete", exit 3, with the same comment files; so is a `pr_smoke.py` that died without writing a verdict that agrees with its exit status (its argument
+parser, an import, a crash outside its own error handling).
+
+What the re-attempt covers, and what it does not. It covers the time between the probe and the preflight of `pr_smoke.py` (seconds). Between that preflight and
+`docker compose up` lie the image builds (measured: job 125531632310 of run 41519493968, "building the images" at 20:29:28 and the compose start at 20:34:12, 4 min 44 s); a port taken in that window fails `compose up` with a
+`CalledProcessError` (exit 3), which is not re-attempted. What protects that window is the choice of a block below the ephemeral range, where the operating
+system hands out no ports to outgoing connections; a service on the same host that binds one of them is not excluded.
 
 **Measured on the first run of the existing harness (an A/A run on `ubuntu-latest`, base and PR the same code; the trim is the fixture of
 `scripts/bench/ab/tests/test_api_triage.py`):** 227 registry rows exercised, 172 exact, 29 same as the base but different from hot, 1 regressed,

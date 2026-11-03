@@ -8,7 +8,8 @@
   api_proof.py run    --out OUT -- <pr_smoke.py options>
         runs `pr_smoke.py --api-only` on a port block chosen by probing (stack.pick_port_base), and once more on another block when the first
         attempt stopped because its ports were in use (exit 4): the single classified re-attempt. Any other result is final. The exit code is
-        pr_smoke's; OUT/reattempt.json records a re-attempt, and `bundle` says so in the comment.
+        pr_smoke's; OUT/reattempt.json records a re-attempt, and `bundle` says so in the comment. A crash of this wrapper is exit 3 with
+        "did not complete" files (never exit 1, a regression, or 2, an invalid run).
 
   api_proof.py bundle --out-dir lh-proof-comment --data-dir api-matrix-data --api-dir OUT --pr-number N --head-sha SHA --base-sha SHA \\
                       [--repo OWNER/NAME --run-id ID] [--skipped --changed N] [--reason TEXT]
@@ -25,12 +26,14 @@ commenter's own parser (`proof_comment.parse_manifest`, `check_files`) before th
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -97,11 +100,12 @@ def ports_busy(out: str) -> list[int] | None:
     return None if not m else [int(x) for x in re.findall(r"\d+", m.group(1))]
 
 
-def write_infra_state(out: str, reason: str) -> None:
-    """No attempt could start (no port block is free): the same files a busy pr_smoke leaves, so the bundle and the gate see exit 4."""
+def write_infra_state(out: str, reason: str, infra: bool = True) -> None:
+    """The run stopped before an attempt could measure anything, and the files the bundle and the gate read say so. infra=True (no port block is
+    free): the files a busy pr_smoke leaves, exit 4. infra=False (the wrapper itself crashed): "did not complete", exit 3, never a regression."""
     meta: dict = {}
-    text, verdict = comment.errored({}, meta, "StackBusy: " + reason, comment.API_MARKER, comment.API_TITLE, infra=True)
-    verdict["exit"] = EXIT_BUSY
+    text, verdict = comment.errored({}, meta, ("StackBusy: " if infra else "") + reason, comment.API_MARKER, comment.API_TITLE, infra=infra)
+    verdict["exit"] = EXIT_BUSY if infra else 3
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "api-matrix.md"), "w", encoding="utf-8") as f:
         f.write(text)
@@ -123,14 +127,28 @@ def run_with_retry(out: str, pick, attempt) -> int:
     busy = ports_busy(out) if rc == EXIT_BUSY else None
     if busy is None:
         return rc
+    report_holders(busy)
     rec = {"first_base": first, "busy_ports": busy, "second_base": None, "outcome": "no other free block"}
     try:
         rec["second_base"] = pick((first,))
     except stack.NoFreeBlock:
         return finish_reattempt(out, rec, rc)  # nowhere else to go: the first stop stands
+    for name in ("api-matrix.md", *DATA_FILES):  # the busy first attempt's files must not stand in for a second attempt that dies without writing
+        with contextlib.suppress(FileNotFoundError):  # a file the first attempt did not write
+            os.remove(os.path.join(out, name))
     rc = attempt(rec["second_base"])
-    rec["outcome"] = "busy again" if rc == EXIT_BUSY else "recovered"
+    rec["outcome"] = "busy again" if rc == EXIT_BUSY else f"second attempt exit {rc}"
     return finish_reattempt(out, rec, rc)
+
+
+def report_holders(ports: list[int]) -> None:
+    """Best effort, to the log only: who holds a port that was found in use (`ss` may be missing or show nothing for another user's socket)."""
+    for p in ports[:8]:
+        try:
+            r = subprocess.run(["ss", "-Htanp", f"( sport = :{int(p)} )"], capture_output=True, text=True, timeout=10, check=False)
+            print(f"[api-proof] holder of port {p}: {(r.stdout or '').strip() or 'not shown by ss'}", file=sys.stderr, flush=True)
+        except Exception as e:  # noqa: BLE001 - a diagnostic never fails the step
+            print(f"[api-proof] holder of port {p}: ss unavailable ({type(e).__name__})", file=sys.stderr, flush=True)
 
 
 def finish_reattempt(out: str, rec: dict, rc: int) -> int:
@@ -139,13 +157,43 @@ def finish_reattempt(out: str, rec: dict, rc: int) -> int:
     return rc
 
 
-def cmd_run(a) -> int:
-    import stack  # noqa: PLC0415
+def record_crash(out: str, e: BaseException) -> None:
+    """The wrapper itself crashed (not a stop of pr_smoke.py): the traceback to the log, and the "did not complete" files for the bundle and the gate."""
+    traceback.print_exception(e)
+    try:
+        write_infra_state(out, f"the API matrix wrapper crashed: {type(e).__name__}: {e}", infra=False)
+    except OSError as werr:
+        print(f"[api-proof] could not write the did-not-complete files: {werr}", file=sys.stderr, flush=True)
 
+
+def checked_exit(out: str, rc: int) -> int:
+    """pr_smoke.py's exit status is its verdict's (finish_api). A child that died before it wrote a verdict, or whose status is not the verdict's (its argparse
+    error exits 2, a failed import or an exception outside its own try exits 1), is not an invalid run or a regression: "did not complete", exit 3."""
+    try:
+        with open(os.path.join(out, "api-verdict.json"), encoding="utf-8") as f:
+            got = json.load(f).get("exit")
+    except (OSError, ValueError, AttributeError):
+        got = None
+    if got == rc:
+        return rc
+    print(f"[api-proof] pr_smoke.py exited {rc} but its verdict says {got!r}: it died outside its own error handling", file=sys.stderr, flush=True)
+    write_infra_state(out, f"pr_smoke.py exited {rc} without writing a verdict that agrees with it (verdict exit: {got})", infra=False)
+    return 3
+
+
+def cmd_run(a) -> int:
     def attempt(base: int) -> int:
         print(f"[api-proof] API matrix on the port block starting at {base}", file=sys.stderr, flush=True)
         return subprocess.run([sys.executable, PR_SMOKE, "--api-only", "--out", a.out, *a.smoke], env=dict(os.environ, PROOF_PORT_BASE=str(base)), check=False).returncode
-    rc = run_with_retry(a.out, lambda exclude: stack.pick_port_base(exclude), attempt)
+    try:
+        import stack  # noqa: PLC0415 - inside the try: its import reads files and needs PyYAML, and a failure there is a crash like any other
+        rc = checked_exit(a.out, run_with_retry(a.out, lambda exclude: stack.pick_port_base(exclude), attempt))
+    except KeyboardInterrupt as e:
+        record_crash(a.out, e)
+        raise  # the process dies by the interrupt (the gate's catch-all reads that as "did not complete"), with the files in place
+    except (Exception, SystemExit) as e:  # a crash exits 1 (a regression to the gate): it is "did not complete", exit 3, whatever it was
+        record_crash(a.out, e)
+        rc = 3  # including SystemExit: a stray sys.exit(0) must not make the step report a pass while the files say exit 3
     print(f"[api-proof] exit {rc}", file=sys.stderr, flush=True)
     return rc
 
@@ -194,6 +242,14 @@ def reattempt_note(api_dir: str) -> str:
         return ""
 
 
+def with_note(body: str, note: str) -> str:
+    """The note goes before the `<sub>` footer: the comment keeps its fixed section order, the footer last."""
+    i = body.rfind("<sub>")
+    if not note or i < 0:
+        return body + note
+    return body[:i] + note.strip("\n") + "\n\n" + body[i:]
+
+
 def body_for(args, api_dir: str) -> tuple[str, str, dict | None]:
     """(body, verdict, known differences) for what the run left in api_dir."""
     meta = {"base": args.base_sha, "head": args.head_sha}
@@ -206,7 +262,7 @@ def body_for(args, api_dir: str) -> tuple[str, str, dict | None]:
             exit_code = int(json.load(f).get("exit", 3))
         with open(md, encoding="utf-8") as f:
             body = f.read()
-        body += reattempt_note(api_dir)
+        body = with_note(body, reattempt_note(api_dir))
         known = None
         kf = os.path.join(api_dir, "known-api.json")
         if os.path.isfile(kf):
@@ -215,6 +271,7 @@ def body_for(args, api_dir: str) -> tuple[str, str, dict | None]:
         return body, verdict_of(exit_code), known
     reason = args.reason or "the matrix run stopped before it wrote a verdict (it timed out, was cancelled or crashed)"
     body, _ = comment.errored({}, meta, reason, comment.API_MARKER, comment.API_TITLE)
+    body = with_note(body, reattempt_note(api_dir))
     return body.rstrip("\n") + "\n\n" + run_line(args.repo, args.run_id) + " The figures of an earlier run do not apply to this head.\n", "incomplete", None
 
 
@@ -264,7 +321,12 @@ def main(argv=None) -> int:
     bu.add_argument("--skipped", action="store_true")
     bu.add_argument("--changed", type=int, default=0)
     bu.add_argument("--reason", default="")
-    a = ap.parse_args(argv)
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:
+        if e.code == 2 and (sys.argv[1:] if argv is None else argv)[:1] == ["run"]:
+            return 3  # an argument error would be exit 2, "invalid run", to the gate; the bundle writes "did not complete" for the missing verdict
+        raise
     if a.cmd == "run":
         a.smoke = a.smoke[1:] if a.smoke[:1] == ["--"] else a.smoke
         return cmd_run(a)

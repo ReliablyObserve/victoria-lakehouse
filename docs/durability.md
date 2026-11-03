@@ -625,19 +625,83 @@ the reap in the tick only, a pod went on serving a committed segment while
 compaction, on any writer, had already merged its objects, and answered the rows
 twice, once from the segment and once from the merged object (#611). A committed
 segment is now served for at most the grace plus one flusher check interval
-(1 s) after its commit, whatever a drain is doing. This needs the object store's
-clock and the pod's to agree within the margin between the grace and twice the
-grace (the 'clock skew' above); a test that ages the markers of the bucket by hours must
-have the pod's segments retired too. `lh.durability.slow_drain_outlasts_grace_*`
-pin it.
+(1 s) after its commit, whatever a drain is doing, and the guard releases its
+objects no earlier than twice the grace after the marker. The two halves meet in
+the clock condition below; a test that ages the markers of the bucket by hours
+must have the pod's segments retired too.
+`lh.durability.slow_drain_outlasts_grace_*` pin the loop (a blocked drain, a
+fleet of two insert and two select pods running the real flusher, and the bound
+that a committed segment is retired well before twice the grace); the contract
+locks of the same file (the guard releases nothing before twice the grace, a
+binary answers nothing for the other signal) pass without the loop and are not
+evidence that it exists.
+
+#### The clock condition
+
+Two clocks decide the hand-off, and they are not the writer's clock against the
+object store's. The writer retires the segment a grace after **its own** commit:
+a duration measured on the writer's clock alone, compared with no other clock.
+The guard compares the **compacting pod's** clock with the marker's
+`LastModified`, which the **object store** stamped. The writer's clock therefore
+cancels out. The segment is served once at every instant when retirement comes
+before release:
+
+```
+marker PUT (store time M) + (commitAt - marker PUT)   +  grace + check interval
+   <   M + 2 x grace - (compacting-pod clock - object-store clock)
+```
+
+that is
+
+```
+compacting-pod clock - object-store clock  <  grace - check interval - (commitAt - marker PUT)
+```
+
+`commitAt - marker PUT` is the time between the marker's PUT returning and the
+local commit record (milliseconds in practice). At the defaults the grace is
+`2 x manifest.refresh_interval + 30 s` = 10 min 30 s, so the bound is about 10
+minutes (sourced from the defaults, not measured on a skewed fleet). Beyond it
+the guard can release a segment's objects while a pod still serves the segment:
+the rows are answered twice on that writer and on the select pods reading it over
+the buffer bridge for at most about one grace (the segment is retired a grace
+after its commit whatever the skew is), never lost. That window is the one case
+this design does not close by itself; a clock-independent hand-off (a
+segment-nonce lineage on the compacted outputs, so a reader can tell which
+objects a segment's rows already live in) is tracked in #860.
+
+```mermaid
+sequenceDiagram
+    participant W as Writer pod (own clock, cancels out)
+    participant S3 as Object store (stamps marker LastModified = M)
+    participant C as Compacting pod (clock = store clock + skew)
+    participant Q as Query (writer or bridged select)
+    W->>S3: PUT objects, PUT marker (store time M)
+    W->>W: Commit at M + d (d = commitAt - marker PUT, ms)
+    Note over W: retires the segment at M + d + grace + at most 1 check interval (writer duration, no other clock)
+    C->>S3: LIST markers, guard: compacting-pod now - M >= 2 x grace ?
+    Note over C: releases at store time M + 2 x grace - skew
+    alt skew < grace - check interval - d (about 10 min at defaults)
+        Note over Q: segment retired first, then objects merged: each row once
+    else skew above the bound (CLOCK-SKEW FAILURE POINT)
+        C->>S3: merge released objects into compacted-L1, delete inputs
+        Q->>W: rows of the segment still served (not yet retired)
+        Q->>S3: compacted-L1 (the same rows again)
+        Note over Q: count() doubled for at most about one grace, no row lost (#860)
+    end
+```
 
 #### Retiring a committed segment: before and after (#611)
 
 The flow from the buffer to the compacted object, with the part that changed
 (`reapLoop`, new) and the part that did not (the guard at twice the grace).
-A row must be answered once at every stage, as hot VictoriaLogs/VictoriaTraces do
-(upstream swaps the source parts for the merged part atomically under one lock:
-`lib/logstorage/datadb.go` `swapSrcWithDstParts`).
+A row must be answered once at every stage, as hot VictoriaLogs/VictoriaTraces do:
+upstream swaps the source parts for the merged part under one lock, so a query
+sees the sources or the merged part, never both (`swapSrcWithDstParts` in
+`lib/logstorage/datadb.go`: logs pin v1.53.0 at line 1023, `partsLock` taken at
+1033-1034, `removeParts` of the source parts at 1036-1038; traces pin
+`c945d2949e98` at line 1019, lock at 1029-1030). Lakehouse cannot hold a lock
+across a pod and an object store, so it replaces the lock with the two
+time bounds of the clock condition above.
 
 Before: the segment is retired only after the tick's drain loop.
 
@@ -677,6 +741,7 @@ sequenceDiagram
     C->>S3: t0+2 x grace: guard releases S1 objects, merge (unchanged)
     Q->>S3: compacted-L1 only (S1 rows once)
     Note over Q: count() = S1 rows once
+    Note over C,Q: FAILURE POINT (clock skew): if the compacting pod's clock is ahead of the object store's by more than grace - check interval (about 10 min at defaults), this merge comes before the retirement above and the rows are twice for at most about one grace, none lost (#860)
 ```
 
 Row lifecycle, before and after:
