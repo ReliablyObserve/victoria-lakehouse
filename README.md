@@ -107,7 +107,7 @@ Every engine below runs the documented example from [Open Parquet format](docs/o
 | DuckDB, pyarrow, pandas, Apache Spark | `read_parquet`, `pyarrow.dataset`, `pd.read_parquet`, `spark.read.parquet` | in CI, every check passes |
 | ClickHouse | `S3` table engine with `use_hive_partitioning` | in CI; an equality filter on any bloom column (`trace_id`, `service.name`, ...) fails on files whose bloom filter is not a power-of-two size unless bloom push down is off ([#341](https://github.com/ReliablyObserve/victoria-lakehouse/issues/341)) |
 | Trino | Hive connector, file metastore, external table | in CI; tenant IDs of 2^31 and above read back negative ([#342](https://github.com/ReliablyObserve/victoria-lakehouse/issues/342)) |
-| Polars, Apache DataFusion | `scan_parquet`, `register_parquet` | in CI, but they refuse every traces file, every raw logs file and the compacted logs files that carry a body token bloom, because the footer metadata is not UTF-8 ([#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340)) |
+| Polars, Apache DataFusion | `scan_parquet`, `register_parquet` | in CI, but they refuse every traces file and every logs file, raw or compacted, because the footer metadata is not UTF-8 ([#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340)) |
 | parquet-tools | `inspect`, `show` | in CI (inspection of one object) |
 | Athena, BigQuery, Snowflake external tables, Databricks | standard Parquet + Hive partitions | documented, not CI-tested |
 
