@@ -21,5 +21,5 @@ boto3>=1.34.11,<2
 colorama>=0.4.6,<0.5
 halo>=0.0.31,<0.0.32
 tabulate>=0.10.0,<0.11
-pytest==9.1.1
+pytest==9.2.0
 PyYAML>=6
