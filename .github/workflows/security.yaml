@@ -131,7 +131,7 @@ jobs:
           TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
         run: bash scripts/ci/trivy_fetch_db.sh
       - name: Scan dependencies
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # post v0.36.0, master 2026-10-14
         env:
           TRIVY_SKIP_DB_UPDATE: "true"
         with:
@@ -233,7 +233,7 @@ jobs:
           TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
         run: bash scripts/ci/trivy_fetch_db.sh
       - name: Scan image
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # post v0.36.0, master 2026-10-14
         env:
           TRIVY_SKIP_DB_UPDATE: "true"
         with:
@@ -281,7 +281,7 @@ jobs:
           printf 'module example.com/trivyfixture\n\ngo 1.21\n' > "$dir/clean/go.mod"
           printf 'module example.com/trivyfixture\n\ngo 1.21\n\nrequire golang.org/x/crypto v0.0.0-20200220183623-bac4c82f6975\n' > "$dir/vulnerable/go.mod"
       - name: Scan the clean fixture (must pass)
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # post v0.36.0, master 2026-10-14
         env:
           TRIVY_SKIP_DB_UPDATE: "true"
         with:
@@ -298,7 +298,7 @@ jobs:
       - name: Scan the vulnerable fixture (must fail)
         id: vulnerable
         continue-on-error: true
-        uses: aquasecurity/trivy-action@8f28faec26515256b6d22074d1d2a8986f4cbd87 # post v0.36.0, master 2026-10-14
+        uses: aquasecurity/trivy-action@38b337fff0a2f984d5be173c99e3f633438167ec # post v0.36.0, master 2026-10-14
         env:
           TRIVY_SKIP_DB_UPDATE: "true"
         with:
