@@ -214,6 +214,7 @@
   surfaces: [cli]
   tests:
     - tests/verification/probe_image_freshness.sh
+    - scripts/ci/tests/test_dependency_floors.py
   docs:
     - docs/security.md
   notes: >-
