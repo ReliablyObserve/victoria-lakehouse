@@ -976,8 +976,11 @@ read did not list, or were deleted on purpose.
   cannot serve it; the S3 error stays in the error chain and
   `lakehouse_query_file_not_found_total` keeps counting (an increase means a read
   met a swap).
-- **Exact from the manifest, or an error.** The only object a read goes on without
-  is one the manifest gives exactly: a timestamp-only query (count, `_time`
+- **Exact from the manifest, or an error.** The recovery branch is enabled only by the
+  timestamp-only request hint, which no served route sets today
+  ([#889](https://github.com/ReliablyObserve/victoria-lakehouse/issues/889)), so in
+  production every read that loses an object fails with the status listed above. Where the hint
+  is set, the only object a read goes on without is one the manifest gives exactly: a timestamp-only query (count, `_time`
   bucketing) with no filter and no delete that can touch the object, the object
   entirely inside the window, its bounds exact. Everything else fails.
 - **Not yet complete.** The sources are still deleted at once, so a read that

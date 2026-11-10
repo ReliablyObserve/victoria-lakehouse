@@ -91,8 +91,8 @@ gone.
 %%{init: {'theme':'base', 'themeVariables':{'fontFamily':'-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif','primaryColor':'#f3f4f6','primaryTextColor':'#1f2937','primaryBorderColor':'#9ca3af','lineColor':'#4b5563','secondaryColor':'#e5e7eb','tertiaryColor':'#f9fafb','background':'#ffffff','mainBkg':'#f3f4f6','clusterBkg':'#f9fafb','clusterBorder':'#9ca3af','edgeLabelBackground':'#ffffff','textColor':'#1f2937'}}}%%
 flowchart TD
     Q["Query arrives at LH"] --> Parse["1. Parse + registry resolve<br/><i>no I/O</i>"]
-    Parse --> FastPath{"2. Pure<br/>* | stats count() ?"}
-    FastPath -->|yes| FromManifest["Answer from manifest<br/>RowCount aggregate<br/><b>0 S3 reads</b>"]
+    Parse --> FastPath{"2. Count pushdown shape<br/>one stored field, label aggregate ?"}
+    FastPath -->|yes| FromManifest["Answer from manifest<br/>label aggregates<br/><b>0 S3 reads</b>"]
     FastPath -->|no| Narrow["3. File narrowing"]
 
     Narrow --> Label{"3a. Inverted label index<br/>field → value → files"}
@@ -210,7 +210,7 @@ per pod (10 pods in the cluster, 50 M global), `footer_max_bytes
 
 | Mechanism | Code | What it does | Mem @ PB | Disk @ PB | Typical skip |
 |---|---|---|---:|---:|---:|
-| **manifestFastPath** | `internal/storage/parquets3/manifest_fastpath.go::manifestFastPath` | `* \| stats count()` and `\| stats by (_time:<step>) count()` answer from `manifest.RowCount` without opening any file. Emits a CONSTANT `_time` column, so cost per file is O(1), not O(rows), and there is no cap on how many rows a file may contribute. A file is only eligible when every `_time` bucket the query groups by contains its whole span — otherwise it is read, so per-bucket counts stay exact. | 0 (already in manifest) | 0 | 100 % of files |
+| **manifestFastPath** (not reached by a served request: the timestamp-only hint is set by no route, [#889](https://github.com/ReliablyObserve/victoria-lakehouse/issues/889); production metadata answers come from `manifestCountFastPath` and the footer-served timestamp block, see [Read path](read-path.md#level-2-manifest-fast-path)) | `internal/storage/parquets3/manifest_fastpath.go::manifestFastPath` | When the hint is set, `* \| stats count()` and `\| stats by (_time:<step>) count()` answer from `manifest.RowCount` without opening any file. Emits a CONSTANT `_time` column, so cost per file is O(1), not O(rows), and there is no cap on how many rows a file may contribute. A file is only eligible when every `_time` bucket the query groups by contains its whole span — otherwise it is read, so per-bucket counts stay exact. | 0 (already in manifest) | 0 | 100 % of files |
 | **Inverted label index** | `internal/manifest/manifest.go::GetFileKeysByLabel` + `storage_query.go::filterByLabelIndex` | Manifest holds `field → value → set-of-file-keys`. `service.name:="X"` resolves to candidates in O(1). Multi-field filters intersect sets. Files with `Labels=nil` stay in the candidate set (`be8c126`). | ~50 MB (5 M files × 5 fields × 2 values × 5 B) | 0 (rebuilt on snapshot load) | 60–90 % |
 | **Column-stats min/max bracket** | `manifest.ColumnStatsContains` + `filter_pushdown.go::rowGroupMatchesFilter` | Parquet column-index min/max are cached on `FileInfo`. Row groups whose `[min, max]` don't bracket the filter value are skipped without opening the file. | ~200 MB (5 M × ~40 B per file) | 0 (cached) | 30–70 % |
 | **File-level partition bloom** | `internal/pmeta` bloom facet + `storage_query.go::filterFilesByBloomIndex` (legacy `_bloom.bin` partition index as fallback) | Per-partition 1-hour-granularity bloom. Before opening a file, ask whether the queried value could possibly be there. Cap `maxBloomCardinality = 50 000`. | ~80 MB (one bloom per partition × ~5 K partitions × 16 KB) | ~300 MB on S3 (bloom facet in `_pmeta.bundle`; legacy `.bloom`/`_bloom.bin` sidecars stay readable) | 20–80 % |

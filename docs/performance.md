@@ -179,6 +179,8 @@ Columns with more than 10,000 dictionary entries skip this check to avoid linear
 
 ### Metadata-only count queries
 
+**Status.** The exact timestamp-only answer described here (`manifestFastPath`) is in the code but no served request reaches it: it runs only when the request context carries the timestamp-only hint, and no route sets that hint (see [Read path, Level 2](read-path.md#level-2-manifest-fast-path) and [#889](https://github.com/ReliablyObserve/victoria-lakehouse/issues/889)). The benchmarks below run it with the hint set in-process ("hinted"); they measure the path, not what a served `stats` or `hits` request does today. What serves metadata answers in production is the label-aggregate count pushdown and the footer-served timestamp block, both listed in the Read path page.
+
 `count()`-class queries — `* | stats count()` and histogram queries such as
 `/select/logsql/hits` (`| stats by (_time:<step>) count()`) — are answered from the
 in-memory manifest for every file whose whole time span sits inside the query window:
