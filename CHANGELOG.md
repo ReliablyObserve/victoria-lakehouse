@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.167.21] - 2026-11-11
+
+### Changed
+
+- **The `test-logs` CI job balances its `internal/storage/parquets3` test shards by measured test cost over four shards instead of three hash-placed ones (#873).** With hash placement shard 1 carried 1.2-1.5x the time of the other two and reached 90 % or more of its 480 s budget in 8 of 52 recent runs, so the time-budget guard failed otherwise green PRs; the guard, the budgets and the required check names are unchanged, and every test still runs in exactly one shard.
+
+- **`make pre-push` previews the always-run tier of CI and says what it did not verify.** It calls the tools CI calls (`pr_classify.py --ci-scope`, the registry and changelog gates, `make conformance-check` on every run, actionlint and zizmor, the `scripts/ci` and proof-harness checks, helm, `golangci-lint` on whole packages, `gofmt -s`, `go vet` and `go build` of both modules, and `go test` for the packages the diff touches or whose tests read a changed file such as `docs/`, `alerts/` or `charts/`) and checks that the branch contains `origin/main` and that commits are signed without AI attribution. It no longer skips a required Go job on the classifier's `skip_go`, passes `-short` to `parquets3` only as CI does, and ends with `PASS (N not verified)` plus the always-run CI jobs it could not run. `PREPUSH_SCOPE=all` (was `SCOPE`) runs everything, `RACE=1` adds `-race`; CONTRIBUTING.md has the per-step table with the workflow lines and the list of what it cannot catch. It changes no CI workflow or gate.
+
+### Security
+
+- **The Go dependency floors are raised to the fixed versions of GO-2026-6888 (`github.com/andybalholm/brotli` v1.1.1 to v1.2.7, excessive memory allocation when decompressing crafted streams), GO-2026-6865 (`github.com/klauspost/compress` v1.20.0 to v1.20.2, panic on two-block frames) and CVE-2026-78661 (`golang.org/x/net` v0.60.0 to v0.62.0, `x/net/html` denial of service).** Both binaries. The versions are transitive through parquet-go, the VictoriaMetrics HTTP server and grpc, so the change is the `require` floor in `go.mod` and `lakehouse-traces/go.mod` (and `x/sys`, `x/text` and `x/sync` one minor each, pulled in by `x/net` v0.62.0 and `x/text` v0.43.0); no Lakehouse code changed. `govulncheck` reports no vulnerabilities in either module, and the Parquet bytes written for a fixed set of logs and spans are identical before and after (checked on arm64 and, under emulation, amd64).
+
 ## [0.167.20] - 2026-11-03
 
 ### Changed
