@@ -1933,7 +1933,7 @@ Compaction is on by default and used to start on every role, so each select repl
 
 Scanning that runs on every PR is the only kind that finds things before release. The freshness probe closes the other half of the problem — a scanned artifact that was never actually deployed — by comparing each running container's image against the newest source commit.
 
-- Verification: tests: `tests/verification/probe_image_freshness.sh`
+- Verification: tests: `tests/verification/probe_image_freshness.sh`, `scripts/ci/tests/test_dependency_floors.py`
 - Docs: `docs/security.md`
 - Note: The scans themselves are the Security and CodeQL workflows, which run on every PR but are not tests the catalog can link. The linked image-freshness probe runs against a deployed stack and is not run in CI.
 

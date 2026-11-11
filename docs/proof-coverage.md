@@ -485,7 +485,7 @@ Proof class, by precedence: **upstream-exact** (a cited upstream row expects pas
 | `lh.feature.deploy.ring_self_resolution` | deploy | 4 (0) | 0 | 46 | none | lh-extension |
 | `lh.feature.deploy.role_separation` | deploy | 0 (0) | 0 | 5 | none | unproven |
 | `lh.feature.deploy.select_never_writes` | deploy | 2 (0) | 0 | 18 | none | lh-extension |
-| `lh.feature.security.ci_pipeline` | security | 0 (0) | 0 | 1 | none | unproven |
+| `lh.feature.security.ci_pipeline` | security | 0 (0) | 0 | 2 | none | unproven |
 | `lh.feature.security.container_hardening` | security | 0 (0) | 0 | 4 | none | unproven |
 | `lh.feature.security.cross_signal_auth` | security | 0 (0) | 0 | 5 | none | unproven |
 | `lh.feature.security.internal_auth` | security | 8 (8) | 0 | 9 | none | lh-extension |
