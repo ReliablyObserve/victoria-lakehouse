@@ -56,6 +56,8 @@ graph TB
 
 ### 1. Manifest-Only Fast Path
 
+**Status.** This path (`manifestFastPath`) is in the code and exact for the shapes below, but no served request reaches it: it runs only when the request context carries the timestamp-only hint, and the only code that sets the hint, `wrapVLTimestampOnly`, is registered on no route (the traces binary has no such wrapper). Tests and benchmarks set the hint by hand. See [Read path, Level 2](read-path.md#level-2-manifest-fast-path) and [#889](https://github.com/ReliablyObserve/victoria-lakehouse/issues/889); the sections below describe the path as implemented, not as served.
+
 For wildcard stats and hits queries (e.g., `* | stats count()`, `/select/logsql/hits`), the query engine can resolve results entirely from in-memory manifest metadata without any S3 I/O.
 
 **Conditions:**

@@ -47,7 +47,8 @@ The sort-order tables in the measurement section use the raw size that the measu
 |---|---|
 | Real logs written by today's flush writer (time order, 10,000-row groups, zstd level 3) are 17.1 MB. VictoriaLogs stores the same 523,378 lines in 9.03 MB, so a freshly flushed Lakehouse file is **1.89x larger** | Comparison with VictoriaLogs and VictoriaTraces |
 | On synthetic pooled logs the gap is small (1.07x larger). On traces Lakehouse files are smaller than VictoriaTraces (0.88x and 0.90x) | Same section |
-| Sorting the rows by (hour slice, `_stream_id`, time) before writing shrinks real logs by 26 % (17.1 to 12.7 MB) and keeps time pruning. Today's flush sorts by timestamp only. This is a measured variant, not shipped | Sort order |
+| Sorting the rows by (hour slice, `_stream_id`, time) before writing shrinks real logs by 26 % (17.1 to 12.7 MB) and keeps time pruning. Today's flush sorts by timestamp only. This is a measured variant, not shipped. The stream-order layout gives the **size** reduction as soon as it ships; the **read** reduction for a stream filter needs stream-predicate pruning, which does not exist yet (see the next row) | Sort order |
+| The row-group counts on this page for a stream filter under the stream-ordered variants (for example 50 of 50 down to 2) are an **ideal-read-path model** with exact statistics, not a measurement of the code. Today a `_stream` or `_stream_id` predicate prunes no file and no row group: file pruning matches only field predicates of the forms `:="x"`, `:>"x"` and `:<"x"` in the query text, the stream filters are ignored by pruning and by the bloom value walker, and the stream predicate is checked per row after `_stream` is read. Tracked in #888 and the program issue #875 | Sort order, Reading the stream numbers |
 | Going from 10,000-row to 100,000-row groups saves 1 to 6 % but makes a needle lookup read about 10x more bytes | Row-group size |
 | zstd level 7 instead of 3 saves 5 to 25 % for -7 % to +26 % write CPU (median +8 %), with no measurable change in the writer's peak heap or in decode time. Level 11 instead of 7 saves a further 0.5 to 8 % for +23 % to +250 % write time. Levels 11 to 22 are byte-identical in the pure-Go codec | zstd levels |
 | Parquet bloom filters on non-dictionary columns are sized by row count, not by distinct values. On real logs they are 2,571 KiB: about 15 % of today's 17.1 MB flush file, mostly on columns that are empty. Sized by distinct values, in the old-stage variant (not shipped, 7 to 25 row groups), the same filters are 1 KB on the real logs, 815 KB on pooled logs and 1,653 KB on `traces-pool` | Bloom filter sizing |
@@ -136,7 +137,7 @@ flowchart TD
     FT --> RG["Row groups<br/>min and max timestamp, column statistics,<br/>dictionary page check"]
     RG --> BL["Blooms<br/>Parquet bloom filters on service.name, trace_id and promoted columns<br/>token blooms for body search, flush files only (issue 344)"]
     BL --> CO["Columns<br/>read only the projected columns of the surviving row groups"]
-    N1["Rows are time ordered inside a file, so a time range prunes row groups well<br/>and a stream or service filter does not: measured 50 of 50 row groups survive"] -.-> RG
+    N1["Rows are time ordered inside a file, so a time range prunes row groups well<br/>and a stream or service filter reaches almost all of them: 50 of 50 survive in the model.<br/>A stream selector or _stream_id filter prunes no file and no row group today<br/>(checked per row, issue 888)"] -.-> RG
     N2["Row-group size sets the bytes read for every bloom hit"] -.-> CO
 ```
 
@@ -166,6 +167,15 @@ The flush writer, 10,000-row groups, zstd level 3, one file per dataset. Sort or
 - **S4b hour slice, `_stream_id`, time**: stream order inside one-hour slices.
 
 Survivor columns show **surviving row groups as exact / min-max-only** out of the total. "Exact" is the model of an ideal bloom or exact statistics. "Min-max-only" uses only the footer min and max. A real bloom with 1 % false positives adds about 1 % extra surviving row groups (a). Queries: 15 minutes of time; one service (the 4th most frequent); one stream (the 21st most frequent); that service plus one hour; one body token present in about 0.1 % of rows (logs) or one span name (traces); one trace id. The raw denominator is the harness raw size named in each heading.
+
+#### Reading the stream numbers
+
+The survivor counts are a model of what a read path with exact statistics would keep, computed from the row groups of the variant files. They are not counts of what the shipped code reads, and the **Stream** columns (and the stream rows of the later tables) cannot be reached by today's read path at all:
+
+- **What prunes today.** File pruning builds its checks from the query text and matches only field predicates of the forms `field:="x"` (and the prefix form), `field:>"x"` and `field:<"x"` on columns the schema registry promotes (`buildPushDownFilter`, `internal/storage/parquets3/filter_pushdown.go`, and the mirror in `lakehouse-traces`). The same checks, plus the Parquet bloom checks built by `buildBloomChecksFor`, narrow row groups inside a file (`queryFile`, `storage_query.go`). A service filter written as a field predicate (`service.name:="x"`) is therefore narrowed per file by the manifest label index, the column statistics and the pmeta file bloom, and per row group by the row-group statistics and the dictionary check (the Parquet bloom of a row group is probed only when the file is read whole, `bloomResident`, issue #421). What the data allows still applies: in a time-ordered file almost every row group holds every service, so very few row groups drop out.
+- **What does not prune.** A stream selector (printed by the query parser as a `{name="value"}` selector) is a `filterStream` node and `_stream_id:<hex>` is a `filterStreamID` node. Neither has the `:="` form, so file pruning does not see them, and the bloom value walker (`FilterExtractFieldValues`, `filter_ast.go`) ignores both node types. `FilterReferencedFields` lists `_stream` and `_stream_id` only to add the columns to the projection. The only effect of a stream predicate is the per-row check after `_stream` has been read. Time (day and hour partitions, row-group timestamps) and the tenant are the only things that narrow such a query. The parser accepts no other spelling that would reach the column as a field predicate: `_stream:="..."` and `_stream_id:="..."` are parse errors, and `_stream_id:in(...)` is printed back as `_stream_id:<hex>`.
+- **What follows.** The stream-ordered layout (S4, S4b) gives its **size** reduction today, once it is shipped. Its **read** reduction for stream filters appears only after stream-predicate pruning exists, using row-group statistics and a per-object stream summary rebuildable from the footers. That work is tracked in #888 and in the program issue #875. Until then the Stream columns show what pruning could reach, and the Service, body-token and `trace_id` columns are the ones reachable by predicates that exist.
+- **Both signals.** The files and the walkers are mirrored in `lakehouse-traces`; `buildPushDownFilter` and the bloom value walker behave the same on both modules: the field form builds a check, the stream-selector form and the `_stream_id` form build none.
 
 #### Real logs: `logs-loghub` (523,378 rows, 324 streams, raw 72.7 MB of text lines, 53 row groups at 10,000 rows)
 
@@ -226,10 +236,10 @@ Stream = (service.name, span name). The trace_id lookup also reads the span-tree
 What the tables show:
 
 - **Real logs:** stream order (S4) is 29 % smaller than time order (S0): the body column goes from 9.8 to 6.4 MB. Service-first (S2) compresses the same (12.1 MB). Pure stream order loses time pruning (15 of 53 row groups for 15 minutes). The hour slice (S4b) restores it (3 row groups) for +4 % size over S4.
-- **Pooled logs:** S4 is -17 % and S4b -13 %. A stream filter goes from 50 of 50 row groups (S0) to 2 (S4).
+- **Pooled logs:** S4 is -17 % and S4b -13 %. In the model a stream filter goes from 50 of 50 row groups (S0) to 2 (S4); this is the ideal read path, and today the stream filter reaches 50 of 50 whatever the sort (see Reading the stream numbers).
 - **Spans:** S4b is -7 % on `traces-pool`. Service-first is -5 % but scatters one trace over 23 row groups and loses time pruning. Trace-first order (S5 in the measurement, not in the tables) keeps a trace in 1 row group at +3 % size, but loses time and stream pruning.
 - **S1 equals S0** to within 0.1 % on every dataset: today's compaction sort is a time sort.
-- **Today's layout has no stream or service clustering.** A stream or service filter on a time-ordered file reaches almost every row group (50 of 50, 52 of 53), so those filters depend on the label pre-filter, dictionary checks and blooms, not on row-group pruning.
+- **Today's layout has no stream or service clustering, and a stream predicate prunes nothing.** A service filter written as a field predicate on a time-ordered file reaches almost every row group (50 of 50, 52 of 53): the manifest label index, the column statistics and the pmeta file bloom can drop whole files, and the row-group statistics and dictionary check drop a row group that lacks the value (the row-group Parquet bloom only when the file is read whole, issue #421). A stream selector or `_stream_id` filter is not pruned at all today, by file or by row group, and is checked per row; see Reading the stream numbers and #888.
 
 ### Row-group size
 
@@ -631,7 +641,7 @@ Cells: row groups read / total; reads (tail + data + probes); needed-column MB.
 | old, no blooms at all | 1/25; 2; 0.88 | 25/25; 4; 22.1 | **25/25; 4; 22.0** | **25/25; 4; 24.7** | 25/25; 4; 2.6 |
 
 - **Bloom filters placed after each row group cost one read per row group probed:** 24 to 25 reads for one trace id on a day object, against none when they sit at the tail. The tail grows by 0.8 to 1.7 MB.
-- **Stream clustering on a day object** reads one row group per hour slice (24 of 24 here): each of these streams has rows in every hour. The page index can narrow it inside a row group, which this model does not count.
+- **Stream clustering on a day object** (the ideal model; stream-predicate pruning does not exist yet, #888) reads one row group per hour slice (24 of 24 here): each of these streams has rows in every hour. The page index can narrow it inside a row group, which this model does not count.
 - **Spans in stream order scatter a trace over the row groups** (a trace's 28 spans sit in about 28 (service, span name) streams), so the row-group bloom filter on `trace_id` prunes little on a stream-ordered span object. It still prunes whole objects (pmeta) and it works on logs.
 - **No re-sort on rewrite keeps time and trace-id pruning** (the inputs are hour-sliced already) and costs 2 to 17 % bytes on stream and service reads.
 
@@ -650,7 +660,7 @@ The same rows packed into one hour (a 24x busier tenant, a), so the 8 and 32 MiB
 | Query, needed-column MB (row groups read of total) | 10,000 rows | 8 MiB | 32 MiB |
 |---|---|---|---|
 | logs-pool, one trace id | 0.48 (1 of 50) | 5.0 (1 of 5) | 12.5 (1 of 2) |
-| logs-pool, one stream | 1.7 (4 of 50) | 13.5 (3 of 5) | 22.5 (2 of 2) |
+| logs-pool, one stream (ideal model, #888) | 1.7 (4 of 50) | 13.5 (3 of 5) | 22.5 (2 of 2) |
 | logs-pool, stats by: reads | 3 | 10 | 4 |
 | logs-loghub, one body token | 0.26 (2 of 53) | 2.6 (1 of 3) | 3.9 (1 of 2) |
 | traces-pool, one trace (span tree) | 12.2 (25 of 51) | 26.0 (5 of 5) | 22.8 (2 of 2) |
@@ -807,7 +817,7 @@ Three kinds of figure are mixed here, and every column header says which one it 
 
 - **VictoriaLogs / VictoriaTraces on EBS:** a model of the upstream software on AWS list prices (prices sourced, sizes and CPU measured on the same data, node sizing assumed).
 - **Lakehouse today:** a model of the shipped behaviour. It applies the compression ratio of today's flush file (level 3, 7.4x logs / 26.6x traces) to all stored data and assumes one rewrite for CPU. Today's compaction recompresses at levels 7 and 11, so this overstates the storage line a little. At 100 TB/day it is modelled and **not operable as configured**.
-- **Lakehouse with the stage ladder (projection):** the layout variants of the earlier section plus mechanisms that **do not exist**: byte-sized row groups, the young, medium and old stages, a streaming merge in the compactor, a windowed listing of the object store (the shipped code lists every tenant prefix in full every 5 minutes on every pod), conditional claims between writers, a storage-class mover, tail-placed bloom filters and a two-step trace read. None of these is built or scheduled by this page.
+- **Lakehouse with the stage ladder (projection):** the layout variants of the earlier section plus mechanisms that **do not exist**: byte-sized row groups, the young, medium and old stages, a streaming merge in the compactor, a windowed listing of the object store (the shipped code lists every tenant prefix in full every 5 minutes on every pod), conditional claims between writers, a storage-class mover, tail-placed bloom filters, a two-step trace read and pruning on `_stream` and `_stream_id` predicates (#888). None of these is built or scheduled by this page.
 
 Infrastructure only: storage, compute, requests, transfer, backup and operations overhead. No staff cost, no support, no egress to users.
 
@@ -998,7 +1008,7 @@ Reference tenant of 1 TB/day. Bytes and reads are scaled from the measured share
 | trace by id, blooms skipped, external reader or rebuilt index (24 h / 7 d / 30 d window) | 17 / 120 / 514 GB | 82 / 572 / 2,452 | $0.64 / $4.47 / $19.14 | - | - |
 | stats by | 2.8 GB | 86 | $0.13 | $84 | $0.10 |
 
-Glacier IR saves $0.019 per GB-month against Standard and charges $0.03 per GB read, so data read more than about 0.6 times its size per month is cheaper in Standard. Dashboards over months of data belong in Standard. The stream and service query rows of the full model are upper bounds (whole row groups of each slice; the page index can narrow a stream inside a 32 MiB row group).
+Glacier IR saves $0.019 per GB-month against Standard and charges $0.03 per GB read, so data read more than about 0.6 times its size per month is cheaper in Standard. Dashboards over months of data belong in Standard. The stream and service query rows of the full model are upper bounds (whole row groups of each slice; the page index can narrow a stream inside a 32 MiB row group) and assume stream-predicate pruning, which does not exist yet (#888).
 
 | Ingest CPU, core-seconds per TB as sent | VL / VT (m) | Lakehouse today (m; a: one rewrite) | Lakehouse variant: flush + 3 rewrites (m, measured writers) |
 |---|---|---|---|
@@ -1018,7 +1028,7 @@ At 100 TB/day the real-logs average is about 16 cores for VictoriaLogs and about
 - **Token-bloom selectivity:** about 1 % against about 0.1 % in VictoriaLogs (see the comparison section).
 - **Single-zone write buffer:** writers hold up to one seal interval (default 5 minutes) of rows on a single-zone volume (gp3, 99.8 to 99.9 % durability). A zone outage strands those rows until the volume returns. VL/VT HA keeps a second full copy in another zone; Lakehouse is highly available for everything already in S3, not for the buffer.
 - **Trace-by-ID on stream-ordered span objects** hits every 8 to 32 MiB row group. It is cheap only with the two-step read, which is not built.
-- **Mechanisms that do not exist:** byte row groups, the stage ladder, the streaming merge, windowed listing, conditional claims, the storage-class mover, tail-placed blooms and the two-step trace read.
+- **Mechanisms that do not exist:** byte row groups, the stage ladder, the streaming merge, windowed listing, conditional claims, the storage-class mover, tail-placed blooms, the two-step trace read and stream-predicate pruning (#888); the stream and service rows of the cost model assume the last one.
 
 ### Diagram: monthly cost, logs at 10 TB/day kept 90 days (projection, to be re-verified after implementation)
 
