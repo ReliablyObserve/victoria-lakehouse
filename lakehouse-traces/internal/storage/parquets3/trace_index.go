@@ -26,10 +26,6 @@ type TraceIndexEntry = traceindex.Entry
 // id. For both the file must be scanned (#768).
 func traceIDIndexable(id string) bool { return id != "" && traceindex.Indexable(id) }
 
-// listedTraceIndexEntries is the number of entries marshalTraceIndex lists:
-// the over-long IDs it leaves out are not counted (#768).
-func listedTraceIndexEntries(entries []TraceIndexEntry) int { return traceindex.Listed(entries) }
-
 func computeTraceIndex(rows []schema.TraceRow) []TraceIndexEntry {
 	return traceindex.Compute(rows)
 }

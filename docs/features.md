@@ -9,7 +9,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Area | ✅ covered by a test | 🟡 declared only | 🔧 in progress | 📝 planned | Total |
 |---|---|---|---|---|---|
 | Ingest | 8 | 0 | 0 | 0 | 8 |
-| Storage | 32 | 0 | 1 | 2 | 35 |
+| Storage | 33 | 0 | 1 | 2 | 36 |
 | Query | 16 | 1 | 0 | 1 | 18 |
 | Cache | 12 | 0 | 0 | 0 | 12 |
 | Compaction | 7 | 0 | 0 | 1 | 8 |
@@ -21,7 +21,7 @@ Legend: ✅ shipped and covered — the catalog links at least one regression te
 | Ops | 14 | 0 | 2 | 0 | 16 |
 | Deploy | 8 | 0 | 0 | 0 | 8 |
 | Security | 6 | 0 | 0 | 0 | 6 |
-| **Total** | **155** | **1** | **3** | **9** | **168** |
+| **Total** | **156** | **1** | **3** | **9** | **169** |
 
 ## Coverage gaps
 
@@ -127,7 +127,7 @@ Lakehouse mounts the upstream `vlinsert` handlers instead of re-implementing the
 - Docs: `docs/write-path.md`, `docs/getting-started.md`
 - Changelog: `0.8.0`
 
-## Storage (35)
+## Storage (36)
 
 ### 📝 Cold-open round-trip elimination
 
@@ -163,6 +163,18 @@ The size of every field — its column bytes on S3 and the metadata bytes it cos
 - Verification: rows: `lh.stats.fields.schema` (pass, pending) · tests: `internal/pmeta/metadata_bytes_by_field_test.go`, `internal/stats/api_fields_test.go`, `tests/e2e/stats_metadata_test.go#TestStatsOverviewMetadata`
 - Docs: `docs/tenant-stats.md`, `docs/architecture/field-value-catalog.md`
 - Changelog: `0.100.0`
+
+### ✅ Flushed and compacted files carry the same pruning structures
+
+`lh.feature.storage.flush_compacted_structure` · status: shipped · surfaces: storage
+
+**One writer for flush and compaction**: a compacted Parquet file carries the same body token blooms, split-block blooms, footer entries, statistics and page index as a flushed one, because both call one pure encoder, so a body search does not get slower as data ages.
+
+Flush and compaction encode their output through one library (internal/parquetwriter) with explicit options, so the pruning structures cannot drift apart: the compactor used to carry its own copy of the encoding and had dropped the body token blooms. The encoder holds no state and is deterministic, and a compaction whose merge or encode step panics fails that group instead of the process.
+
+- Verification: tests: `internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedLogsHaveTheSameStructure`, `internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedTracesHaveTheSameStructure`, `internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestBodyTokenSearchPrunesCompactedLikeFlushed`, `internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestCompactedTokenBloomsMatchTheirRowGroups`, `internal/storage/parquets3/writer_bytes_golden_test.go#TestFlushWriterBytesGolden`, `lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedLogsHaveTheSameStructure`, `lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestFlushedAndCompactedTracesHaveTheSameStructure`, `lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestBodyTokenSearchPrunesCompactedLikeFlushed`, `lakehouse-traces/internal/storage/parquets3/flush_vs_compacted_structure_test.go#TestCompactedTokenBloomsMatchTheirRowGroups`, `lakehouse-traces/internal/storage/parquets3/writer_bytes_golden_test.go#TestFlushWriterBytesGolden`, `internal/parquetwriter/writer_test.go#TestWriteIsByteReproducible`, `internal/parquetwriter/writer_test.go#TestConcurrentWritersWithDifferentOptionsDoNotInteract`, `internal/parquetwriter/writer_test.go#TestOptionsDecideTheStructure`, `internal/parquetwriter/writer_test.go#TestFooterEntriesPerSignal`, `internal/parquetwriter/writer_test.go#TestTokenBloomKeysFollowRowGroupIndex`, `internal/parquetwriter/writer_test.go#TestPackageHasNoGlobalState`, `internal/parquetwriter/structcheck/structcheck_test.go#TestDiffNamesEveryKindOfDifference`, `internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeReportsWhatTheFooterHolds`, `internal/parquetwriter/structcheck/structcheck_test.go#TestIdenticalStructuresHaveNoDiff`, `internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeRejectsGarbage`, `internal/parquetwriter/structcheck/structcheck_test.go#TestDiffOnBuiltStructures`, `internal/parquetwriter/structcheck/structcheck_test.go#TestDescribeReportsTheSortOrder`, `internal/parquetwriter/structcheck/structcheck_test.go#TestBloomColumnsMarksAPartialColumn`, `internal/parquetwriter/tokenbloom_test.go#TestTokenizeSplitsLowercasesAndDeduplicates`, `internal/parquetwriter/tokenbloom_test.go#TestTokenBloomHasNoFalseNegativesAndRoundTrips`, `internal/parquetwriter/tokenbloom_test.go#TestTokenBloomEdgeCases`, `internal/parquetwriter/tokenbloom_test.go#TestTokenBloomUnmarshalRejectsShortAndTruncatedData`, `internal/parquetwriter/tokenbloom_test.go#TestBuildTokenBloomMetadata`, `internal/parquetwriter/tokenbloom_test.go#TestTokenBloomDegenerate`, `internal/compaction/merge_panic_contained_test.go#TestCompact_PanickingMergeIsContainedAndLeavesSourcesUntouched`, `internal/compaction/shared_writer_options_test.go#TestWriteCompactedIsTheSharedWriterWithTheGivenOptions`, `internal/compaction/shared_writer_options_test.go#TestCompactUsesTheDefaultScheduleThroughTheSharedWriter`
+- Docs: `docs/open-parquet-format.md#one-writer-for-flush-and-compaction`
+- Note: The proof cell for MAIN RULE 4 (compaction never reduces prunability, issue #344). The golden tests run the same rows through the real flush writer and through Compactor.Compact and compare the decoded footer structure (footer keys, split-block bloom columns, statistics, page index), not bytes; the flush writer's own bytes are pinned by TestFlushWriterBytesGolden in both modules. The external-reader matrix (parquet-readers job) reads the compacted layer too.
 
 ### ✅ S3 storage-class lifecycle tiering
 
@@ -339,17 +351,17 @@ ClickHouse 25.8 reads logs and traces through the S3 table engine with use_hive_
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
 - Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gap, issue-linked and still run in CI: #341 (split-block bloom filters are written in sizes that are not a power of two, 96 bytes for 60 values and 160 for 120, so an equality filter on any bloom column fails with "Given length of bitset is illegal" while bloom filter push down is on; this is not limited to trace_id: logs have 10 bloom columns and traces 19. The fixture reads every filter size and the failure is expected in exactly the cells whose files make it happen; the same table with input_format_parquet_bloom_filter_push_down = 0 answers correctly and is checked in CI as the workaround).
 
-### ✅ Apache DataFusion reads part of Lakehouse's Parquet in place (open issue #340)
+### ✅ Apache DataFusion cannot read Lakehouse's Parquet in place until #340 (open issue)
 
 `lh.feature.storage.reader_datafusion` · status: shipped · surfaces: storage
 
-**Apache DataFusion reads part of Lakehouse's Parquet in place (open issue #340)**: DataFusion 54.0.0 refuses every traces file, every raw logs file and the compacted logs files that carry a body token bloom, because their footer key-values are not UTF-8; only compacted logs files without one read.
+**Apache DataFusion cannot read Lakehouse's Parquet in place until #340 (open issue)**: DataFusion 54.0.0 refuses every traces file and every logs file, raw or compacted, because their footer key-values are not UTF-8; no Lakehouse file reads until #340 lands.
 
-DataFusion 54.0.0 registers Lakehouse Parquet on S3 with Hive partition columns, but refuses any file whose footer key-values are not UTF-8 (#340): every traces file, every raw logs file and the compacted logs files that carry a body token bloom. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
+DataFusion 54.0.0 registers Lakehouse Parquet on S3 with Hive partition columns, but refuses any file whose footer key-values are not UTF-8 (#340): every traces file and every logs file, raw or compacted. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
 
 - Verification: tests: `tests/readers/test_matrix_result.py#test_datafusion_logs`, `tests/readers/test_matrix_result.py#test_datafusion_traces`
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
-- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gaps, issue-linked and still run in CI: #340 (footer key-value values are not UTF-8: DataFusion refuses every traces file, every raw logs file and every compacted logs file that carries a body token bloom; compacted logs files without one read correctly) and an engine caveat (register_parquet reads every footer before partition filters apply, so partition pruning needs an explicit schema). The #340 gap is expected in exactly the cells whose files carry such a value, and a cell that starts passing turns the CI job red so the entry is removed with the fix.
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gaps, issue-linked and still run in CI: #340 (footer key-value values are not UTF-8: DataFusion refuses every traces file and every logs file, raw or compacted (compaction writes the body token blooms since #344)) and an engine caveat (register_parquet reads every footer before partition filters apply, so partition pruning needs an explicit schema). The #340 gap is expected in exactly the cells whose files carry such a value, and a cell that starts passing turns the CI job red so the entry is removed with the fix.
 
 ### ✅ DuckDB reads Lakehouse Parquet in place
 
@@ -387,17 +399,17 @@ parquet-tools 0.2.16 inspects one logs and one traces object: footer metadata, s
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
 - Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with Lakehouse's own answers.
 
-### ✅ Polars reads part of Lakehouse's Parquet in place (open issue #340)
+### ✅ Polars cannot read Lakehouse's Parquet in place until #340 (open issue)
 
 `lh.feature.storage.reader_polars` · status: shipped · surfaces: storage
 
-**Polars reads part of Lakehouse's Parquet in place (open issue #340)**: Polars 1.44.2 refuses every traces file, every raw logs file and the compacted logs files that carry a body token bloom, because their footer key-values are not UTF-8; only compacted logs files without one read.
+**Polars cannot read Lakehouse's Parquet in place until #340 (open issue)**: Polars 1.44.2 refuses every traces file and every logs file, raw or compacted, because their footer key-values are not UTF-8; no Lakehouse file reads until #340 lands.
 
-Polars 1.44.2 scans Lakehouse Parquet over S3 with Hive partitioning, but refuses any file whose footer key-values are not UTF-8 (#340): every traces file, every raw logs file and the compacted logs files that carry a body token bloom. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
+Polars 1.44.2 scans Lakehouse Parquet over S3 with Hive partitioning, but refuses any file whose footer key-values are not UTF-8 (#340): every traces file and every logs file, raw or compacted. The example in the documentation is the test: CI executes it unchanged against the S3 bucket and compares count, group-by, field filter, nanosecond time range, MAP lookup, trace-by-ID, partition filter, timestamp bounds, UTC day and tenant columns with the truth computed from the rows that were sent, and checks that the engine read exactly the objects of the layer.
 
 - Verification: tests: `tests/readers/test_matrix_result.py#test_polars_logs`, `tests/readers/test_matrix_result.py#test_polars_traces`
 - Docs: `docs/open-parquet-format.md#querying-with-external-tools`
-- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gap, issue-linked and still run in CI: #340 (footer key-value values are not UTF-8: Polars refuses every traces file, every raw logs file and every compacted logs file that carries a body token bloom; compacted logs files without one read correctly). The gap is expected in exactly the cells whose files carry such a value (the fixture reads the footers), and a cell that starts passing turns the CI job red so the entry is removed with the fix.
+- Note: The documented example runs in the parquet-readers CI workflow against files Lakehouse wrote (logs and traces; numeric, alias, 3000000000, 4294967294 and a 60-row bloom tenant; raw and compacted files) and is compared with the writer-side truth: the counts, services, errors, map keys and exact nanosecond timestamps of the rows as the fixture generated them, before they were sent. Known gap, issue-linked and still run in CI: #340 (footer key-value values are not UTF-8: Polars refuses every traces file and every logs file, raw or compacted (compaction writes the body token blooms since #344)). The gap is expected in exactly the cells whose files carry such a value (the fixture reads the footers), and a cell that starts passing turns the CI job red so the entry is removed with the fix.
 
 ### ✅ pyarrow reads Lakehouse Parquet in place
 

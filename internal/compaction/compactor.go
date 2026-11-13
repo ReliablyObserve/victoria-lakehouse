@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"time"
@@ -14,14 +15,13 @@ import (
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/google/uuid"
 	"github.com/parquet-go/parquet-go"
-	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetwriter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/storage"
-	"github.com/ReliablyObserve/victoria-lakehouse/internal/traceindex"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/vlstorage"
 )
 
@@ -391,58 +391,68 @@ func (c *Compactor) compactGroup(ctx context.Context, partition string, g tenant
 
 	switch c.mode {
 	case config.ModeLogs:
-		merged, err := c.mergeLogFiles(allData)
-		if err != nil {
+		if err := guardMergeStep("logs", func() error {
+			merged, err := c.mergeLogFiles(allData)
+			if err != nil {
+				return err
+			}
+			rowsMerged = int64(len(merged))
+			if rowsMerged > 0 {
+				// True min/max scan — NOT merged[0]/merged[len-1]. The merge
+				// order is a compression detail (today timestamp, soon
+				// (stream_id, timestamp)); positional bounds understate the
+				// manifest time range and break range pruning. See
+				// schema.LogRowTimeBounds.
+				minTime, maxTime = schema.LogRowTimeBounds(merged)
+			}
+			// Extract the per-(field,value) row counts from the merged ROWS —
+			// the same shared implementation (field list + cap) the flush
+			// writer uses — NOT by merging the input files' aggregate maps.
+			// Input maps are empty for every file written before the #138 fix
+			// (the aggregate wipe), so a map merge propagates the emptiness
+			// forever; row extraction makes each compaction pass HEAL old
+			// files into fully-aggregated outputs.
+			labelAggregates = schema.ExtractLogLabelAggregates(merged)
+			// Combined pmeta bloom: the union of bloom-column values across the merged
+			// rows (= across all inputs), so the compacted file retains file-level bloom
+			// pruning. Same shared extractor the flush writer uses → identical bloom set.
+			bloomValues = schema.ExtractLogBloomValues(merged)
+			// lh.trace_id_hex: AND across the inputs' footers, and true of the rows.
+			traceIDHex = schema.CompactedTraceIDHex(allData, schema.LogRowsTraceIDHex(merged))
+			outputData, err = writeCompactedLogs(merged, rowGroupSizeForOutput, levelForOutput, traceIDHex)
+			if err != nil {
+				return fmt.Errorf("write compacted logs: %w", err)
+			}
+			return nil
+		}); err != nil {
 			return nil, err
-		}
-		rowsMerged = int64(len(merged))
-		if rowsMerged > 0 {
-			// True min/max scan — NOT merged[0]/merged[len-1]. The merge
-			// order is a compression detail (today timestamp, soon
-			// (stream_id, timestamp)); positional bounds understate the
-			// manifest time range and break range pruning. See
-			// schema.LogRowTimeBounds.
-			minTime, maxTime = schema.LogRowTimeBounds(merged)
-		}
-		// Extract the per-(field,value) row counts from the merged ROWS —
-		// the same shared implementation (field list + cap) the flush
-		// writer uses — NOT by merging the input files' aggregate maps.
-		// Input maps are empty for every file written before the #138 fix
-		// (the aggregate wipe), so a map merge propagates the emptiness
-		// forever; row extraction makes each compaction pass HEAL old
-		// files into fully-aggregated outputs.
-		labelAggregates = schema.ExtractLogLabelAggregates(merged)
-		// Combined pmeta bloom: the union of bloom-column values across the merged
-		// rows (= across all inputs), so the compacted file retains file-level bloom
-		// pruning. Same shared extractor the flush writer uses → identical bloom set.
-		bloomValues = schema.ExtractLogBloomValues(merged)
-		// lh.trace_id_hex: AND across the inputs' footers, and true of the rows.
-		traceIDHex = schema.CompactedTraceIDHex(allData, schema.LogRowsTraceIDHex(merged))
-		outputData, err = writeCompactedLogs(merged, rowGroupSizeForOutput, levelForOutput, traceIDHex)
-		if err != nil {
-			return nil, fmt.Errorf("write compacted logs: %w", err)
 		}
 
 	case config.ModeTraces:
-		merged, err := c.mergeTraceFiles(allData)
-		if err != nil {
+		if err := guardMergeStep("traces", func() error {
+			merged, err := c.mergeTraceFiles(allData)
+			if err != nil {
+				return err
+			}
+			rowsMerged = int64(len(merged))
+			if rowsMerged > 0 {
+				// True min/max scan — same rationale as the logs branch above.
+				minTime, maxTime = schema.TraceRowTimeBounds(merged)
+			}
+			// Row-extracted aggregates — same healing rationale as the logs
+			// branch above (shared schema.Extract* implementation).
+			labelAggregates = schema.ExtractTraceLabelAggregates(merged)
+			// Combined pmeta bloom — same rationale as the logs branch above.
+			bloomValues = schema.ExtractTraceBloomValues(merged)
+			// lh.trace_id_hex: AND across the inputs' footers, and true of the rows.
+			traceIDHex = schema.CompactedTraceIDHex(allData, schema.TraceRowsTraceIDHex(merged))
+			outputData, err = writeCompactedTraces(merged, rowGroupSizeForOutput, levelForOutput, traceIDHex)
+			if err != nil {
+				return fmt.Errorf("write compacted traces: %w", err)
+			}
+			return nil
+		}); err != nil {
 			return nil, err
-		}
-		rowsMerged = int64(len(merged))
-		if rowsMerged > 0 {
-			// True min/max scan — same rationale as the logs branch above.
-			minTime, maxTime = schema.TraceRowTimeBounds(merged)
-		}
-		// Row-extracted aggregates — same healing rationale as the logs
-		// branch above (shared schema.Extract* implementation).
-		labelAggregates = schema.ExtractTraceLabelAggregates(merged)
-		// Combined pmeta bloom — same rationale as the logs branch above.
-		bloomValues = schema.ExtractTraceBloomValues(merged)
-		// lh.trace_id_hex: AND across the inputs' footers, and true of the rows.
-		traceIDHex = schema.CompactedTraceIDHex(allData, schema.TraceRowsTraceIDHex(merged))
-		outputData, err = writeCompactedTraces(merged, rowGroupSizeForOutput, levelForOutput, traceIDHex)
-		if err != nil {
-			return nil, fmt.Errorf("write compacted traces: %w", err)
 		}
 
 	default:
@@ -759,7 +769,7 @@ func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
 // a written Parquet file's footer (summed across row groups). Fills the compacted
 // output's FileInfo.ColumnBytes so per-field storage size stays correct through
 // compaction. Mirrors the flush writer's helper (this package intentionally keeps
-// its own writer copy). Returns nil on any error.
+// its own copy of it). Returns nil on any error.
 func columnBytesFromFooter(data []byte) map[string]int64 {
 	f, err := parquet.OpenFile(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
@@ -808,79 +818,48 @@ func WriteTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int)
 
 // traceIDHex is the lh.trace_id_hex attestation to record; the caller derives it
 // (schema.CompactedTraceIDHex for a merge, the rows for a rewrite).
+//
+// The encoding is the shared writer's (internal/parquetwriter), the one the flush
+// writer calls: a compacted object carries every pruning structure a flushed one
+// does (MAIN RULE 4, #344). The slot binding is this package's process-wide
+// setting, handed to the writer explicitly.
 func writeCompactedLogs(rows []schema.LogRow, rowGroupSize int, compressionLevel int, traceIDHex bool) ([]byte, error) {
-	var buf bytes.Buffer
-	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	opts := []parquet.WriterOption{
-		parquet.Compression(codec),
-		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		schema.ParquetCreatedBy(),
-		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns(activeSlotResolver.BloomSlots()...))...),
-		schema.TraceIDHexOption(traceIDHex),
-	}
-	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
-		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
-	}
-	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
-	if _, err := writer.Write(rows); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	res, err := parquetwriter.WriteLogs(rows, parquetwriter.Options{
+		RowGroupSize:     rowGroupSize,
+		CompressionLevel: compressionLevel,
+		Slots:            activeSlotResolver,
+		TraceIDHex:       traceIDHex,
+	})
+	return res.Data, err
 }
 
+// writeCompactedTraces is writeCompactedLogs for spans; the shared writer also
+// recomputes the per-file `_trace_idx` footer index from the rows written, so a
+// compacted file keeps the cold-tier trace-by-ID fast path.
 func writeCompactedTraces(rows []schema.TraceRow, rowGroupSize int, compressionLevel int, traceIDHex bool) ([]byte, error) {
-	var buf bytes.Buffer
-	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-	opts := []parquet.WriterOption{
-		parquet.Compression(codec),
-		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		schema.ParquetCreatedBy(),
-		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns(activeSlotResolver.BloomSlots()...))...),
-		schema.TraceIDHexOption(traceIDHex),
-	}
-
-	// Tier-2: re-stamp the slot→name mapping so the compacted file stays
-	// self-describing (queries read its slots by their configured name).
-	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
-		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
-	}
-
-	// Preserve the per-file `_trace_idx` footer index across compaction.
-	// Without this, every merged file loses the embedded trace-ID time
-	// bounds and the cold-tier trace-by-ID fast path collapses to a
-	// full span scan for compacted data. Index lives in standard Parquet
-	// KV metadata (see internal/traceindex.MetadataKey) — same slot as
-	// the original writer in lakehouse-traces/.../parquets3/writer.go,
-	// so a query can't tell whether the file was freshly flushed or
-	// later compacted.
-	if idxData := traceindex.Marshal(traceindex.Compute(rows)); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceindex.MetadataKey, string(idxData)))
-	}
-
-	writer := schema.NewTraceWriter(&buf, opts...)
-	if _, err := writer.Write(rows); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	res, err := parquetwriter.WriteTraces(rows, parquetwriter.Options{
+		RowGroupSize:     rowGroupSize,
+		CompressionLevel: compressionLevel,
+		Slots:            activeSlotResolver,
+		TraceIDHex:       traceIDHex,
+	})
+	return res.Data, err
 }
 
-func zstdLevel(level int) zstd.Level {
-	switch {
-	case level <= 1:
-		return zstd.SpeedFastest
-	case level <= 5:
-		return zstd.SpeedDefault
-	case level <= 10:
-		return zstd.SpeedBetterCompression
-	default:
-		return zstd.SpeedBestCompression
-	}
+// guardMergeStep runs the merge and encode step of one compaction group and turns
+// a panic in it (a corrupt input the Parquet reader panics on, a bug in the merge
+// or the writer) into an error of THAT group. The group then fails like any other
+// failed merge (nothing uploaded, no source touched, plan backoff); a bad merge
+// must not crash the process that also acknowledges ingest. The shared writer
+// itself never recovers: this is the one boundary that does.
+func guardMergeStep(step string, fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf("compaction %s merge panicked; the group is abandoned and its inputs are untouched: %v\n%s", step, r, debug.Stack())
+			err = fmt.Errorf("compaction %s merge panicked: %v", step, r)
+		}
+	}()
+	return fn()
 }
 
 // mergeFileLabels unions the per-field label value sets from a slice of
@@ -916,17 +895,6 @@ func mergeFileLabels(files []manifest.FileInfo) map[string][]string {
 		out[field] = vals
 	}
 	return out
-}
-
-// bloomFilters builds SplitBlockFilter columns (10 bits/value ≈ 1% FPP) from the
-// strict per-signal bloom set in internal/schema (cardinality-aligned: high-card
-// equality-queried columns only).
-func bloomFilters(cols []string) []parquet.BloomFilterColumn {
-	bf := make([]parquet.BloomFilterColumn, 0, len(cols))
-	for _, c := range cols {
-		bf = append(bf, parquet.SplitBlockFilter(10, c))
-	}
-	return bf
 }
 
 // firstDuplicateKey returns the first key that appears twice in files, or "".

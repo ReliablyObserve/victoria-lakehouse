@@ -1,6 +1,7 @@
 package parquets3
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"testing"
@@ -76,12 +77,14 @@ func TestTokenBloomMarshalUnmarshal(t *testing.T) {
 		t.Fatalf("UnmarshalBinary failed: %v", err)
 	}
 
-	// Restored bloom must behave identically
-	if restored.k != bloom.k {
-		t.Errorf("k mismatch: got %d, want %d", restored.k, bloom.k)
+	// Restored bloom must behave identically: it marshals back to the same bytes
+	// (same k, same words).
+	again, err := restored.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary of the restored bloom failed: %v", err)
 	}
-	if len(restored.bits) != len(bloom.bits) {
-		t.Errorf("bits length mismatch: got %d, want %d", len(restored.bits), len(bloom.bits))
+	if !bytes.Equal(again, data) {
+		t.Errorf("restored bloom marshals to different bytes (%d vs %d)", len(again), len(data))
 	}
 
 	for _, tok := range tokens {

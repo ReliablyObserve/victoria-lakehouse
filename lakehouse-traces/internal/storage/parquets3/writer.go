@@ -13,11 +13,11 @@ import (
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/logger"
 	"github.com/parquet-go/parquet-go"
-	"github.com/parquet-go/parquet-go/compress/zstd"
 
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/config"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/manifest"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/metrics"
+	"github.com/ReliablyObserve/victoria-lakehouse/internal/parquetwriter"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/s3reader"
 	"github.com/ReliablyObserve/victoria-lakehouse/internal/schema"
 )
@@ -437,131 +437,55 @@ func columnBytesFromFooter(data []byte) map[string]int64 {
 	return out
 }
 
-func zstdLevel(level int) zstd.Level {
-	switch {
-	case level <= 1:
-		return zstd.SpeedFastest
-	case level <= 5:
-		return zstd.SpeedDefault
-	case level <= 10:
-		return zstd.SpeedBetterCompression
-	default:
-		return zstd.SpeedBestCompression
-	}
-}
-
+// writeLogsParquet and writeTracesParquet are the flush side of the one Lakehouse
+// Parquet encoder (internal/parquetwriter): the compactor calls the same
+// functions, so a flushed and a compacted object carry the same structures. The
+// Tier-2 slot binding is this package's process-wide setting, handed to the
+// encoder explicitly; the encoder itself holds no state.
 func writeLogsParquet(rows []schema.LogRow, rowGroupSize int, compressionLevel int) (*flushResult, error) {
-	var buf bytes.Buffer
-	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-
-	// Pre-compute token bloom metadata for each row group so it can be
-	// embedded as file-level key-value metadata in the Parquet footer.
-	opts := []parquet.WriterOption{
-		parquet.Compression(codec),
-		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		schema.ParquetCreatedBy(),
-		parquet.BloomFilters(bloomFilters(schema.LogBloomColumns(activeSlotResolver.BloomSlots()...))...),
-	}
 	// The writer attests what it writes: lh.trace_id_hex=1 only when every
 	// trace_id in these rows is lowercase hex (see schema.TraceIDHexMetaKey).
 	traceIDHex := schema.LogRowsTraceIDHex(rows)
-	opts = append(opts, schema.TraceIDHexOption(traceIDHex))
-	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
-		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
-	}
-	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
-		start := rgIdx * rowGroupSize
-		end := start + rowGroupSize
-		if end > len(rows) {
-			end = len(rows)
-		}
-		bodies := make([]string, 0, end-start)
-		for i := start; i < end; i++ {
-			if rows[i].Body != "" {
-				bodies = append(bodies, rows[i].Body)
-			}
-		}
-		if len(bodies) > 0 {
-			key, value := buildTokenBloomMetadata(bodies, rgIdx)
-			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
-		}
-	}
-
-	writer := parquet.NewGenericWriter[schema.LogRow](&buf, opts...)
-	if _, err := writer.Write(rows); err != nil {
+	res, err := parquetwriter.WriteLogs(rows, parquetwriter.Options{
+		RowGroupSize:     rowGroupSize,
+		CompressionLevel: compressionLevel,
+		Slots:            activeSlotResolver,
+		TraceIDHex:       traceIDHex,
+	})
+	if err != nil {
 		return nil, err
 	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	logData := buf.Bytes()
 	return &flushResult{
-		Data:        logData,
+		Data:        res.Data,
 		RawBytes:    estimateRawBytesLogs(rows),
-		ColumnBytes: columnBytesFromFooter(logData),
+		ColumnBytes: columnBytesFromFooter(res.Data),
 		TraceIDHex:  traceIDHex,
 	}, nil
 }
 
 func writeTracesParquet(rows []schema.TraceRow, rowGroupSize int, compressionLevel int) (*flushResult, error) {
-	var buf bytes.Buffer
-	codec := &zstd.Codec{Level: zstdLevel(compressionLevel)}
-
-	// Pre-compute token bloom metadata for each row group so it can be
-	// embedded as file-level key-value metadata in the Parquet footer.
-	opts := []parquet.WriterOption{
-		parquet.Compression(codec),
-		parquet.MaxRowsPerRowGroup(int64(rowGroupSize)),
-		schema.ParquetCreatedBy(),
-		parquet.BloomFilters(bloomFilters(schema.TraceBloomColumns(activeSlotResolver.BloomSlots()...))...),
-	}
 	// See writeLogsParquet: the footer attests lowercase-hex trace ids only when
 	// every span written here has one. VictoriaTraces' OTLP protobuf path writes
 	// hex; its OTLP/HTTP JSON and native paths store the id as sent.
 	traceIDHex := schema.TraceRowsTraceIDHex(rows)
-	opts = append(opts, schema.TraceIDHexOption(traceIDHex))
-	if kv := schema.MarshalSlotMapping(activeSlotResolver.Mapping()); kv != nil {
-		opts = append(opts, parquet.KeyValueMetadata(schema.DedicatedSlotsMetaKey, string(kv)))
+	res, err := parquetwriter.WriteTraces(rows, parquetwriter.Options{
+		RowGroupSize:     rowGroupSize,
+		CompressionLevel: compressionLevel,
+		Slots:            activeSlotResolver,
+		TraceIDHex:       traceIDHex,
+	})
+	if err != nil {
+		return nil, err
 	}
-	for rgIdx := 0; rgIdx*rowGroupSize < len(rows); rgIdx++ {
-		start := rgIdx * rowGroupSize
-		end := start + rowGroupSize
-		if end > len(rows) {
-			end = len(rows)
-		}
-		bodies := make([]string, 0, end-start)
-		for i := start; i < end; i++ {
-			if rows[i].Body != "" {
-				bodies = append(bodies, rows[i].Body)
-			}
-		}
-		if len(bodies) > 0 {
-			key, value := buildTokenBloomMetadata(bodies, rgIdx)
-			opts = append(opts, parquet.KeyValueMetadata(key, string(value)))
-		}
-	}
-
-	tidxStart := time.Now()
-	tidxEntries := computeTraceIndex(rows)
-	if idxData := marshalTraceIndex(tidxEntries); len(idxData) > 0 {
-		opts = append(opts, parquet.KeyValueMetadata(traceIndexMetadataKey, string(idxData)))
+	if ti := res.TraceIndex; ti != nil {
 		metrics.WriterTraceIdxBuildsTotal.Inc()
-		metrics.WriterTraceIdxEntriesTotal.Add(listedTraceIndexEntries(tidxEntries))
-		metrics.WriterTraceIdxBuildDuration.Observe(time.Since(tidxStart).Seconds())
+		metrics.WriterTraceIdxEntriesTotal.Add(ti.Listed)
+		metrics.WriterTraceIdxBuildDuration.Observe(ti.Build.Seconds())
 	}
-
-	writer := schema.NewTraceWriter(&buf, opts...)
-	if _, err := writer.Write(rows); err != nil {
-		return nil, err
-	}
-	if err := writer.Close(); err != nil {
-		return nil, err
-	}
-	traceData := buf.Bytes()
 	return &flushResult{
-		Data:        traceData,
+		Data:        res.Data,
 		RawBytes:    estimateRawBytesTraces(rows),
-		ColumnBytes: columnBytesFromFooter(traceData),
+		ColumnBytes: columnBytesFromFooter(res.Data),
 		TraceIDHex:  traceIDHex,
 	}, nil
 }
@@ -629,14 +553,6 @@ var activeSlotResolver *schema.SlotResolver
 
 // SetSlotResolver installs the Tier-2 slot resolver for the traces writer.
 func SetSlotResolver(r *schema.SlotResolver) { activeSlotResolver = r }
-
-func bloomFilters(cols []string) []parquet.BloomFilterColumn {
-	bf := make([]parquet.BloomFilterColumn, 0, len(cols))
-	for _, c := range cols {
-		bf = append(bf, parquet.SplitBlockFilter(10, c))
-	}
-	return bf
-}
 
 // settled tells a group's onStored hook that its object needs no upload (it is
 // already live or already superseded), so the caller's record of what is done

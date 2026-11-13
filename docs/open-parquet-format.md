@@ -245,8 +245,8 @@ Lakehouse metadata that belongs to one file lives in standard Parquet footer key
 
 | Key | Written by | Value |
 |---|---|---|
-| `_trace_idx` | traces writers | the file's trace IDs with their time bounds |
-| `_bloom_body_rg_N` | flush writers | token bloom of row group N's message bodies |
+| `_trace_idx` | traces writers (flush and compaction) | the file's trace IDs with their time bounds |
+| `_bloom_body_rg_N` | all writers (flush and compaction) | token bloom of row group N's message bodies |
 | `lakehouse.dedicated_slots` | all writers, when slots are configured | the Tier-2 slot-to-attribute binding |
 | `lh.trace_id_hex` | all writers (flush, compaction; both binaries) | ASCII `1` when every `trace_id` value in the file is lowercase hex (or empty), `0` otherwise; see [read-path.md](read-path.md#attested-lowercase-hex-trace_id-files-lhtrace_id_hex) |
 
@@ -259,6 +259,42 @@ Files are written with [parquet-go](https://github.com/parquet-go/parquet-go). E
 `created_by` is fixed by Lakehouse rather than left to the library on purpose. parquet-go's default reads the library version from the Go build information, which is present or absent depending on the toolchain and build mode: Go 1.27 fills it in for test binaries (`github.com/parquet-go/parquet-go version 0.32.0(build )`), Go 1.26 did not (`github.com/parquet-go/parquet-go`). The same rows then came out 23 bytes longer or shorter per file, which moved the field-metadata perf rows' `s3_bytes` counters between CI runs on different toolchains (by 17 bytes on the `fv_level` compacted `window=whole` cells: the footer tail reads scale with object size). With a fixed string, the bytes of a file depend only on the rows, the writer options and the release.
 
 Readers do not interpret the application name: pyarrow and DuckDB apply version-specific statistics workarounds only to `parquet-mr` and `parquet-cpp` files, and the readback gate below writes its files with the same `created_by`.
+
+### One writer for flush and compaction
+
+A flushed file and a compacted file carry the same pruning structures, because one function writes both: `internal/parquetwriter` (`WriteLogs`, `WriteTraces`). The flush writer (`writeLogsParquet` / `writeTracesParquet` in `internal/storage/parquets3`, in both binaries) and the compactor (`internal/compaction`; its exported `WriteLogs` / `WriteTraces` are for a future producer of replacement objects such as a delete rewrite and have no non-test caller today) call it with explicit `Options`: row-group size, compression level, the Tier-2 slot resolver and the `lh.trace_id_hex` attestation. Everything a file's pruning depends on comes out of that one function: the Parquet writer options, the split-block bloom columns, the footer entries (`_bloom_body_rg_N`, `lakehouse.dedicated_slots`, `_trace_idx`, `lh.trace_id_hex`), the statistics and the page index.
+
+Before this, the compactor had its own copy of the encoding and had dropped the body token blooms: a compacted logs file could not skip row groups by a word of the log message, so a body search got slower as data aged (measured on 142 compacted files: a rare word read 63.6x, a medium word 13.6x the body bytes of the flushed layout, an absent word 245 KB instead of 0 bytes; [#344](https://github.com/ReliablyObserve/victoria-lakehouse/issues/344)).
+
+```mermaid
+flowchart LR
+  subgraph before["Before: two copies of the encoding, process-global slot state"]
+    F1["flush writer<br/>parquets3.writeLogsParquet / writeTracesParquet"] -->|reads| G1(("activeSlotResolver<br/>(parquets3)"))
+    F1 --> E1["SBBF blooms + slot mapping + trace_id_hex<br/>+ body token blooms + _trace_idx"]
+    C1["compactor<br/>compaction.writeCompacted*"] -->|reads| G2(("activeSlotResolver<br/>(compaction)"))
+    C1 --> E2["SBBF blooms + slot mapping + trace_id_hex<br/>+ _trace_idx<br/>(NO body token blooms: #344)"]
+  end
+  subgraph after["After: one pure encoder, two callers"]
+    F2["flush writer"] -->|"Options{RowGroupSize, Level, Slots, TraceIDHex}"| W["internal/parquetwriter<br/>WriteLogs / WriteTraces<br/>no global state, no I/O, deterministic"]
+    C2["compactor<br/>(recover boundary around merge + encode)"] -->|"Options{...}"| W
+    W --> E3["every structure, identical for both callers"]
+  end
+```
+
+| | before | after |
+|---|---|---|
+| Encoders | 2 (flush, compaction), 1 more copy of the bloom/zstd helpers | 1 (`internal/parquetwriter`) |
+| Writer reads process state | `activeSlotResolver` in each of 2 packages | none: the slot resolver is a field of `Options` |
+| Body token blooms in a compacted file | none | one per row group that has a body, as in a flushed file |
+| Failure of a merge or an encode | a panic reaches the process | the compaction group fails like any failed merge (nothing uploaded, no source touched, plan backoff) |
+
+The encoder is a pure library by contract: no package-level variable (a test fails on one), the same rows and `Options` give the same bytes (a flush of fixed rows is pinned by `TestFlushWriterBytesGolden` in both modules), no I/O and no goroutine, and no `recover`: the one caller that must survive a panic, the compactor, recovers around its merge-and-encode step. `internal/parquetwriter/structcheck` decodes a written footer into a comparable description (footer keys with a digest of each value, split-block bloom columns and their sizes, a digest of each column's min/max, null counts, presence of the page index, sort order, codec and encodings). It does not compare the zstd level, compressed sizes, page boundaries or the content of the page index, the bloom bits beyond their length, the order or duplication of footer keys, or the schema elements; the byte-level tests (`TestFlushWriterBytesGolden`, `TestWriteCompactedIsTheSharedWriterWithTheGivenOptions`, `TestCompactUsesTheDefaultScheduleThroughTheSharedWriter`) cover what the structure comparison cannot see. the golden tests of flushed versus compacted structure (`TestFlushedAndCompactedLogsHaveTheSameStructure`, `TestFlushedAndCompactedTracesHaveTheSameStructure`, in both modules) run the same rows through the real flush writer and through `Compactor.Compact` and require an empty difference.
+
+What the token blooms cost in a compacted logs file (measured, one host, `benchstat` over interleaved runs against `origin/main`): a 20,000-row object whose bodies are almost all distinct tokens grows 159.4 KiB to 182.9 KiB (+14.7 %) and takes +54 % wall time to encode (16.2 ms to 24.9 ms, +28 % bytes allocated, about 9x the allocations), the price a flushed object has always paid (the fixture is a worst case for bytes, not for CPU: on the independent review's templated-body fixture the same encode took +80 % wall time, +58 % bytes allocated and 4.9k to 108k allocations, and a full read-merge-write of 300,000 rows +12.6 % wall time and +3.8 % memory, all measured; the branch's compaction encode equals main's flush encode of the same rows); the field-metadata cells that read whole compacted logs objects read +4.1 to +4.2 % S3 bytes (the footer carries the blooms), with the same GET count, row groups and pages. A compacted traces object is unchanged (spans rarely have a body). A flush is unchanged to the byte.
+
+Footer size, a limit of this change (measured by the independent review of the PR, 20 row groups written through `compaction.WriteLogs`, main vs this branch): the footer of a compacted logs object grows from 98,054 to 173,825 bytes at L1 (10,000-row groups, zstd 7) and from 98,656 to 214,427 bytes at L2 (20,000-row groups, zstd 11); with unique-id bodies L2 goes from 97,838 to 577,781 bytes. The footer prefetch window is 128 KiB (`signal_defaults.go:18`, sized for "L2 footers ~46-50KB" before token blooms), so a footer past it is counted `tooBig` and skipped (`footer_prefetch.go:407-411`) and the footer-skip probe falls back to a full download (`:198-201`): the first open of a compacted logs object over the 5 MB whole-file threshold goes from one tail GET to two or more (read from the code, not measured end to end). The footer cache is budgeted in bytes, and compacted footers grew 2.97x (14.9 KB to 44.2 KB, measured), so it holds about a third as many. The field-metadata cells cannot show this (their objects are under 5 MB). The mitigation is the program's PR-4b (blooms at the file tail), whose acceptance criterion is: the first open of any object is one tail read, and footer-only readers and the footer cache skip the token blooms. The prefetch default is not changed here.
+
+Both signals use it. A logs object adds the body token blooms; a traces object adds the same blooms for a span `Body` (rarely set) and `_trace_idx`. Multi-instance: the encoder keeps no state, so any number of write instances and compactors can run it at once, and two instances that encode the same rows with the same options produce the same bytes (a retried flush or a re-run merge writes an identical object).
 
 ### parquet-go v0.32.0
 
@@ -970,8 +1006,8 @@ Athena is Trino, so a tenant above 2^31 reads back negative whatever type you de
 | DuckDB | 1.5.6 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
 | pyarrow | 25.0.1 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
 | pandas | 2.3.3 | yes | yes | yes | yes | yes | yes | `readers-inprocess` |
-| Polars | 1.44.2 | partial (#340) | no (#340) | no (#340) | partial (#340) | partial (#340) | yes | `readers-inprocess` |
-| Apache DataFusion | 54.0.0 | partial (#340) | no (#340) | no (#340) | partial (#340) | partial (#340, engine caveat) | yes | `readers-inprocess` |
+| Polars | 1.44.2 | no (#340) | no (#340) | no (#340) | no (#340) | no (#340) | yes | `readers-inprocess` |
+| Apache DataFusion | 54.0.0 | no (#340) | no (#340) | no (#340) | no (#340) | no (#340, engine caveat) | yes | `readers-inprocess` |
 | ClickHouse | 25.8.33.6 | partial (#341) | partial (#341) | partial (#341) | partial (#341) | yes | yes | `readers-clickhouse` |
 | Trino | 476 | partial (#342) | partial (#342) | partial (#342) | partial (#342) | yes | yes | `readers-trino` |
 | Apache Spark | 4.0.0 | yes | yes | yes | yes | yes | yes | `readers-spark` |
@@ -983,8 +1019,8 @@ Athena is Trino, so a tenant above 2^31 reads back negative whatever type you de
 
 Known gaps behind the `no` and `partial` cells (each cell still runs in CI and must keep failing until its issue is fixed):
 
-- polars, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes (compaction keeps the body token blooms of some files, #344)
-- datafusion, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; DataFusion (arrow-rs) refuses a file that carries either. Every traces object and every raw logs object does; a compacted logs object only sometimes (compaction keeps the body token blooms of some files, #344)
+- polars, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; Polars refuses a file that carries either. Every traces object and every logs object does, raw or compacted (compaction writes the body token blooms since #344)
+- datafusion, [#340](https://github.com/ReliablyObserve/victoria-lakehouse/issues/340): files with a non-UTF-8 footer value. the traces footer KV _trace_idx and the logs footer KV _bloom_body_rg_N hold raw bytes, not UTF-8; DataFusion (arrow-rs) refuses a file that carries either. Every traces object and every logs object does, raw or compacted (compaction writes the body token blooms since #344)
 - datafusion, engine caveat: needs an explicit schema. engine behaviour, not a Lakehouse defect: register_parquet infers the schema from every file footer before any partition filter applies, so one unreadable object in an unrelated partition fails the registration. Pass an explicit schema= to avoid the listing-time footer reads
 - clickhouse, [#341](https://github.com/ReliablyObserve/victoria-lakehouse/issues/341): equality filters on a bloom column need bloom push down off. split-block bloom filters whose size is not a power of two (96 bytes for 60 values, 160 after compaction) are written for every bloom column with enough distinct values; ClickHouse fails an equality filter on such a column. The workaround is input_format_parquet_bloom_filter_push_down = 0
 - trino, [#342](https://github.com/ReliablyObserve/victoria-lakehouse/issues/342): tenant IDs >= 2^31 need a mask. Trino reads UINT_32 account_id 3000000000 as -1294967296 and 4294967294 as -2
